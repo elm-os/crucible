@@ -4319,7 +4319,7 @@
           "exports"
         ],
         "summary": "Download an export",
-        "description": "The file of a ready export, streamed from the node that wrote it, with its SHA-256 as the `ETag`.",
+        "description": "The file of a ready export. A file on the node's disk is streamed from the node that wrote it, with its SHA-256\nas the `ETag`. With object storage the file is on the object store, and any node answers 303 with a presigned\nlink to it in `Location`, which works for 5 minutes and saves the file as an attachment; follow it without the\nAPI key.",
         "operationId": "download_export",
         "parameters": [
           {
@@ -4348,6 +4348,17 @@
               "application/x-ndjson": {}
             }
           },
+          "303": {
+            "description": "The file is on the object store: `Location` is a presigned link to it, valid for 5 minutes.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The presigned link on the object store's public endpoint."
+              }
+            }
+          },
           "401": {
             "description": "`unauthenticated`.",
             "content": {
@@ -4359,7 +4370,7 @@
             }
           },
           "404": {
-            "description": "`not_found`: no export of the project has this id, or its file is not on this node (a deployment of several nodes keeps each file on the node that wrote it); or `feature_disabled`: no control plane.",
+            "description": "`not_found`: no export of the project has this id, or its file is not on this node (without object storage, a deployment of several nodes keeps each file on the node that wrote it); or `feature_disabled`: no control plane.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4380,6 +4391,16 @@
           },
           "410": {
             "description": "`export_expired`: the file expired, or a deletion request the export predates expired it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`media_not_supported`: the file is on the object store, and this server has none.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8401,6 +8422,132 @@
           },
           "503": {
             "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/media": {
+      "get": {
+        "tags": [
+          "media"
+        ],
+        "summary": "List the media a span references",
+        "description": "The media one span references, at most 64: those its input, output and metadata name, each with its payload\nfield, the JSON pointer of the string that names it, and the media the project holds for it, then the media\nuploaded for the span that its payload does not name. Read `GET media/{media_id}` for a download.",
+        "operationId": "list_span_media",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "The trace id (32 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "span_id",
+            "in": "path",
+            "description": "The span id (16 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "The span's start time as the API returned it (RFC 3339): it locates the span's payload.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The media the span references.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpanMediaList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such span payload (it expired under the payload retention, or the span was never stored), or the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`media_not_supported`: no object store is configured.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`, also while the span may not be readable yet; or `control_plane_unavailable`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -17612,6 +17759,47 @@
               "null"
             ],
             "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
+      "SpanMedia": {
+        "type": "object",
+        "description": "One medium a span references: where it appears, and the media when the project holds it.",
+        "required": [
+          "content_type"
+        ],
+        "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "The content type: the media's, or the one the reference names when the project holds no media for it."
+          },
+          "field": {
+            "type": "string",
+            "description": "The payload field it appears in: `input`, `output` or `metadata` for a reference in the payload, or the\nfield its upload named; absent when the upload named none."
+          },
+          "media": {
+            "$ref": "#/components/schemas/Media",
+            "description": "The media, without a download URL: read `GET media/{media_id}` for one. Absent when the project holds no\nmedia for the reference, for example because its upload never reached this server."
+          },
+          "pointer": {
+            "type": "string",
+            "description": "The JSON pointer, within the field, of the string that holds the reference: empty for a field that is the\nreference itself or is not JSON, and absent for media uploaded for the span that its payload does not name."
+          }
+        }
+      },
+      "SpanMediaList": {
+        "type": "object",
+        "description": "The answer of `GET spans/{trace_id}/{span_id}/media`: the media the span references, at most 64.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpanMedia"
+            },
+            "description": "The references, those in the payload first, in field order and the order they appear."
           }
         }
       },

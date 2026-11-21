@@ -460,6 +460,11 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "GET",
+        "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/media",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
         "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/payload",
         Project(ProjectPermission::Read),
     ),

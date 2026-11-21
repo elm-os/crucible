@@ -87,7 +87,7 @@ pub use mcp::{
 };
 pub use media::{
     Media, MediaCreate, MediaDisposition, MediaList, MediaListParams, MediaState, MediaUpload,
-    MediaUploadUrl, MediaUse, SignedHeader,
+    MediaUploadUrl, MediaUse, SignedHeader, SpanMedia, SpanMediaList, SpanMediaParams,
 };
 pub use meta::Meta;
 pub use metrics::{
@@ -221,6 +221,8 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<SignInOptions>();
     visitor.visit::<SpanListPage>();
     visitor.visit::<SpanListParams>();
+    visitor.visit::<SpanMediaList>();
+    visitor.visit::<SpanMediaParams>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<SqlExportRequest>();

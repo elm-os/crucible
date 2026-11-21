@@ -441,7 +441,7 @@ async fn open_app(
             env,
             Arc::new(control.store.clone()),
             wal.clone(),
-            media.is_some(),
+            media.map(NodeMedia::export_objects),
         ))
     });
     // Ingest rejects spans older than their project's retention horizon (contract 1.2).
@@ -1215,8 +1215,12 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
     // for them.
     // The export job's reads come from the telemetry store task once it runs. Only that task and the job tasks
     // hold the runtime: its reads hold the WAL through the recent index, so a holder that outlived them would
-    // keep the WAL committer from stopping.
-    let exports = ExportRuntime::new();
+    // keep the WAL committer from stopping. With an object store, the files go there.
+    let export_objects = media.as_ref().map(NodeMedia::export_objects);
+    let exports = match &export_objects {
+        Some(objects) => ExportRuntime::new().with_objects(objects.clone()),
+        None => ExportRuntime::new(),
+    };
     let alerting = match &control {
         Some(control) => Some(crate::alerts::build(env, &config, control)?),
         None => None,
@@ -1233,10 +1237,14 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
     let closed = clickhouse
         .as_ref()
         .map(|_| "the telemetry store is starting");
-    // Exports live in the control plane; their files on this node's exports root.
-    let export_service = control
-        .as_ref()
-        .map(|control| Exports::new(env.clone(), Arc::new(control.store.clone())));
+    // Exports live in the control plane; their files on this node's exports root, or on the object store.
+    let export_service = control.as_ref().map(|control| {
+        let service = Exports::new(env.clone(), Arc::new(control.store.clone()));
+        match &export_objects {
+            Some(objects) => service.with_objects(objects.clone()),
+            None => service,
+        }
+    });
     let ingest = ingest_config(CpuShares::of(cpu_permits).ingest_prepare);
     let inflight_bytes = ingest.inflight_bytes;
     let (app, report) = open_app(
@@ -2349,7 +2357,7 @@ mod tests {
         );
         crate::identity::start_tasks(env, &identity, Arc::clone(&store));
         let (wal, _) = Wal::open(env, WalConfig::default()).await.unwrap();
-        let lifecycle = Lifecycle::new(env, Arc::clone(&store), wal, false);
+        let lifecycle = Lifecycle::new(env, Arc::clone(&store), wal, None);
         let evaluator =
             crucible_alerts::Evaluator::new(Arc::new(crate::alerts::LateSource::default()));
         let jobs = crate::jobs::start(

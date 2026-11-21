@@ -45,6 +45,8 @@ use crucible_records::ProjectId;
 use futures::future::BoxFuture;
 
 pub use config::{LifecycleConfig, Mutant};
+/// Where export files are when the deployment has an object store: the type of [`LeaderStores::exports`].
+pub use crucible_export::ExportObjects;
 pub use deletion::{PlaceStatus, Progress};
 pub use node::{AckError, LogError, NodeLog, NodeState, node_job};
 pub use partitions::{partition_window, partitions_between, partitions_of_days};
@@ -73,14 +75,16 @@ pub trait Subjects: fmt::Debug + Send + Sync {
     ) -> BoxFuture<'a, Result<Option<Vec<[u8; 16]>>, String>>;
 }
 
-/// What the leader jobs act on: the telemetry store, and the project salts that a deletion by user hashes its
-/// subject with.
+/// What the leader jobs act on: the telemetry store, the project salts that a deletion by user hashes its
+/// subject with, and the object store that holds export files when the deployment has one.
 #[derive(Clone, Debug)]
 pub struct LeaderStores {
     /// The telemetry store.
     pub telemetry: Arc<dyn TelemetryStore>,
     /// The project salts.
     pub subjects: Arc<dyn Subjects>,
+    /// Where export files are, when the deployment has an object store; `None` keeps them on the nodes' disks.
+    pub exports: Option<crucible_export::ExportObjects>,
 }
 
 /// Where the leader jobs find their stores. A node opens its telemetry store after its jobs start, and may
@@ -140,6 +144,7 @@ fn leader(
                     Arc::new(Shared {
                         telemetry: stores.telemetry,
                         subjects: stores.subjects,
+                        exports: stores.exports,
                         config,
                     }),
                 ),

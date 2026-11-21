@@ -29,7 +29,10 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
 ```
 
 The answer is the export, `queued`. Poll `GET .../exports/{export_id}` until `state` is `ready`, then download the
-file from its `download_path` with the same key; the file's SHA-256 is the export's `checksum`. The body takes
+file from its `download_path` with the same key; the file's SHA-256 is the export's `checksum`. With object storage
+the download answers `303` with a link to the file on the object store that works for 5 minutes, so follow it
+(`curl -L`), and any server of the deployment answers; without object storage the server that wrote the file
+streams it. The body takes
 `trace_ids` (up to 10,000), `user_id` or `session_id` to narrow the spans, `gzip` and `keep_truncated`, and creating
 an export needs the `read` scope or the member role. The [API reference](../api/README.md#the-rest-of-the-api)
 shows the whole exchange.
@@ -68,3 +71,10 @@ workflow, from the call sites it ties the traces to, to the replay and the draft
 An export file expires 7 days after it is written. A deletion request expires the export files made before it, and
 an expired download answers 410 `export_expired`
 ([retention and deletion](../self-hosting/retention-and-deletion.md)).
+
+## Where files are kept
+
+Without object storage, each file is on the disk of the server that wrote it, under its data directory, and only that
+server can send it. With object storage ([media](../self-hosting/media.md)), files go to the same bucket as media,
+under `<prefix>/<project id>/exports/`, every server can hand out a link to them, and a deletion request or the
+expiry removes the object.

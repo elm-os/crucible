@@ -68,13 +68,14 @@ pub trait HiddenSource: fmt::Debug + Send + Sync {
 }
 
 /// The request classes of the read services, which label the per-request counters: one per method.
-pub const READ_CLASSES: [&str; 34] = [
+pub const READ_CLASSES: [&str; 35] = [
     "trace_by_id",
     "trace_list",
     "trace_list_since",
     "span_children",
     "span_list",
     "payload",
+    "span_bodies",
     "facts",
     "fact_target_bounds",
     "filter_values",

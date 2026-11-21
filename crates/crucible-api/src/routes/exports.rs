@@ -3,23 +3,23 @@
 //!
 //! An export is a job. The POST checks the request, creates the export with a fixed `as_of` and answers 202 at
 //! once, under the project's limit of 5 per hour and the request's `Idempotency-Key`; the export job writes the
-//! file; the download streams it from this node's disk, so it is not cut by the request deadline. Exports need
-//! the control plane, which holds them.
+//! file; the download streams it from this node's disk, so it is not cut by the request deadline, or, for a file
+//! on the object store, answers 303 with a presigned link to it. Exports need the control plane, which holds them.
 
 use axum::body::Body;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ETAG};
+use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ETAG};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::{Export, ExportList, ExportRequest, Problem, ProblemCode, Saturation};
 use crucible_control::{ExportFormat, ExportJob, TxError};
 use crucible_export::{
-    CHUNK_BYTES, CreateError, CreateExport, Created, DownloadError, EXPORTS_PER_HOUR, ExportState,
-    Exports, MAX_TRACE_IDS, Options, Selector,
+    CHUNK_BYTES, CreateError, CreateExport, Created, Download, DownloadError, EXPORTS_PER_HOUR,
+    ExportState, Exports, MAX_TRACE_IDS, Options, Selector,
 };
 use crucible_records::{ExportJobId, RequestId, TimeWindow, Timestamp, TraceId};
 use utoipa::OpenApi;
@@ -400,7 +400,10 @@ pub(crate) async fn get_export(
 
 /// Download an export
 ///
-/// The file of a ready export, streamed from the node that wrote it, with its SHA-256 as the `ETag`.
+/// The file of a ready export. A file on the node's disk is streamed from the node that wrote it, with its SHA-256
+/// as the `ETag`. With object storage the file is on the object store, and any node answers 303 with a presigned
+/// link to it in `Location`, which works for 5 minutes and saves the file as an attachment; follow it without the
+/// API key.
 #[utoipa::path(
     get,
     path = "/api/v1/projects/{project_id}/exports/{export_id}/download",
@@ -412,10 +415,13 @@ pub(crate) async fn get_export(
     ),
     responses(
         (status = 200, description = "The file: JSON lines, gzip-compressed when the export asked for it.", content_type = "application/x-ndjson"),
+        (status = 303, description = "The file is on the object store: `Location` is a presigned link to it, valid for 5 minutes.",
+            headers(("Location" = String, description = "The presigned link on the object store's public endpoint."))),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: no export of the project has this id, or its file is not on this node (a deployment of several nodes keeps each file on the node that wrote it); or `feature_disabled`: no control plane.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: no export of the project has this id, or its file is not on this node (without object storage, a deployment of several nodes keeps each file on the node that wrote it); or `feature_disabled`: no control plane.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "`conflict`: the export is not ready yet, or failed.", body = Problem, content_type = "application/problem+json"),
         (status = 410, description = "`export_expired`: the file expired, or a deletion request the export predates expired it.", body = Problem, content_type = "application/problem+json"),
+        (status = 501, description = "`media_not_supported`: the file is on the object store, and this server has none.", body = Problem, content_type = "application/problem+json"),
         (status = 503, description = "`control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
     ),
     security(("project_key" = [])),
@@ -447,12 +453,32 @@ pub(crate) async fn download_export(
                 ProblemCode::NotFound,
                 "the export file is not on this node; download it from the node that wrote it",
             ),
+            DownloadError::NoObjectStore => ApiError::new(
+                rid,
+                ProblemCode::MediaNotSupported,
+                DownloadError::NoObjectStore.to_string(),
+            ),
             DownloadError::Store(error) => tx_problem(rid, &error),
             DownloadError::Disk(error) => {
                 tracing::error!(request_id = %rid, %error, "opening an export file failed");
                 ApiError::new(rid, ProblemCode::InternalError, "internal error")
             }
+            DownloadError::Objects(error) => {
+                tracing::error!(request_id = %rid, %error, "linking to an export object failed");
+                ApiError::new(rid, ProblemCode::InternalError, "internal error")
+            }
         })?;
+    let download = match download {
+        Download::File(file) => file,
+        Download::Link(link) => {
+            // The link lives 5 minutes: nothing may keep it.
+            let mut response = Redirect::to(&link.url).into_response();
+            response
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            return Ok(response);
+        }
+    };
     let (len, name, checksum, gzip) = (
         download.len,
         download.file_name.clone(),

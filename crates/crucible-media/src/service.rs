@@ -102,6 +102,8 @@ pub struct Media {
     control: Arc<dyn ControlStore>,
     pub(crate) objects: Arc<dyn ObjectStore>,
     config: MediaConfig,
+    /// How references are read out of payloads; without it, a span's references are its recorded uses.
+    find: Option<FindRefs>,
 }
 
 impl fmt::Debug for Media {
@@ -126,6 +128,7 @@ impl Media {
             control,
             objects,
             config,
+            find: None,
         }
     }
 
@@ -339,5 +342,122 @@ impl Media {
             .media()
             .uses(scope.project_id(), trace_id, span_id)
             .await?)
+    }
+}
+
+/// The least and the greatest SHA-256 a reference's id can stand for.
+pub type HashRange = ([u8; 32], [u8; 32]);
+
+/// A media reference found in a payload field: where it is, the content type it names, and the SHA-256 values its
+/// id can stand for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PayloadRef {
+    /// The JSON pointer of the string that holds it within its field; empty for the whole field.
+    pub pointer: String,
+    /// The content type the reference names.
+    pub content_type: String,
+    /// The least and the greatest SHA-256 its id can stand for.
+    pub hashes: HashRange,
+}
+
+/// Reads the media references out of one payload field's bytes. The token formats belong to other products'
+/// SDKs, so the reader is `crucible-compat`'s, which the binary passes in (contract 1.5).
+pub type FindRefs = fn(&[u8]) -> Vec<PayloadRef>;
+
+/// The most references [`Media::span_references`] answers with.
+pub const MAX_SPAN_REFERENCES: usize = 64;
+
+/// A medium one span references: where it appears, its content type, and its object when the project holds one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SpanReference {
+    /// The payload field it appears in, such as `input`; empty for a use that names none.
+    pub field: String,
+    /// The JSON pointer within the field of the string that names it; `None` for a use recorded with its upload,
+    /// which the payload does not name.
+    pub pointer: Option<String>,
+    /// The content type: the object's, or the one the reference names when the project holds no object for it.
+    pub content_type: String,
+    /// The object; `None` when the project holds none for the reference, for example because its upload never
+    /// reached this server.
+    pub object: Option<MediaObject>,
+}
+
+impl Media {
+    /// The same media service, reading the references in payloads with `find`.
+    #[must_use]
+    pub fn with_payload_refs(mut self, find: FindRefs) -> Self {
+        self.find = Some(find);
+        self
+    }
+
+    /// The media one span references, at most [`MAX_SPAN_REFERENCES`]: those named in `fields`, its payload
+    /// fields by name and body, in their order and the order they appear, then the uses recorded for the span that
+    /// its payload does not name.
+    pub async fn span_references(
+        &self,
+        scope: ProjectScope,
+        trace_id: TraceId,
+        span_id: SpanId,
+        fields: &[(&str, &[u8])],
+    ) -> Result<Vec<SpanReference>, MediaError> {
+        let project_id = scope.project_id();
+        let mut found: Vec<SpanReference> = Vec::new();
+        let mut looked_up: Vec<(HashRange, Option<MediaObject>)> = Vec::new();
+        if let Some(find) = self.find {
+            'fields: for (field, body) in fields {
+                for reference in find(body) {
+                    if found.len() >= MAX_SPAN_REFERENCES {
+                        break 'fields;
+                    }
+                    let held = looked_up
+                        .iter()
+                        .find(|(hashes, _)| *hashes == reference.hashes);
+                    let object = match held {
+                        Some((_, object)) => object.clone(),
+                        None => {
+                            let (low, high) = &reference.hashes;
+                            let object = self
+                                .control
+                                .media()
+                                .objects_by_hash_range(project_id, low, high, 1)
+                                .await?
+                                .into_iter()
+                                .next();
+                            looked_up.push((reference.hashes, object.clone()));
+                            object
+                        }
+                    };
+                    found.push(SpanReference {
+                        field: (*field).to_owned(),
+                        pointer: Some(reference.pointer),
+                        content_type: object
+                            .as_ref()
+                            .map_or(reference.content_type, |o| o.content_type.clone()),
+                        object,
+                    });
+                }
+            }
+        }
+        for recorded in self.uses(scope, trace_id, Some(span_id)).await? {
+            if found.len() >= MAX_SPAN_REFERENCES {
+                break;
+            }
+            let named = found.iter().any(|reference| {
+                reference.field == recorded.reference.field
+                    && reference
+                        .object
+                        .as_ref()
+                        .is_some_and(|object| object.id == recorded.object.id)
+            });
+            if !named {
+                found.push(SpanReference {
+                    field: recorded.reference.field,
+                    pointer: None,
+                    content_type: recorded.object.content_type.clone(),
+                    object: Some(recorded.object),
+                });
+            }
+        }
+        Ok(found)
     }
 }

@@ -1,6 +1,7 @@
 //! Media (contracts 12.6 and 14): `POST projects/{project_id}/media` asks for an upload, `PATCH
 //! .../media/{media_id}` confirms it, `GET .../media/{media_id}` answers the object with a presigned download,
-//! and `GET .../media` lists where the media of a trace or a span appear.
+//! `GET .../media` lists where the media of a trace or a span appear, and `GET
+//! .../spans/{trace_id}/{span_id}/media` lists the media one span references, read out of its payload.
 //!
 //! Media need an object store and the control plane, which holds the objects and their uses. Without both,
 //! every route checks its request and answers 501 `media_not_supported` with the settings that turn media on.
@@ -14,7 +15,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use crucible_api_types::{
     Media, MediaCreate, MediaDisposition, MediaList, MediaListParams, MediaState, MediaUpload,
-    MediaUploadUrl, MediaUse, Problem, ProblemCode, Saturation, SignedHeader,
+    MediaUploadUrl, MediaUse, Problem, ProblemCode, Saturation, SignedHeader, SpanMedia,
+    SpanMediaList, SpanMediaParams,
 };
 use crucible_control::{MediaObject, TxError};
 use crucible_env::{Disposition, ObjectError, Presigned};
@@ -22,7 +24,7 @@ use crucible_media::{Created, MediaError, NewUpload, rules};
 use crucible_records::{AuthorKind, MediaObjectId, RequestId, SpanId, TraceId};
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, IngestMedia, Principal, Read, Scoped};
+use crate::access::{ApiState, IngestMedia, Principal, Project, Read, Scoped};
 use crate::idempotency::{self, Begin};
 use crate::params::Params;
 use crate::problem::{ApiError, field_error};
@@ -39,11 +41,15 @@ pub(super) fn routes() -> Router<ApiState> {
             "/projects/{project_id}/media/{media_id}",
             get(get_media).patch(confirm_media),
         )
+        .route(
+            "/projects/{project_id}/spans/{trace_id}/{span_id}/media",
+            get(list_span_media),
+        )
 }
 
 /// The OpenAPI paths of the group.
 #[derive(OpenApi)]
-#[openapi(paths(create_media, confirm_media, get_media, list_media))]
+#[openapi(paths(create_media, confirm_media, get_media, list_media, list_span_media))]
 pub(super) struct Paths;
 
 /// The payload fields a use may name: the payload route's selectors (contract 12.6).
@@ -539,6 +545,91 @@ pub(crate) async fn list_media(
                 span_id: usage.reference.span_id.map(|id| id.to_string()),
                 field: Some(usage.reference.field.clone()).filter(|field| !field.is_empty()),
                 media: media_dto(&usage.object, None),
+            })
+            .collect(),
+    }))
+}
+
+/// List the media a span references
+///
+/// The media one span references, at most 64: those its input, output and metadata name, each with its payload
+/// field, the JSON pointer of the string that names it, and the media the project holds for it, then the media
+/// uploaded for the span that its payload does not name. Read `GET media/{media_id}` for a download.
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/media",
+    operation_id = "list_span_media",
+    tag = "media",
+    params(
+        ("project_id" = String, Path, description = "The project id (a UUID)."),
+        ("trace_id" = String, Path, description = "The trace id (32 hex characters)."),
+        ("span_id" = String, Path, description = "The span id (16 hex characters)."),
+        SpanMediaParams,
+    ),
+    responses(
+        (status = 200, description = "The media the span references.", body = SpanMediaList),
+        (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: no such span payload (it expired under the payload retention, or the span was never stored), or the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "`validation_failed`.", body = Problem, content_type = "application/problem+json"),
+        (status = 501, description = "`media_not_supported`: no object store is configured.", body = Problem, content_type = "application/problem+json"),
+        (status = 503, description = "`telemetry_store_unavailable`, also while the span may not be readable yet; or `control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
+        (status = 504, description = "`query_timeout`.", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("project_key" = [])),
+)]
+pub(crate) async fn list_span_media(
+    State(state): State<ApiState>,
+    project: Project,
+    uri: Uri,
+) -> Result<Json<SpanMediaList>, ApiError> {
+    let rid = project.request_id;
+    let mut params = Params::new(rid, &uri)?;
+    let trace_id = params.trace_id(&project.path);
+    let span_id = project
+        .path
+        .get("span_id")
+        .and_then(|text| SpanId::parse(text).ok());
+    if span_id.is_none() {
+        params.error("span_id", "invalid_id", "expected 16 hex characters");
+    }
+    let start_time = params.time("start_time");
+    params.finish()?;
+    let (Some(trace_id), Some(span_id), Some(start_time)) = (trace_id, span_id, start_time) else {
+        return Err(ApiError::validation(rid, Vec::new()));
+    };
+    let media = service(&state, rid)?;
+    let bodies = state
+        .service(rid)?
+        .span_bodies(&project.ctx, trace_id, span_id, start_time)
+        .await
+        .map_err(|e| ApiError::query(rid, &e))?;
+    // The metadata as one JSON object, so that a reference in it has the pointer of its key.
+    let metadata: serde_json::Map<String, serde_json::Value> = bodies
+        .metadata
+        .into_iter()
+        .map(|(key, value)| (key, serde_json::Value::String(value)))
+        .collect();
+    let metadata = serde_json::to_vec(&metadata).unwrap_or_default();
+    let fields: [(&str, &[u8]); 3] = [
+        ("input", &bodies.input),
+        ("output", &bodies.output),
+        ("metadata", &metadata),
+    ];
+    let found = media
+        .span_references(project.ctx.scope(), trace_id, span_id, &fields)
+        .await
+        .map_err(|e| media_problem(rid, &e))?;
+    Ok(Json(SpanMediaList {
+        data: found
+            .into_iter()
+            .map(|reference| SpanMedia {
+                field: Some(reference.field).filter(|field| !field.is_empty()),
+                pointer: reference.pointer,
+                content_type: reference.content_type,
+                media: reference
+                    .object
+                    .as_ref()
+                    .map(|object| media_dto(object, None)),
             })
             .collect(),
     }))

@@ -22,13 +22,15 @@ use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyPrincipal, KeyVerifier, Refusal, authenticate};
 use crucible_compat::media::{
     MEDIA_ROUTES, MediaAnswer, NOT_SUPPORTED, hash_range, media_answer, media_id, parse_report,
-    parse_upload, upload_answer,
+    parse_upload, payload_tokens, upload_answer,
 };
 use crucible_config::Config;
 use crucible_control::{ControlStore, MediaState};
 use crucible_env::{Env, ObjectStore, TlsRoots};
 use crucible_jobs::Job;
-use crucible_media::{Created, Media, MediaConfig, MediaError, NewUpload, S3Config, S3Store};
+use crucible_media::{
+    Created, Media, MediaConfig, MediaError, NewUpload, PayloadRef, S3Config, S3Store,
+};
 use crucible_records::RequestId;
 
 use crate::control::Control;
@@ -45,6 +47,19 @@ pub(crate) struct NodeMedia {
     prefix: String,
     /// The origin of the object store's public endpoint, which the UI's pages may load media from.
     pub(crate) origin: String,
+}
+
+/// The media references in one payload field, in the token format of the SDKs that call the compat media
+/// endpoint: how the span panel finds the media a span references.
+fn payload_refs(body: &[u8]) -> Vec<PayloadRef> {
+    payload_tokens(body)
+        .into_iter()
+        .map(|token| PayloadRef {
+            pointer: token.pointer,
+            content_type: token.content_type,
+            hashes: token.hashes,
+        })
+        .collect()
 }
 
 /// Media over the control plane, when `[object_store]` is set.
@@ -75,7 +90,8 @@ pub(crate) fn build(
             prefix: settings.prefix.clone(),
             max_bytes: config.media_max_bytes,
         },
-    );
+    )
+    .with_payload_refs(payload_refs);
     Ok(Some(NodeMedia {
         service,
         origin: store.public_origin(),
@@ -85,6 +101,14 @@ pub(crate) fn build(
 }
 
 impl NodeMedia {
+    /// The object store as export files use it, under the same key prefix as media.
+    pub(crate) fn export_objects(&self) -> crucible_export::ExportObjects {
+        crucible_export::ExportObjects::new(
+            Arc::clone(&self.store) as Arc<dyn ObjectStore>,
+            self.prefix.clone(),
+        )
+    }
+
     /// The `media-gc` job.
     pub(crate) fn job(&self) -> Job {
         crucible_media::gc::job(
@@ -364,6 +388,21 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// The media service reads the references the compat SDKs leave in payloads: each one with the pointer of its
+    /// string and the range its hash is in.
+    #[test]
+    fn payload_references_are_read_in_the_compat_sdks_format() {
+        let sha256 = [9u8; 32];
+        let token = crucible_compat::media::payload_token("image/webp", &sha256);
+        let body = serde_json::json!({ "images": [token] }).to_string();
+        let found = payload_refs(body.as_bytes());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pointer, "/images/0");
+        assert_eq!(found[0].content_type, "image/webp");
+        assert!(found[0].hashes.0 <= sha256 && sha256 <= found[0].hashes.1);
+        assert!(payload_refs(b"no references here").is_empty());
     }
 
     /// Without object storage the compat media endpoint refuses an upload with how to keep the media, and the

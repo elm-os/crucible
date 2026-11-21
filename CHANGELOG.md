@@ -39,6 +39,15 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
   manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
   all four variants.
+- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
+  a presigned link that any server hands out; expiry and deletion requests remove the objects.
+- The span panel has a Media tab, in place of the media section under each payload tab, that lists the media a span's
+  input, output and metadata reference, with where each appears, and the media uploaded for the span; without object
+  storage it says so and links the media guide.
+- `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` lists the media a span references.
+- With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
+- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
+  needs.
 - Each project runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`), so a dashboard of
   many widgets takes turns: the other queries wait within their deadline instead of reaching ClickHouse together.
 - Deleting a project deletes its dashboards with their widgets and its media records, and then every object under

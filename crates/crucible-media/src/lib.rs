@@ -9,6 +9,8 @@
 //!   the weekly orphan scan.
 //! - [`Media::remove_project`]: every object under a deleted project's key prefix (contract 13.4).
 //! - [`rules`]: the allowlist, the inline-safe list, the caps, the lifetimes and the object key layout.
+//! - [`Media::span_references`]: the media a span references, read out of its payload with the reader the binary
+//!   passes in ([`FindRefs`]), and the uses recorded for it.
 //!
 //! Without an object store none of this is built, and every media route answers `media_not_supported`.
 
@@ -22,4 +24,7 @@ mod service;
 #[cfg(feature = "test-support")]
 pub use http::fetch;
 pub use s3::{INTERNAL_TTL, LIST_PAGE, S3Config, S3Store};
-pub use service::{Created, Media, MediaConfig, MediaError, NewUpload};
+pub use service::{
+    Created, FindRefs, HashRange, MAX_SPAN_REFERENCES, Media, MediaConfig, MediaError, NewUpload,
+    PayloadRef, SpanReference,
+};

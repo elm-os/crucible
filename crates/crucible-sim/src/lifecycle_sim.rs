@@ -828,6 +828,7 @@ impl World {
                 faulty: Arc::clone(&self.salt_faults),
                 ledger: Arc::clone(&self.ledger),
             }),
+            exports: None,
         };
         Arc::new(move || Some(stores.clone()))
     }

@@ -86,7 +86,7 @@ pub use metrics::{
     MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries, MetricsTotal,
     MetricsTotals,
 };
-pub use payload::{PayloadBytes, PayloadQuery};
+pub use payload::{PayloadBytes, PayloadQuery, SpanBodies};
 pub use search::{
     Fragment, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchMatch,
     SearchPage, SearchQuery, search_tokens,

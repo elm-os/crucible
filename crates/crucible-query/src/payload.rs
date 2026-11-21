@@ -1,9 +1,12 @@
 //! The payload viewer (contract 8.7 and 12.6): a byte range of one payload field of one span, with the field's
 //! length. The store answers through `FieldRange`; a span it does not serve yet is re-read from its WAL frame
-//! through the recent index (contract 8.6), so a payload is readable as soon as its span is.
+//! through the recent index (contract 8.6), so a payload is readable as soon as its span is. Also the bodies a
+//! span's media references are found in (contract 14): its input, output and metadata, read the same way.
 
 use crucible_env::QueryError;
-use crucible_plan::{HiddenSelector, PayloadField, PayloadRangeRequest, Value, payload_range};
+use crucible_plan::{
+    HiddenSelector, PayloadField, PayloadRangeRequest, Value, payload_range, span_bodies,
+};
 use crucible_records::{IoShape, SpanId, TableId, Timestamp, TraceId};
 use crucible_schema::{Column, SpanCoreCol};
 
@@ -167,6 +170,129 @@ impl QueryService {
         } else {
             Err(QueryError::Unavailable(
                 "the payload may not be readable yet: the read is partial or lagging".to_owned(),
+            )
+            .into())
+        }
+    }
+}
+
+/// The bodies of one span that can reference media (contract 14): its input and output as stored, and its
+/// metadata as key and value pairs, each value as stored (JSON text for a value that is not a string).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SpanBodies {
+    /// The input body.
+    pub input: Vec<u8>,
+    /// The output body.
+    pub output: Vec<u8>,
+    /// The metadata's keys and values, in order.
+    pub metadata: Vec<(String, String)>,
+}
+
+impl QueryService {
+    /// The bodies of one span that can reference media, from the store or, for a span the store does not serve
+    /// yet, from its WAL frame. `not_found` only when the answer is whole and strong, as for [`Self::payload`].
+    pub async fn span_bodies(
+        &self,
+        ctx: &ReadContext,
+        trace_id: TraceId,
+        span_id: SpanId,
+        start_time: Timestamp,
+    ) -> Result<SpanBodies, QueryServiceError> {
+        let mut read = self.read(ctx, "span_bodies");
+        let scope = ctx.scope;
+        let consistency = self.consistency();
+        let deleted = read.hidden.iter().any(|hidden| {
+            matches!(&hidden.selector, HiddenSelector::Traces(ids) if ids.contains(&trace_id))
+        });
+        if deleted {
+            return Err(QueryServiceError::NotFound);
+        }
+        let plan = span_bodies(
+            scope,
+            &read.clamp,
+            ctx.caller,
+            trace_id,
+            span_id,
+            start_time,
+        );
+        // A span sent twice has a row per copy: the newest one is the span.
+        let mut newest: Option<(u64, SpanBodies)> = None;
+        for row in read.rows(plan).await? {
+            let f = Fields(row.values());
+            let lsn = f.uint(4)?;
+            if newest.as_ref().is_some_and(|(held, _)| *held >= lsn) {
+                continue;
+            }
+            let (keys, values) = (f.texts(2)?, f.texts(3)?);
+            if keys.len() != values.len() {
+                return Err(QueryServiceError::Internal(
+                    "the store returned metadata keys and values of different lengths".to_owned(),
+                ));
+            }
+            let metadata = keys
+                .iter()
+                .zip(&values)
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect();
+            let bodies = SpanBodies {
+                input: f.bytes(0)?.to_vec(),
+                output: f.bytes(1)?.to_vec(),
+                metadata,
+            };
+            newest = Some((lsn, bodies));
+        }
+        if let Some((_, bodies)) = newest {
+            let state = self.index.read_state(scope);
+            read.finish(read.now, consistency, state, &PAYLOAD_TABLES, false)?;
+            return Ok(bodies);
+        }
+
+        let retained = read
+            .cutoff(TableId::SpanPayload)?
+            .is_none_or(|cutoff| start_time >= cutoff);
+        // A failed re-read is a span the index cannot give: its frame is gone because the store serves it.
+        let record = if retained {
+            self.index
+                .span_record(scope, trace_id, span_id)
+                .await
+                .ok()
+                .flatten()
+                .filter(|record| record.core.start_time == start_time)
+                .filter(|record| {
+                    let core = &record.core;
+                    !read.hidden.iter().any(|hidden| {
+                        hidden.hides(
+                            core.trace_id,
+                            &core.user_id,
+                            &core.session_id,
+                            core.ingestion.received_at,
+                        )
+                    })
+                })
+        } else {
+            None
+        };
+        let state = self.index.read_state(scope);
+        if let Some(record) = record {
+            read.finish(read.now, consistency, state, &PAYLOAD_TABLES, true)?;
+            let payload = &record.payload;
+            return Ok(SpanBodies {
+                input: payload.input.to_vec(),
+                output: payload.output.to_vec(),
+                metadata: payload
+                    .metadata_keys
+                    .iter()
+                    .zip(&payload.metadata_values)
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect(),
+            });
+        }
+        let meta = read.finish(read.now, consistency, state, &PAYLOAD_TABLES, false)?;
+        if meta.is_whole() {
+            Err(QueryServiceError::NotFound)
+        } else {
+            Err(QueryError::Unavailable(
+                "the span may not be readable yet: the read is partial or lagging".to_owned(),
             )
             .into())
         }
