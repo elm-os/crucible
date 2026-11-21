@@ -371,6 +371,30 @@ fn a_widget_query_is_checked_against_the_metrics_schema_and_its_kind() {
     });
 }
 
+/// A time series draws as lines, bars or areas; no other kind has a chart form.
+#[test]
+fn a_time_series_draws_as_areas() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform_with(&env, &world, false).await;
+        let c = Client { router: &p.router };
+        let mut areas = chart(0, 0);
+        areas["display"]["chart"] = json!("area");
+        let body = json!({"name": "Areas", "widgets": [areas]});
+        let created = c.send(Method::POST, "", &p.owner, Some(body), None).await;
+        assert_eq!(created.status.as_u16(), 201, "{}", created.pretty());
+        assert_eq!(created.body["widgets"][0]["display"]["chart"], "area");
+        let mut stat = stat("Spans", 0, 0);
+        stat["display"]["chart"] = json!("area");
+        let body = json!({"name": "Stat", "widgets": [stat]});
+        let refused = c.send(Method::POST, "", &p.owner, Some(body), None).await;
+        assert_eq!(
+            refused.field_errors(),
+            [("/widgets/0/display/chart", "invalid")]
+        );
+    });
+}
+
 #[test]
 fn built_in_dashboards_are_read_only_and_duplicate_into_rows() {
     run(|env| async move {

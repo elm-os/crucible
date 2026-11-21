@@ -100,7 +100,7 @@ pub enum MediaError {
 pub struct Media {
     env: Env,
     control: Arc<dyn ControlStore>,
-    objects: Arc<dyn ObjectStore>,
+    pub(crate) objects: Arc<dyn ObjectStore>,
     config: MediaConfig,
     /// How references are read out of payloads; without it, a span's references are its recorded uses.
     find: Option<FindRefs>,

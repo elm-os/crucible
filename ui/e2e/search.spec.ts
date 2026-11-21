@@ -148,4 +148,46 @@ test.describe("search: results", () => {
     await expect(browser).toHaveURL(/range=30d/);
     expect(api.count(SEARCH_PATH)).toBe(2);
   });
+
+  test("filters: the list filter bar narrows the search, lives in the URL, and an empty answer offers to clear it", async ({
+    page: browser,
+    api,
+  }) => {
+    const bodies: { filters?: Record<string, unknown> }[] = [];
+    api.on(SEARCH_PATH, async (route) => {
+      const body = route.request().postDataJSON() as { filters?: { environment?: string[] } };
+      bodies.push(body);
+      const dev = body.filters?.environment?.includes("dev") ?? false;
+      await route.fulfill(
+        json(page(dev ? [] : [hit("a000000000000002", "plan reply", [["refund", true]])])),
+      );
+    });
+    await browser.goto(searchUrl("&q=refund"));
+    await expect(browser.getByRole("link", { name: "plan reply" })).toBeVisible();
+    expect(bodies[0]).not.toHaveProperty("filters");
+
+    const bar = browser.getByRole("form", { name: "Filter results" });
+    await bar.getByRole("combobox", { name: "Filter by" }).click();
+    await browser.getByRole("option", { name: "Environment" }).click();
+    await bar.getByRole("textbox", { name: "Value" }).fill("prod");
+    await bar.getByRole("button", { name: "Add filter" }).click();
+    await expect(
+      browser.getByRole("button", { name: "Remove filter Environment: prod" }),
+    ).toBeVisible();
+    await expect(browser).toHaveURL(/environment=prod/);
+    await expect.poll(() => bodies.at(-1)?.filters).toEqual({ environment: ["prod"] });
+    await expect(browser.getByRole("link", { name: "plan reply" })).toBeVisible();
+    await expectAccessible(browser, "search with filters");
+
+    await browser.goto(searchUrl("&q=refund&environment=dev"));
+    const results = browser.getByRole("region", { name: "Results" });
+    await expect(
+      results.getByText('No spans match "refund" and these filters in the last 24 hours.'),
+    ).toBeVisible();
+    await expectAccessible(browser, "search empty under filters");
+    await results.getByRole("button", { name: "Clear filters" }).click();
+    await expect(browser.getByRole("link", { name: "plan reply" })).toBeVisible();
+    await expect(browser).not.toHaveURL(/environment=/);
+    expect(bodies.at(-1)).not.toHaveProperty("filters");
+  });
 });

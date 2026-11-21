@@ -2,7 +2,7 @@
 //! newest first, each hit with highlighted fragments around its first match.
 
 use crucible_cursor::{CursorError, FilterHash, Position, Route, Sort};
-use crucible_plan::{SearchField, SearchKey, TokenMode};
+use crucible_plan::{Filter, SearchField, SearchKey, TokenMode};
 use crucible_query::{SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchQuery, search_tokens};
 use crucible_records::{TimeWindow, Timestamp};
 use schemars::JsonSchema;
@@ -189,6 +189,7 @@ impl Tool for SearchSpans {
             text: args.query,
             mode,
             fields,
+            filter: Filter::all(),
             limit: Some(limit),
             cursor: None,
         };

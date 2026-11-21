@@ -14,6 +14,8 @@
 //! - **Paging.** Each plan reads one hit more than the page after the cursor. The merge is complete down to the
 //!   newest last hit of a plan that came back full, so the page and its cursor come from the hit stream, never
 //!   from the rows that survive the core lookup or the phrase check: a page whose hits all drop still moves on.
+//! - **Filters.** The list filter's conditions on `user_id`, `session_id` and `metadata` restrict the hits; the
+//!   others test the core rows of the page, so a filter, like a phrase, can leave a page with fewer hits.
 //! - **`meta`.** The recent index holds no payloads, so search reads the store only: an unavailable store fails
 //!   the request, and the answer is `lagging` while the index holds spans of the window that the store may not
 //!   serve yet (contract 8.9).
@@ -22,8 +24,8 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use crucible_plan::{
-    Filter, MAX_SNIPPET_TOKENS, Row, SEARCH_MAX_LIMIT, SEARCH_SNIPPET, SearchField, SearchKey,
-    SearchRequest, TokenMode, search, search_spans,
+    Filter, MAX_SNIPPET_TOKENS, Row, SEARCH_MAX_LIMIT, SEARCH_SNIPPET, SEARCH_SPANS_PER_LOOKUP,
+    SearchField, SearchKey, SearchRequest, TokenMode, search, search_spans,
 };
 use crucible_recent::Consistency;
 use crucible_records::{ProjectId, ProjectScope, TableId, TimeWindow, Timestamp};
@@ -97,6 +99,9 @@ pub struct SearchQuery {
     pub mode: TokenMode,
     /// The fields to search, at least one, each once.
     pub fields: Vec<SearchField>,
+    /// Keeps only the hits whose span matches: conditions on `user_id`, `session_id` and `metadata` restrict the
+    /// hits themselves, the others test the spans' core rows, so a page can hold fewer hits than its size.
+    pub filter: Filter,
     /// The page size; default 50, at most 200.
     pub limit: Option<u32>,
     /// The cursor of the previous page.
@@ -105,7 +110,8 @@ pub struct SearchQuery {
 
 impl SearchQuery {
     /// The canonical form of what selects the hits besides the window, which a cursor's filter hash covers:
-    /// the mode, then per field in a fixed order its name and its tokens.
+    /// the mode, then per field in a fixed order its name and its tokens, then the filter's canonical form
+    /// when it has conditions (so the form of a search without one is what it was before searches took one).
     pub fn canonical(&self) -> Vec<u8> {
         let mut out = vec![match self.mode {
             TokenMode::All => 1,
@@ -126,6 +132,12 @@ impl SearchQuery {
             for token in &tokens {
                 put(&mut out, token);
             }
+        }
+        let filter = self.filter.canonical_bytes();
+        if !filter.is_empty() {
+            put(&mut out, "filter");
+            out.extend_from_slice(&(filter.len() as u64).to_be_bytes());
+            out.extend_from_slice(&filter);
         }
         out
     }
@@ -473,6 +485,8 @@ impl QueryService {
         let metadata = query.fields.contains(&SearchField::Metadata);
         let text_tokens = search_tokens(&query.text, SearchField::Input, query.mode);
         let mut sources = Vec::with_capacity(2);
+        // The filter's conditions that the hits cannot apply, which the core rows of the page then do.
+        let mut rest = Filter::all();
         let groups = [
             (text_fields.clone(), false),
             (
@@ -504,13 +518,17 @@ impl QueryService {
                 tokens,
                 mode,
                 fields: fields.clone(),
-                filter: Filter::all(),
+                filter: query.filter.clone(),
                 limit,
                 cursor: after,
                 as_of,
             };
             let plan = search(scope, query.window, &read.clamp, ctx.caller, &request)?;
-            let rows = read.rows(Ok(plan.map(|plan| plan.hits))).await?;
+            let plan = plan.map(|plan| {
+                rest = plan.rest;
+                plan.hits
+            });
+            let rows = read.rows(Ok(plan)).await?;
             // The text plan's snippet columns follow its fields; metadata has none.
             let snippet_fields: &[SearchField] = if is_metadata { &[] } else { &fields };
             let hits = rows
@@ -524,7 +542,7 @@ impl QueryService {
         }
         let (page, has_more) = merge(sources, limit as usize);
 
-        let spans = read.page_spans(query.window, &page).await?;
+        let spans = read.page_spans(query.window, &page, &rest).await?;
         let data = page
             .iter()
             .filter_map(|hit| {
@@ -563,11 +581,13 @@ impl QueryService {
 }
 
 impl Read<'_> {
-    /// The core rows of a page of hits, by key. Of several rows of one span, the one with the greatest LSN.
+    /// The core rows of a page of hits that match `rest`, by key. Of several rows of one span, the one with the
+    /// greatest LSN.
     async fn page_spans(
         &mut self,
         window: TimeWindow,
         page: &[Hit],
+        rest: &Filter,
     ) -> Result<BTreeMap<SearchKey, TraceSpan>, QueryServiceError> {
         let mut spans: BTreeMap<SearchKey, (u64, TraceSpan)> = BTreeMap::new();
         if page.is_empty() {
@@ -575,7 +595,11 @@ impl Read<'_> {
         }
         let keys: Vec<SearchKey> = page.iter().map(|hit| hit.key).collect();
         let (scope, caller) = (self.ctx.scope, self.ctx.caller);
-        let plan = search_spans(scope, window, &self.clamp, caller, &keys, &Filter::all());
+        // A lookup names a bounded number of spans, so a large page takes several, sent together.
+        let plans = keys
+            .chunks(SEARCH_SPANS_PER_LOOKUP)
+            .map(|chunk| search_spans(scope, window, &self.clamp, caller, chunk, rest))
+            .collect();
         let at = |column: SpanCoreCol| {
             SpanCoreCol::ALL
                 .iter()
@@ -583,7 +607,7 @@ impl Read<'_> {
                 .unwrap_or(usize::MAX)
         };
         let (lsn_at, hash_at) = (at(SpanCoreCol::Lsn), at(SpanCoreCol::TraceHash));
-        for row in self.rows(plan).await? {
+        for row in self.rows_together(plans).await?.into_iter().flatten() {
             let f = Fields(row.values());
             let lsn = f.uint(lsn_at)?;
             // The key as the store holds it, so the join is exact.

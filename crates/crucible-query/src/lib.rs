@@ -47,6 +47,7 @@ mod span_list;
 mod spans;
 mod trace_detail;
 mod trace_list;
+mod turns;
 mod users;
 
 pub use context::{Meta, PartialReason, QueryServiceError, ReadContext};
@@ -97,6 +98,7 @@ pub use span_list::{SpanListPage, SpanListQuery};
 pub use spans::{SpanSource, TraceSpan};
 pub use trace_detail::TraceDetail;
 pub use trace_list::{TraceListPage, TraceListQuery};
+pub use turns::METRICS_QUERIES_PER_PROJECT;
 pub use users::{
     UserDetail, UserListPage, UserListQuery, UserSession, UserSessionsPage, UserSessionsQuery,
     UserSummary,

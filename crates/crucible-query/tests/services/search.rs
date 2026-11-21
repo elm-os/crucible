@@ -2,7 +2,7 @@
 //! recent index and retention (contract 8.7, 8.9 and 12.4).
 
 use crucible_env::QueryError;
-use crucible_plan::{Caller, SearchField, TokenMode};
+use crucible_plan::{Caller, Filter, SearchField, TokenMode};
 use crucible_query::{
     Consistency, QueryServiceError, ReadContext, RetentionSettings, SearchCursor, SearchHit,
     SearchPage, SearchQuery,
@@ -50,6 +50,7 @@ fn query(text: &str, mode: TokenMode, fields: &[SearchField]) -> SearchQuery {
         text: text.to_owned(),
         mode,
         fields: fields.to_vec(),
+        filter: Filter::all(),
         limit: None,
         cursor: None,
     }
@@ -253,4 +254,57 @@ fn expired_payloads_are_not_searched() {
     assert!(expired.data.is_empty());
     let recent = run(world.service.search(&short, request)).unwrap();
     assert_eq!(ids(&recent.data), [span_id(10)]);
+}
+
+/// A page's spans are read from their core rows a few dozen at a time, so the key lists of one lookup leave room,
+/// within the 1,000 values one ClickHouse request holds, for the filter and the pending deletions it carries.
+#[test]
+fn a_large_page_reads_its_spans_in_lookups_of_a_bounded_size() {
+    let inputs: Vec<(&str, &[&str])> = (0..150).map(|_| ("refund", &[][..])).collect();
+    let world = world_with(&inputs);
+    let mut large = query("refund", TokenMode::All, &TEXT);
+    large.limit = Some(150);
+    let page = search(&world, large).unwrap();
+    assert_eq!(page.data.len(), 150);
+    // The hits, then three lookups of at most 64 spans each.
+    assert_eq!(world.store.executed().len(), 4);
+}
+
+/// The filter of a search keeps the hits whose span matches: conditions on the payload restrict the hits, the
+/// others test the core rows, and a cursor's canonical form covers the filter without changing for a search
+/// without one.
+#[test]
+fn a_filter_keeps_the_hits_whose_span_matches_and_binds_the_cursor() {
+    let world = world_with(&[
+        ("refund", &["team=pay"]),
+        ("refund", &["team=ops"]),
+        ("refund", &["team=pay"]),
+    ]);
+    let metadata = Filter::And(vec![Filter::Metadata {
+        key: "team".to_owned(),
+        value: "pay".to_owned(),
+    }]);
+    let named = Filter::And(vec![Filter::Name("SPAN-11".to_owned())]);
+    let mut by_team = query("refund", TokenMode::All, &TEXT);
+    by_team.filter = metadata.clone();
+    assert_eq!(
+        ids(&search(&world, by_team.clone()).unwrap().data),
+        [span_id(10), span_id(12)]
+    );
+    let mut by_name = query("refund", TokenMode::All, &TEXT);
+    by_name.filter = named.clone();
+    assert_eq!(
+        ids(&search(&world, by_name.clone()).unwrap().data),
+        [span_id(11)]
+    );
+
+    let plain = query("refund", TokenMode::All, &TEXT);
+    let empty = SearchQuery {
+        filter: Filter::And(Vec::new()),
+        ..plain.clone()
+    };
+    assert_eq!(plain.canonical(), empty.canonical());
+    assert!(!plain.canonical().windows(6).any(|w| w == b"filter"));
+    assert_ne!(plain.canonical(), by_team.canonical());
+    assert_ne!(by_team.canonical(), by_name.canonical());
 }

@@ -27,6 +27,12 @@ server gives and the fix.
 | `wal backend unavailable: feature_disabled` | This binary has no `uring` backend (the image does not). Use `--wal-backend auto` or `portable` |
 | `warning: the environment variable CRUCIBLE_CLICKHOUSE_URI is not a Crucible setting and is ignored; did you mean CRUCIBLE_CLICKHOUSE_URL?` | Correct the variable's name |
 
+## A listener does not start
+
+| Message | Fix |
+|---|---|
+| `binding the metrics listener on 127.0.0.1:9464: address already in use; set server.metrics_listen (CRUCIBLE_SERVER_METRICS_LISTEN) to another address`, or the same for the `api`, `ingest` or `grpc` listener | Another process holds the address: stop it, or give the listener another address with the setting the message names |
+
 ## The server is not ready
 
 `GET /readyz` answers 503 with `not ready: <reason>` while the server cannot take ingest, and ingest answers 503 for
@@ -85,7 +91,7 @@ use, with the amount to give it. With the defaults, give the container at least 
 | 400 `cursor_invalid` | The cursor expired (after 24 hours) or belongs to another query: start again from the first page |
 | 428 `precondition_required` or 412 `precondition_failed` | Read the resource again and send its `ETag` in `If-Match` |
 | 503 `telemetry_store_unavailable` | ClickHouse is not configured, or not reachable and the recent-span index cannot answer the read. With several Crucible servers, it can also mean that their reads by API keys and the MCP server together reached the 16 statements ClickHouse runs at once for those reads ([rate limits](../api/README.md#rate-limits)): send fewer such reads at once |
-| 504 `query_timeout` | The read hit its time limit. A read made with an API key or through the MCP server runs under a 5-second limit, and first waits, within its deadline, for one of the 16 ClickHouse statements that each Crucible server allows these reads at once ([rate limits](../api/README.md#rate-limits)): narrow the time range, or send fewer reads at once |
+| 504 `query_timeout` | The read hit its time limit. A read made with an API key or through the MCP server runs under a 5-second limit, and first waits, within its deadline, for one of the 16 ClickHouse statements that each Crucible server allows these reads at once ([rate limits](../api/README.md#rate-limits)): narrow the time range, or send fewer reads at once. A metrics query, such as a dashboard widget's, also waits within its deadline for one of its project's `metrics.queries_per_project` turns (4 by default): show fewer widgets at once, or raise the setting ([configuration](configuration.md)) |
 
 ## Channels and alerts
 

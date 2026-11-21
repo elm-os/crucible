@@ -317,4 +317,18 @@ impl MediaRepo for Handle {
             .await?;
         every(&rows, |c| Ok(MediaObjectId::from_uuid(c.uuid()?)))
     }
+
+    async fn delete_project(&self, project_id: ProjectId) -> Result<u64, TxError> {
+        // One statement: `media_refs_media_id_fkey` is checked at its end, when the uses are gone too.
+        let rows = self
+            .query_main(
+                true,
+                "WITH uses AS (DELETE FROM media_refs WHERE project_id = $1), \
+                 gone AS (DELETE FROM media_objects WHERE project_id = $1 RETURNING 1) \
+                 SELECT count(*) FROM gone",
+                &[P::Uuid(project_id.uuid())],
+            )
+            .await?;
+        Ok(first(&rows, |c| c.u64())?.unwrap_or(0))
+    }
 }

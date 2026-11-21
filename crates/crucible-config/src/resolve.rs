@@ -46,6 +46,7 @@ const NUMBERS: &[&str] = &[
     "mcp.calls_per_second",
     "mcp.burst",
     "sql.statements_per_hour",
+    "metrics.queries_per_project",
     "clickhouse.idle_timeout",
     "postgres.pool_size",
     "auth.fail_open_max",
@@ -342,6 +343,16 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         );
     }
     let statements_per_hour = statements_per_hour.filter(|statements| *statements > 0);
+    let queries_per_project =
+        t.parsed::<u32>("metrics.queries_per_project", "a whole number of queries");
+    if queries_per_project == Some(0) {
+        t.errors.push(
+            "`metrics.queries_per_project` must be at least 1; it is how many metrics queries of one project \
+             read at once"
+                .to_owned(),
+        );
+    }
+    let queries_per_project = queries_per_project.filter(|queries| *queries > 0);
     let pool_size = t.parsed::<usize>("postgres.pool_size", "a number of connections");
     if pool_size == Some(0) {
         t.errors
@@ -663,6 +674,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         sql: Sql {
             statements_per_hour: statements_per_hour?,
         },
+        metrics_queries_per_project: queries_per_project?,
         master_key,
         clickhouse,
         postgres: match t.text("postgres.url") {
@@ -1219,7 +1231,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [auth_github], [auth_google], [auth_oidc], [egress], [smtp], [object_store], [media].",
+                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [metrics], [clickhouse], [postgres], [security], [auth], [auth_github], [auth_google], [auth_oidc], [egress], [smtp], [object_store], [media].",
             ]
         );
     }
@@ -1540,6 +1552,9 @@ burst = 200  # default
 [sql]
 statements_per_hour = 1800  # default
 
+[metrics]
+queries_per_project = 4  # default
+
 [clickhouse]
 url = "http://clickhouse:8123"  # env CRUCIBLE_CLICKHOUSE_URL
 user = "crucible_admin"  # default
@@ -1644,6 +1659,23 @@ max_bytes = 67108864  # default
         let errors = load(Some("[sql]\nstatements_per_hour = 0\n"), &[], &[]).unwrap_err();
         assert!(
             errors.0[0].contains("`sql.statements_per_hour` must be at least 1"),
+            "{errors}"
+        );
+    }
+
+    #[test]
+    fn the_metrics_turns_of_a_project_come_from_the_file_or_the_environment_and_are_checked() {
+        let defaults = load(None, &[], &[]).unwrap().config;
+        assert_eq!(defaults.metrics_queries_per_project, 4);
+        let file = "[metrics]\nqueries_per_project = 8\n";
+        let config = load(Some(file), &[], &[]).unwrap().config;
+        assert_eq!(config.metrics_queries_per_project, 8);
+        let lower = env(&[("CRUCIBLE_METRICS_QUERIES_PER_PROJECT", "2")]);
+        let config = load(Some(file), &lower, &[]).unwrap().config;
+        assert_eq!(config.metrics_queries_per_project, 2);
+        let errors = load(Some("[metrics]\nqueries_per_project = 0\n"), &[], &[]).unwrap_err();
+        assert!(
+            errors.0[0].contains("`metrics.queries_per_project` must be at least 1"),
             "{errors}"
         );
     }

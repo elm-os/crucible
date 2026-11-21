@@ -15,17 +15,20 @@ import Link from "next/link";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { searchSpans } from "@/api/client";
 import { asUiError } from "@/api/errors";
+import type { ListFilters } from "@/api/types";
 import type { SearchField } from "@/api/generated/SearchField";
 import type { SearchHit } from "@/api/generated/SearchHit";
 import type { SearchMatch } from "@/api/generated/SearchMatch";
 import type { SearchMode } from "@/api/generated/SearchMode";
 import type { SearchPage } from "@/api/generated/SearchPage";
 import { EmptyState } from "@/components/empty-state";
+import { FilterBar } from "@/components/filter-bar";
 import { TickIcon } from "@/components/icons";
 import { PageHeader } from "@/components/page-header";
 import { ErrorCard, Section, SectionFrame } from "@/components/section";
 import { isWhole, MetaNotice } from "@/components/status";
 import { TYPE_LABEL } from "@/features/trace/span-waterfall";
+import { FILTER_FIELDS, filterKey, hasFilters, useListFilters } from "@/lib/filters";
 import { formatTime } from "@/lib/format";
 import { useProject } from "@/lib/project";
 import { RANGE_PHRASE, type Range, rangeWindow, useTimeRange } from "@/lib/time-range";
@@ -66,6 +69,7 @@ export function SearchView() {
   const [text, setText] = useUrlParam("q");
   const [modeParam, setMode] = useUrlParam("mode");
   const [fieldsParam, setFields] = useUrlParam("fields");
+  const [filters, setFilters] = useListFilters();
   const mode = parseMode(modeParam);
   const fields = parseFields(fieldsParam);
   const [draft, setDraft] = useState(text ?? "");
@@ -145,6 +149,7 @@ export function SearchView() {
           </div>
         </form>
       </search>
+      <FilterBar filters={filters} onChange={setFilters} fields={FILTER_FIELDS} noun="results" />
       {query === "" ? (
         <SectionFrame title="Results">
           <EmptyState kind="filtered" title="Type what to find.">
@@ -154,13 +159,15 @@ export function SearchView() {
         </SectionFrame>
       ) : (
         <SearchResults
-          key={`${project}|${query}|${mode}|${fields.join()}|${range}`}
+          key={`${project}|${query}|${mode}|${fields.join()}|${filterKey(filters)}|${range}`}
           project={project}
           query={query}
           mode={mode}
           fields={fields}
+          filters={filters}
           range={range}
           onWiden={() => setRange("30d")}
+          onClearFilters={() => setFilters({})}
         />
       )}
     </>
@@ -172,24 +179,42 @@ function SearchResults({
   query: text,
   mode,
   fields,
+  filters,
   range,
   onWiden,
+  onClearFilters,
 }: {
   project: string;
   query: string;
   mode: SearchMode;
   fields: SearchField[];
+  filters: ListFilters;
   range: Range;
   onWiden: () => void;
+  onClearFilters: () => void;
 }) {
   // The window is fixed for a search's pages: their cursors are bound to it.
   const [timeWindow] = useState(() => rangeWindow(range, Date.now()));
+  const filtered = hasFilters(filters);
   const query = useInfiniteQuery({
-    queryKey: [project, "search", { text, mode, fields }, timeWindow.from, timeWindow.to],
+    queryKey: [
+      project,
+      "search",
+      { text, mode, fields, filters: filterKey(filters) },
+      timeWindow.from,
+      timeWindow.to,
+    ],
     queryFn: ({ pageParam, signal }) =>
       searchSpans(
         project,
-        { query: text, mode, fields, ...timeWindow, cursor: pageParam ?? undefined },
+        {
+          query: text,
+          mode,
+          fields,
+          filters: filtered ? filters : undefined,
+          ...timeWindow,
+          cursor: pageParam ?? undefined,
+        },
         signal,
       ),
     initialPageParam: null as string | null,
@@ -222,7 +247,15 @@ function SearchResults({
         hits.length === 0 && !query.hasNextPage && last !== undefined && isWhole(last.meta)
       }
       empty={
-        range === "30d" ? (
+        filtered ? (
+          <EmptyState
+            kind="filtered"
+            title={`No spans match "${text}" and these filters in ${RANGE_PHRASE[range]}.`}
+            action={<Button onClick={onClearFilters}>Clear filters</Button>}
+          >
+            Spans that hold the words may not match a filter.
+          </EmptyState>
+        ) : range === "30d" ? (
           <EmptyState kind="filtered" title={`No spans match "${text}".`}>
             Try other words, another match, or more fields.
           </EmptyState>
@@ -252,7 +285,9 @@ function SearchResults({
               title={query.hasNextPage ? "No matches yet." : "No matches to show."}
             >
               {query.hasNextPage
-                ? "Spans that hold every word but not the exact phrase were left out. Older spans may still match."
+                ? filtered
+                  ? "The spans read so far that hold the words don't match the filters. Older spans may still match."
+                  : "Spans that hold every word but not the exact phrase were left out. Older spans may still match."
                 : "Spans may still be arriving, or part of the data couldn't be read."}
             </EmptyState>
           )}

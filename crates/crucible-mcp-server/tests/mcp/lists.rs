@@ -265,7 +265,7 @@ fn list_arguments_are_checked_and_each_refusal_names_what_to_change() {
                     "filter",
                     json!({ "metadata": ["plan=pro"], "observation_type": ["tool"] }),
                 ),
-                vec![("/filter/observation_type", "conflict")],
+                vec![("/filter/metadata", "conflict")],
             ),
             (
                 "list_spans",

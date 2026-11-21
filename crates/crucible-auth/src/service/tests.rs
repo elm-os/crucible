@@ -5,9 +5,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crucible_control::{OrgRole, ProjectRole, ProviderKind, Repos as _};
+use crucible_control::{
+    MediaObject, MediaRef, MediaState, OrgRole, ProjectRole, ProviderKind, Repos as _,
+};
 use crucible_env::Env;
-use crucible_records::ProjectId;
+use crucible_records::{MediaObjectId, ProjectId, Timestamp, TraceId};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 
 use super::*;
@@ -462,6 +464,68 @@ fn the_command_line_finds_projects_and_marks_import_keys() {
             identity.project_by_reference("agents").await.unwrap_err(),
             AuthError::NotFound
         );
+    });
+}
+
+/// Contract 13.4: a media use recorded while its project is deleted, after the deletion's snapshot, keeps its
+/// object row, which the deletion cannot then delete. Nothing is applied and the deletion answers as a lost race,
+/// which the caller retries; deleting again removes the use with the rest.
+#[test]
+fn a_media_use_that_races_the_deletion_of_its_project_makes_the_caller_retry() {
+    sim(13, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        owner(&identity).await;
+        let project = identity.create_project("Agents", "agents").await.unwrap();
+        let at = Timestamp::from_micros(1_800_000_000_000_000);
+        let object = MediaObject {
+            id: MediaObjectId::from_bytes([7; 16]),
+            project_id: project.id,
+            sha256: [7; 32],
+            content_type: "image/png".to_owned(),
+            len: 4,
+            state: MediaState::Uploaded,
+            created_at: at,
+            uploaded_at: Some(at),
+        };
+        model.media().insert_object(&object).await.unwrap();
+        let trace = TraceId::from_bytes([9; 16]);
+        let reference = MediaRef {
+            project_id: project.id,
+            media_id: object.id,
+            trace_id: trace,
+            span_id: None,
+            field: "input".to_owned(),
+            target_time: at,
+        };
+        // Every statement answers after 10 ms. The deletion reads the project (10 ms) and its keys (20 ms), begins
+        // (30 ms) and takes its snapshot with its first write (40 ms); it deletes the media rows at 60 ms at the
+        // earliest. The use lands between, at 55 ms.
+        model.set_faults(PgFaults {
+            latency_micros: (10_000, 10_000),
+            ..PgFaults::default()
+        });
+        let late_use = async {
+            env.clock.sleep(Duration::from_millis(45)).await;
+            model.media().add_ref(&reference).await
+        };
+        let (deleted, used) = futures::join!(
+            identity.delete_project(project.id, project.version),
+            late_use
+        );
+        assert_eq!(used, Ok(true));
+        assert_eq!(deleted.unwrap_err(), AuthError::Unavailable);
+
+        let uses = model.media().uses(project.id, trace, None).await.unwrap();
+        assert_eq!(uses.len(), 1);
+        assert!(identity.project_by_reference("agents").await.is_ok());
+        identity
+            .delete_project(project.id, project.version)
+            .await
+            .unwrap();
+        let uses = model.media().uses(project.id, trace, None).await.unwrap();
+        assert!(uses.is_empty());
+        let row = model.media().object(project.id, object.id).await.unwrap();
+        assert!(row.is_none());
     });
 }
 

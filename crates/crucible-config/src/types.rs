@@ -283,6 +283,9 @@ pub struct Config {
     pub mcp: Mcp,
     /// The SQL workspace.
     pub sql: Sql,
+    /// `metrics.queries_per_project`: the metrics queries one project runs at once on this server, at least 1;
+    /// the others wait their turn within their deadline.
+    pub metrics_queries_per_project: u32,
     /// The master key, 64 hexadecimal characters.
     pub master_key: Option<Secret>,
     /// The telemetry store; `None` for the ingest-only mode.

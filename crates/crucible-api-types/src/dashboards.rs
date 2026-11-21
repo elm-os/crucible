@@ -34,6 +34,8 @@ pub enum ChartForm {
     Line,
     /// Bars per bucket.
     Bar,
+    /// Lines with the area under each filled, the series laid over one another, not stacked.
+    Area,
 }
 
 /// A widget's metrics query: `MetricsQuery` v1 without its window, which the dashboard's time range supplies. Its
@@ -125,7 +127,7 @@ pub struct WidgetDisplay {
     pub kind: WidgetKind,
     /// The title, 1 to 120 characters.
     pub title: String,
-    /// `timeseries` only: lines (the default) or bars per bucket.
+    /// `timeseries` only: lines (the default), bars per bucket, or areas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub chart: Option<ChartForm>,

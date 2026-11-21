@@ -383,6 +383,132 @@ describe("an MCP widget in the editor", () => {
   });
 });
 
+describe("a widget's filters and chart form in the editor", () => {
+  test("an agent filters the widget's data and draws it as areas", async () => {
+    navigation.search = `project=${PROJECT_A}&id=${ID}`;
+    const spans = SCHEMA.sources[0] as MetricsSchema["sources"][number];
+    const filtered: MetricsSchema = {
+      sources: [
+        {
+          ...spans,
+          filter_fields: [
+            { field: "environment", operator: "in" },
+            { field: "level", operator: "in" },
+          ],
+        },
+      ],
+    };
+    serve({
+      [`GET ${BASE}/dashboards/${ID}`]: json(DASHBOARD),
+      [`GET ${BASE}/metrics/schema`]: json(filtered),
+      [`POST ${BASE}/metrics/query`]: json(EMPTY_METRICS),
+      [`PATCH ${BASE}/dashboards/${ID}`]: json({ ...DASHBOARD, version: 2 }),
+    });
+    renderPage(<DashboardEditor />);
+    expect(await screen.findByText("Stat of Spans")).toBeTruthy();
+    const opened = await agent.act({ steps: [{ ref: "Add widget", action: "press" }] });
+    expect(opened.ok, opened.error?.message).toBe(true);
+    await screen.findByRole("dialog", { name: "Add a widget" });
+    await screen.findByText("Filter by");
+    expect(labels()).toEqual(expect.arrayContaining(["Filter by", "Match", "Add filter"]));
+
+    const built = await agent.act({
+      steps: [
+        { ref: "Title", action: "setValue", args: ["Errors outside staging"] },
+        { ref: "Filter by", action: "setValue", args: ["Level"] },
+        { ref: "Value", action: "setValue", args: ["error"] },
+        { ref: "Add filter", action: "press" },
+        { ref: "Draw as", action: "setValue", args: ["Areas"] },
+      ],
+    });
+    expect(built.ok, built.error?.message).toBe(true);
+    await screen.findByRole("button", { name: "Remove filter Level is error" });
+    await waitFor(() =>
+      expect(lastQuery()).toMatchObject({ filter: { in: { field: "level", values: ["error"] } } }),
+    );
+
+    // A second condition joins the first under `and`, and removing a chip drops its condition.
+    const more = await agent.act({
+      steps: [
+        { ref: "Filter by", action: "setValue", args: ["Level"] },
+        { ref: "Match", action: "setValue", args: ["is not"] },
+        { ref: "Value", action: "setValue", args: ["debug"] },
+        { ref: "Add filter", action: "press" },
+      ],
+    });
+    expect(more.ok, more.error?.message).toBe(true);
+    await waitFor(() =>
+      expect(lastQuery()).toMatchObject({
+        filter: {
+          and: [
+            { in: { field: "level", values: ["error"] } },
+            { not: { in: { field: "level", values: ["debug"] } } },
+          ],
+        },
+      }),
+    );
+
+    const saved = await agent.act({
+      steps: [
+        { ref: "Apply", action: "press" },
+        { ref: "Save", action: "press" },
+      ],
+    });
+    expect(saved.ok, saved.error?.message).toBe(true);
+    await waitFor(() => expect(requests(`PATCH ${BASE}/dashboards/${ID}`)).toHaveLength(1));
+    const [patch] = requests(`PATCH ${BASE}/dashboards/${ID}`);
+    const body = bodyOf(patch) as {
+      widgets: { id?: string; query?: { filter?: unknown }; display: { chart?: string } }[];
+    };
+    const added = body.widgets.find((w) => w.id === undefined);
+    expect(added?.display.chart).toBe("area");
+    expect(added?.query?.filter).toEqual({
+      and: [
+        { in: { field: "level", values: ["error"] } },
+        { not: { in: { field: "level", values: ["debug"] } } },
+      ],
+    });
+  });
+
+  test("a filter the sheet can't show is kept as it is, and can be removed", async () => {
+    navigation.search = `project=${PROJECT_A}&id=${ID}`;
+    const spans = SCHEMA.sources[0] as MetricsSchema["sources"][number];
+    const either = {
+      or: [
+        { in: { field: "level", values: ["error"] } },
+        { in: { field: "environment", values: ["prod"] } },
+      ],
+    };
+    const widget = {
+      ...(DASHBOARD.widgets[0] as Dashboard["widgets"][number]),
+      query: {
+        source: "spans",
+        measures: [{ measure: "count", aggregation: "sum" }],
+        filter: either,
+      },
+    };
+    serve({
+      [`GET ${BASE}/dashboards/${ID}`]: json({ ...DASHBOARD, widgets: [widget] }),
+      [`GET ${BASE}/metrics/schema`]: json({
+        sources: [{ ...spans, filter_fields: [{ field: "level", operator: "in" }] }],
+      }),
+      [`POST ${BASE}/metrics/query`]: json(EMPTY_METRICS),
+    });
+    renderPage(<DashboardEditor />);
+    expect(await screen.findByText("Stat of Spans")).toBeTruthy();
+    const opened = await agent.act({ steps: [{ ref: "Configure Spans", action: "press" }] });
+    expect(opened.ok, opened.error?.message).toBe(true);
+    expect(
+      await screen.findByText(/combines conditions in a way the sheet can't show/),
+    ).toBeTruthy();
+    await waitFor(() => expect(lastQuery()).toMatchObject({ filter: either }));
+    const removed = await agent.act({ steps: [{ ref: "Remove the filter", action: "press" }] });
+    expect(removed.ok, removed.error?.message).toBe(true);
+    await waitFor(() => expect(lastQuery()).not.toHaveProperty("filter"));
+    expect(screen.getByText("Filter by")).toBeTruthy();
+  });
+});
+
 describe("the MCP starter", () => {
   test("reads the server side, and its error rate reads as a percentage", async () => {
     const mcpSchema: MetricsSchema = {
