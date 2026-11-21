@@ -33,7 +33,7 @@ test("an agent finds every shell control by name and can change the time range",
     expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
   }
   const labels = components.map((entry) => entry.label);
-  for (const label of ["Pages", "Project", "Connect", "Time range"]) {
+  for (const label of ["Pages", "Project", "Connect", "Time range", "Feedback"]) {
     expect(labels, `${label} is missing from the snapshot`).toContain(label);
   }
 
