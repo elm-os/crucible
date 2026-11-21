@@ -1037,6 +1037,14 @@ fn sum<'a>(budgets: impl IntoIterator<Item = &'a Budget>) -> u64 {
         .fold(0u64, |total, budget| total.saturating_add(budget.bytes))
 }
 
+/// `a`, `a and b`, `a, b and c`.
+fn listed(items: &[String]) -> String {
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.join(""),
+    }
+}
+
 /// The warning for budgets that add up to more than [`BUDGET_SHARE_PERCENT`] of `memory`, naming each budget and
 /// what changes it (contract 1.7); `None` when they fit.
 fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
@@ -1071,18 +1079,21 @@ fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
         let together = if settable.len() > 1 { " together" } else { "" };
         advice.push_str(&format!(
             ", or lower {} to at most {} MiB{together}",
-            settable.join(" and "),
+            listed(&settable),
             room >> 20
         ));
     }
     if !fixed.is_empty() {
-        let names: Vec<&str> = fixed.iter().map(|budget| budget.setting).collect();
+        let names: Vec<String> = fixed
+            .iter()
+            .map(|budget| budget.setting.to_owned())
+            .collect();
         let sizes: Vec<String> = fixed.iter().map(|budget| mib(budget.bytes)).collect();
         let verb = if fixed.len() > 1 { "are" } else { "is" };
         advice.push_str(&format!(
             "; {} {verb} fixed at {} in this build",
-            names.join(" and "),
-            sizes.join(" and "),
+            listed(&names),
+            listed(&sizes),
         ));
     }
     Some(format!(
@@ -1864,6 +1875,17 @@ mod tests {
                      this build"
                 )
         );
+        // Three fixed budgets are listed with commas.
+        let mut three = budgets(0).to_vec();
+        three.push(Budget {
+            setting: "normalize.cache_bytes",
+            bytes: 64 << 20,
+            changed_by: None,
+        });
+        assert!(budget_warning(limited, &three).unwrap().ends_with(
+            "ingest.inflight_bytes, shipper.encoded_bytes and normalize.cache_bytes are fixed at 512 MiB, 1024 MiB \
+             and 64 MiB in this build"
+        ));
     }
 
     #[test]
