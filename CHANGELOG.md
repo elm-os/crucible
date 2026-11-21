@@ -4,6 +4,13 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-21
+
+Trace reads stay fast while data is arriving, the MCP server lists spans, sessions and users, the Go SDK scrubs
+captured content off the request path, and the web UI, compatible SDKs and deletion get fixes.
+
+### Performance
+
 - Telemetry reads leave ClickHouse's column statistics out of their planning (`use_statistics = 0`). On ClickHouse
   26.8, the version the Compose file ships, every insert or merge made reads that plan with statistics, such as
   trace by id's, load the statistics of every part of the table until the next refresh, five minutes later, so
@@ -13,6 +20,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   so each waits for fewer ClickHouse round trips.
 - Reads by API keys and the MCP server wait for one of the 16 ClickHouse statements their identity may run at once,
   instead of answering 503 `telemetry_store_unavailable` when more are asked for at the same time.
+
+### Web UI
+
 - The dashboard editor sets the side, the capture source and whether caller faults count for a widget over MCP
   operations. The sheet's field for what a widget reads is called Data.
 - The retention page keeps saying that the settings changed since the page loaded after it reloads the stored values,
@@ -20,15 +30,24 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The project menu shows a name changed in another session as soon as the project settings page reads the project
   list.
 - The SQL page sends you to sign in when your session ends, and back to the page afterwards, as every other page does.
+
+### Ingest and compatibility
+
 - Without object storage, the media endpoint of compatible SDKs answers with both ways to keep their media, the SDK
   setting that keeps media inline or the server's object storage settings; the server names the SDK setting at
   startup and logs the warning at the first refusal.
 - Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
   scope name, and are mapped as that product's traffic.
+
+### Retention and deletion
+
 - A server that starts reads from Postgres only the deletion requests made after the oldest data in its write-ahead
   log arrived, not every request ever made, before it sends that data to ClickHouse.
 - The metric `crucible_shipper_deletion_drops_total{kind}` counts the spans, MCP operations and facts that the
   shipper dropped before ClickHouse because a deletion request selects them.
+
+### MCP and SDKs
+
 - The MCP server's `list_spans`, `list_sessions`, `list_users` and `list_user_sessions` tools list a window's
   spans, sessions and users, and `list_traces` and `list_spans` take the filters of the REST trace and span lists.
 - `crucible proxy` records the error message of a failed operation, scrubbed with the shared rules and cut at 2 KiB,
