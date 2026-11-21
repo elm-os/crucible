@@ -356,6 +356,30 @@ describe("deletion requests", () => {
     expect(screen.queryByText(/raw text/)).toBeNull();
   });
 
+  test("a project deletion is listed as the whole project, not as traces", async () => {
+    signIn();
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({
+        data: [
+          request({
+            id: "d-4",
+            kind: "project",
+            trace_count: undefined,
+            trace_ids: undefined,
+            state: "logged",
+            verified: false,
+            traces_resolved: 0,
+          }),
+        ],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByText("The whole project");
+    expect(screen.queryByText(/traces?$/)).toBeNull();
+  });
+
   test("empty: says what Delete data is for", async () => {
     signIn();
     serve({

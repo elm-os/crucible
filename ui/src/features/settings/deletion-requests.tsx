@@ -71,6 +71,7 @@ export function DeletionRequests({ project }: { project: SessionProject }) {
 }
 
 function what(request: DeletionRequest): string {
+  if (request.kind === "project") return "The whole project";
   if (request.kind === "user") return `User ${request.user_id ?? ""}`;
   if (request.kind === "session") return `Session ${request.session_id ?? ""}`;
   const count = request.trace_count ?? 0;
