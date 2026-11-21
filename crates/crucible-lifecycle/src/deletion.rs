@@ -576,26 +576,35 @@ impl Executor<'_> {
 
     /// Expires the exports of the project that were created before the request and removes their files from
     /// this node (contract 13.4). The expiry is a fenced write; a file on another node goes at that node's
-    /// next sweep.
+    /// next sweep. Files on the object store go once the expiry has committed, because the transaction must not
+    /// wait on the store; what that misses, the sweep removes.
     async fn purge_exports(&self, request: &DeletionRequest) -> JobResult {
         let disk = Arc::clone(&self.ctx.env.disk);
         let now = self.ctx.env.clock.wall_now();
         let (project_id, requested_at) = (request.project_id, request.requested_at);
-        self.ctx
+        let purged = self
+            .ctx
             .fenced(move |tx| {
                 Box::pin(async move {
                     crucible_export::purge(tx, disk.as_ref(), project_id, requested_at, now)
                         .await
-                        .map(|_| ())
                         .map_err(|error| match error {
                             FilesError::Store(error) => error,
-                            FilesError::Disk(error) => TxError::Unavailable(format!(
-                                "the exports directory failed: {error}"
-                            )),
+                            other => TxError::Unavailable(other.to_string()),
                         })
                 })
             })
-            .await
+            .await?;
+        if let Some(objects) = &self.shared.exports
+            && let Err(error) = objects.remove(&purged.expired).await
+        {
+            tracing::warn!(
+                %error,
+                request = %request.id,
+                "removing the export files of a deletion from the object store failed; the exports sweep removes them"
+            );
+        }
+        Ok(())
     }
 
     async fn step(&self, mut request: DeletionRequest) -> JobResult {

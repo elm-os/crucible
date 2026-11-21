@@ -841,7 +841,8 @@ pub struct ExportJob {
     pub bytes: u64,
     /// Spans the format could not hold and left out (an `otlp-json` export skips truncated spans).
     pub skipped: u64,
-    /// The committed file, relative to the exports root; `None` until the export is committed.
+    /// The committed file, relative to the exports root, or `object:` and its key on the object store; `None`
+    /// until the export is committed.
     pub file: Option<String>,
     /// SHA-256 of the committed file, lowercase hex.
     pub checksum: Option<String>,
@@ -855,7 +856,7 @@ pub struct ExportJob {
 /// What a committed export holds (contract 12.8).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ExportCommit {
-    /// The file, relative to the exports root.
+    /// The file, relative to the exports root, or `object:` and its key on the object store.
     pub file: String,
     /// SHA-256 of the file, lowercase hex.
     pub checksum: String,

@@ -82,7 +82,26 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
-/// The egress policy of the configuration. Strict mode also refuses the deployment's own databases.
+/// The hosts of the object store that Crucible itself reaches: each endpoint's host, and with virtual-host URLs
+/// the bucket's host under it, which is where those requests go.
+fn object_store_hosts(config: &Config) -> Vec<String> {
+    let Some(store) = &config.object_store else {
+        return Vec::new();
+    };
+    let mut hosts = Vec::new();
+    for endpoint in std::iter::once(&store.endpoint).chain(&store.public_endpoint) {
+        if let Some(host) = host_of(endpoint) {
+            if store.virtual_host {
+                hosts.push(format!("{}.{host}", store.bucket.to_ascii_lowercase()));
+            }
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+/// The egress policy of the configuration. Strict mode also refuses the deployment's own databases and object
+/// store.
 fn policy(config: &Config) -> anyhow::Result<EgressPolicy> {
     let allow_cidrs = config
         .egress
@@ -100,6 +119,7 @@ fn policy(config: &Config) -> anyhow::Result<EgressPolicy> {
     .into_iter()
     .flatten()
     .filter_map(host_of)
+    .chain(object_store_hosts(config))
     .collect();
     Ok(EgressPolicy {
         mode: if config.egress.strict {
@@ -203,5 +223,64 @@ mod tests {
         );
         assert_eq!(host_of("http://10.0.0.4").as_deref(), Some("10.0.0.4"));
         assert_eq!(host_of("http://"), None);
+    }
+
+    /// The configuration of a deployment with Postgres and an object store, in egress `mode` and URL `style`.
+    fn with_object_store(mode: &str, style: &str) -> Config {
+        let text = format!(
+            "[egress]\nmode = \"{mode}\"\n\n[postgres]\nurl = \"postgres://crucible@db.internal:5432/crucible\"\n\n\
+             [object_store]\nendpoint = \"http://versitygw:7070\"\npublic_endpoint = \"https://Media.example.com:7443\"\n\
+             bucket = \"crucible-media\"\naccess_key = \"key\"\nsecret_key = \"secret\"\nurl_style = \"{style}\"\n"
+        );
+        let env = [("CRUCIBLE_MASTER_KEY".to_owned(), "7f".repeat(32))];
+        let layers = crucible_config::Layers {
+            file: Some(("crucible.toml", &text)),
+            env: &env,
+            flags: &[],
+        };
+        let no_files = |_: &std::path::Path| Err(std::io::Error::other("no files"));
+        crucible_config::resolve(&layers, &no_files).unwrap().config
+    }
+
+    /// Strict egress refuses the object store's endpoints, internal and public, as it refuses the databases, so a
+    /// channel cannot target them; with virtual-host URLs the bucket's own host is refused too. The default mode
+    /// is unchanged and lets a channel reach the same hosts.
+    #[test]
+    fn strict_egress_refuses_the_object_store() {
+        let strict = policy(&with_object_store("strict", "path")).unwrap();
+        for host in ["db.internal", "versitygw", "media.example.com"] {
+            assert!(
+                strict.infrastructure.iter().any(|own| own == host),
+                "{host}: {:?}",
+                strict.infrastructure
+            );
+        }
+        for url in [
+            "https://versitygw:7070/hook",
+            "https://media.example.com:7443/hook",
+            "https://MEDIA.example.com/other",
+        ] {
+            let refusal = strict.check_url(url).unwrap_err();
+            assert_eq!(refusal.reason(), "own_infrastructure", "{url}");
+            assert!(refusal.message().contains("egress.mode = open"), "{url}");
+            assert!(refusal.message().contains("object store"), "{url}");
+        }
+        let hosted = policy(&with_object_store("strict", "virtual_host")).unwrap();
+        for host in [
+            "crucible-media.versitygw",
+            "crucible-media.media.example.com",
+        ] {
+            assert!(
+                hosted.infrastructure.iter().any(|own| own == host),
+                "{host}: {:?}",
+                hosted.infrastructure
+            );
+        }
+        let open = policy(&with_object_store("open", "path")).unwrap();
+        assert!(
+            open.check_url("https://media.example.com:7443/hook")
+                .is_ok()
+        );
+        assert!(open.check_url("http://versitygw:7070/hook").is_ok());
     }
 }
