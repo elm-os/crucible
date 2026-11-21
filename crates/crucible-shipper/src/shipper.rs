@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crucible_admission::PermitPool;
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Gauge, Instant, JoinHandle, Metrics, Rng, Stores};
 use crucible_normalize::{
@@ -57,6 +58,10 @@ pub struct Hooks {
     pub salts: Arc<dyn ProjectSalts>,
     /// The deletion requests, which stage B applies; [`NoDeletions`] without a control store.
     pub deletions: Arc<dyn DeletionRequests>,
+    /// Ingest's share of the CPU budget, whose requests wait for the CPUs while every permit of it is taken. Then
+    /// the shipper runs its stage A and encoding on its own task, as it would without the jobs, so that a burst of
+    /// ingest keeps the CPUs it had. `None` runs them as jobs always.
+    pub ingest: Option<Arc<PermitPool>>,
 }
 
 impl Default for Hooks {
@@ -66,6 +71,7 @@ impl Default for Hooks {
             recent: Arc::new(NoRecent),
             salts: Arc::new(NoSalts),
             deletions: Arc::new(NoDeletions),
+            ingest: None,
         }
     }
 }
@@ -605,8 +611,20 @@ impl Shipper {
             recent: hooks.recent,
             salts: hooks.salts,
             deletions: hooks.deletions,
-            stage_a: CpuStage::new(metrics, STAGE_A, "shipper-stage-a", config.stage_a_permits),
-            encode: CpuStage::new(metrics, ENCODE, "shipper-encode", config.encode_permits),
+            stage_a: CpuStage::new(
+                metrics,
+                STAGE_A,
+                "shipper-stage-a",
+                config.stage_a_permits,
+                hooks.ingest.clone(),
+            ),
+            encode: CpuStage::new(
+                metrics,
+                ENCODE,
+                "shipper-encode",
+                config.encode_permits,
+                hooks.ingest,
+            ),
             wal,
             config,
         });

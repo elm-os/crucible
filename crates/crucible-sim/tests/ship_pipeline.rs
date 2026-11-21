@@ -14,6 +14,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crucible_admission::{Offer, PermitPool};
 use crucible_env::metrics::registry;
 use crucible_env::{
     Clock, InsertError, Instant, RetryReason, Rng, ShutdownSignal, Spawner, StoreFlavour, Stores,
@@ -321,6 +322,8 @@ struct Setup {
     cache_bytes: u64,
     /// The store refuses the first attempt of every pair with a retry, so every pair is sent twice.
     retry_first: bool,
+    /// Ingest's share of the CPU budget has every permit taken for the whole run.
+    ingest_busy: bool,
 }
 
 impl Setup {
@@ -330,6 +333,7 @@ impl Setup {
             seal_rows,
             cache_bytes: crucible_shipper::DEFAULT_CACHE_BYTES,
             retry_first: false,
+            ingest_busy: false,
         }
     }
 
@@ -444,15 +448,20 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
             ..ShipperConfig::default()
         };
         let stores = Stores::new(Arc::new(model.clone()));
-        let shipper = Shipper::new(
-            &env,
-            &stores,
-            wal.clone(),
-            &report,
-            config,
-            Hooks::default(),
-        )
-        .unwrap();
+        // Ingest's share, its one permit held by a job that never runs while `ingest_busy`.
+        let ingest = Arc::new(PermitPool::new(1));
+        let _taken = setup
+            .ingest_busy
+            .then(|| ingest.offer(Box::new(|| ())))
+            .map(|offer| match offer {
+                Offer::Run(permit) => permit,
+                Offer::Queued(_) => panic!("the permit is free"),
+            });
+        let hooks = Hooks {
+            ingest: Some(ingest),
+            ..Hooks::default()
+        };
+        let shipper = Shipper::new(&env, &stores, wal.clone(), &report, config, hooks).unwrap();
         let stats = shipper.stats();
         let ended: Ended = Arc::default();
         let (slot, clock) = (Arc::clone(&ended), Arc::clone(&env.clock));
@@ -599,4 +608,24 @@ fn a_cache_budget_too_small_for_one_frame_reads_one_at_a_time() {
     );
     assert_eq!(in_place.within_log(), deferred.within_log());
     assert_eq!(deferred.stats.frames_ahead_peak, 1);
+}
+
+/// While ingest takes every permit of its share, its requests wait for the CPUs: the shipper normalizes and encodes
+/// on its own task, reading one frame at a time, and inserts what it inserts otherwise.
+#[test]
+fn while_ingest_takes_every_permit_the_shipper_works_on_its_task() {
+    let log = large_requests(12);
+    let in_place = ship(7, &log, Setup::in_place(40));
+    let busy = ship(
+        7,
+        &log,
+        Setup {
+            ingest_busy: true,
+            ..Setup::deferred(40, 2_000)
+        },
+    );
+    assert_eq!(in_place.within_log(), busy.within_log());
+    assert_eq!(busy.stats.frames_ahead_peak, 1);
+    assert_eq!(busy.jobs, (0, 0));
+    assert_eq!(busy.phase("wait_stage_a"), 0, "{:?}", busy.phases);
 }

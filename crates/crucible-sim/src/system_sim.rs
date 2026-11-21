@@ -4340,6 +4340,9 @@ impl Run<'_> {
             }),
             salts,
             deletions,
+            // Ingest's preparations run in place here, so its share always has a free permit when the shipper
+            // looks: the shipper's jobs never fall back to its task.
+            ingest: None,
         };
         let stores = Stores::new(Arc::new(self.model.clone()));
         let shipper = match Shipper::new(
