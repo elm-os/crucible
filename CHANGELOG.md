@@ -65,7 +65,7 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   idle.
 - The shipper finds the first span of each new trace in one pass over a request. A request of 50,000 traces whose
   spans all name parents it does not carry, as a service that exports only child spans sends, took 3.1 times as long
-  to turn into rows as a request of one such trace, and takes 1.15 times as long, measured on a laptop.
+  to turn into rows as a request of one such trace, and takes about 1.2 times as long, measured on a laptop.
 - The shipper reads a request as soon as it is durable instead of looking for new requests every 5 ms, so at low load
   trace reads see a span up to 5 ms sooner after its acknowledgement.
 

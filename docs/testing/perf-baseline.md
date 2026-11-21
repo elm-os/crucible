@@ -387,8 +387,9 @@ measurements, each at a low rate, of the base and the candidate:
 
 `cargo test --release -p crucible-shipper --bench heads -- --ignored --nocapture` derives the rows of a frame of
 50,000 rootless traces of one span and of a frame of one rootless trace of 50,000 spans, medians of 7 alternating
-rounds: 281.0 ms against 91.1 ms (3.09 times) before, 101.2 ms against 87.7 ms (1.15 times) after. The request shape
-of the gate's lanes, one trace per request, never exercised it.
+rounds: 281.0 ms against 91.1 ms (3.09 times) before, 101.2 ms against 87.7 ms (1.15 times) after, and 96.1 ms
+against 75.1 ms (1.28 times) in a second run after, on the branch merged with `main` at `2a48f47`. The request
+shape of the gate's lanes, one trace per request, never exercised it.
 
 ## Incomplete: remaining runs
 
