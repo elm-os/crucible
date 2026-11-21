@@ -94,6 +94,15 @@ const RECENT_FALLBACK_BYTES: u64 = 256 << 20;
 /// percent (default; revisit). The rest is for the memory no budget tracks.
 const BUDGET_SHARE_PERCENT: u64 = 90;
 
+/// The setting that moves each listener to another address, by the listener's name (contract 1.7: a refusal
+/// says which setting changes it).
+const LISTEN_SETTINGS: [(&str, &str); 4] = [
+    ("api", "server.listen"),
+    ("ingest", "server.ingest_listen"),
+    ("grpc", "server.grpc_listen"),
+    ("metrics", "server.metrics_listen"),
+];
+
 /// A `Net` listener as an axum listener.
 struct EnvListener {
     inner: Box<dyn Listener>,
@@ -102,13 +111,36 @@ struct EnvListener {
     errors: Counter,
 }
 
+/// Why a listener could not bind, with the setting that moves it: one line, as `main` prints the outermost
+/// message of an error and keeps its causes for the lines below.
+fn bind_error(name: &str, addr: SocketAddr, error: &NetError) -> anyhow::Error {
+    let reason = match error {
+        NetError::Io(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            "address already in use".to_owned()
+        }
+        other => other.to_string(),
+    };
+    let setting = LISTEN_SETTINGS
+        .iter()
+        .find(|(listener, _)| *listener == name)
+        .and_then(|(_, key)| crucible_config::SETTINGS.iter().find(|s| s.key == *key));
+    match setting {
+        Some(setting) => anyhow::anyhow!(
+            "binding the {name} listener on {addr}: {reason}; set {} ({}) to another address",
+            setting.key,
+            setting.variable()
+        ),
+        None => anyhow::anyhow!("binding the {name} listener on {addr}: {reason}"),
+    }
+}
+
 impl EnvListener {
     async fn bind(env: &Env, name: &'static str, addr: SocketAddr) -> anyhow::Result<Self> {
         let inner = env
             .net
             .listen(addr)
             .await
-            .with_context(|| format!("binding the {name} listener on {addr}"))?;
+            .map_err(|error| bind_error(name, addr, &error))?;
         let errors = env.metrics.counter(&registry::NET_ACCEPT_ERRORS, &[name]);
         Ok(Self {
             inner,
@@ -1571,6 +1603,40 @@ mod tests {
         assert!(matches!(servers.ingest.join().await, Ok(Ok(()))));
         assert!(matches!(servers.grpc.join().await, Ok(Ok(()))));
         assert!(matches!(servers.metrics.join().await, Ok(Ok(()))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_taken_address_names_the_setting_that_moves_the_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let taken = EnvListener::bind(env, "metrics", LOOPBACK).await.unwrap();
+        let addr = taken.inner.local_addr().unwrap();
+        let error = EnvListener::bind(env, "metrics", addr).await.err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "binding the metrics listener on {addr}: address already in use; set server.metrics_listen \
+                 (CRUCIBLE_SERVER_METRICS_LISTEN) to another address"
+            )
+        );
+        let error = EnvListener::bind(env, "api", addr).await.err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .ends_with("; set server.listen (CRUCIBLE_SERVER_LISTEN) to another address"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn every_listener_names_a_setting_of_the_configuration() {
+        for (listener, key) in LISTEN_SETTINGS {
+            let setting = crucible_config::SETTINGS.iter().find(|s| s.key == key);
+            assert!(setting.is_some(), "{listener}: {key}");
+        }
+        let names: Vec<&str> = LISTEN_SETTINGS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["api", "ingest", "grpc", "metrics"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

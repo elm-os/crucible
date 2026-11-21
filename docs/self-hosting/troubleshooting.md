@@ -27,6 +27,12 @@ server gives and the fix.
 | `wal backend unavailable: feature_disabled` | This binary has no `uring` backend (the image does not). Use `--wal-backend auto` or `portable` |
 | `warning: the environment variable CRUCIBLE_CLICKHOUSE_URI is not a Crucible setting and is ignored; did you mean CRUCIBLE_CLICKHOUSE_URL?` | Correct the variable's name |
 
+## A listener does not start
+
+| Message | Fix |
+|---|---|
+| `binding the metrics listener on 127.0.0.1:9464: address already in use; set server.metrics_listen (CRUCIBLE_SERVER_METRICS_LISTEN) to another address`, or the same for the `api`, `ingest` or `grpc` listener | Another process holds the address: stop it, or give the listener another address with the setting the message names |
+
 ## The server is not ready
 
 `GET /readyz` answers 503 with `not ready: <reason>` while the server cannot take ingest, and ingest answers 503 for
