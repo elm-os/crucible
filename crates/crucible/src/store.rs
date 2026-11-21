@@ -32,7 +32,7 @@ use crucible_schema::{
     schema_span_usage_aggregate, workspace_user,
 };
 
-use crate::control::{ApplyStep, Applying, Control, Refusal};
+use crate::control::{ApplyStep, Applying, Control, Deferred, Refusal};
 use crucible_store_clickhouse::{
     ClickHouseSqlStore, ClickHouseStore, Credentials, SqlPasswords, SqlStoreConfig, StoreConfig,
 };
@@ -280,13 +280,13 @@ impl ApplyStep for ClickHouseStore {
 /// Applies the ClickHouse schema and access steps. With a control plane, the Postgres migrations run first and
 /// the ledger of contract 6.6 (`schema_migrations`) decides which steps are still to apply, and then the probe
 /// identities are provisioned again ([`provision_probes`]). Without one there is no ledger: every step is applied
-/// each time, which their idempotence allows.
+/// each time, which their idempotence allows. Answers the changed steps that wait for another master key.
 pub(crate) async fn apply_migrations(
     env: &Env,
     config: &ClickHouse,
     store: &ClickHouseStore,
     control: Option<&Control>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Deferred>> {
     let sql = config.sql_store(store)?;
     let profile = sql
         .server_profile(SqlProfile::default())
@@ -295,15 +295,16 @@ pub(crate) async fn apply_migrations(
     let steps = config.steps(profile)?;
     match control {
         Some(control) => {
-            control.migrate(env, &steps, store).await?;
-            provision_probes(store, &sql).await
+            let deferred = control.migrate(env, &steps, store).await?;
+            provision_probes(store, &sql).await?;
+            Ok(deferred)
         }
         None => {
             for step in &steps {
                 store.apply(step).await?;
                 tracing::info!(step = step.id, "migration step applied");
             }
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -376,6 +377,8 @@ pub(crate) async fn bring_up(
     migrate: bool,
 ) -> anyhow::Result<StoreFacts> {
     if migrate {
+        // A changed step that waits for the right master key was logged when it was passed over; detection below
+        // says why the key is refused.
         apply_migrations(env, config, store, control).await?;
     } else if let Some(control) = control {
         crate::control::ensure_migrated(&control.store).await?;

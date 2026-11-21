@@ -23,8 +23,9 @@ import { FormAlert, failureCopy } from "@/components/form-alert";
 import { Section } from "@/components/section";
 import { formatTime } from "@/lib/format";
 import { useProject } from "@/lib/project";
+import { useWide } from "@/lib/wide";
 import { MAX_NAME } from "./rules";
-import { dashboardHref, dashboardKeys, editorHref, useDashboardAccess, useWide } from "./shared";
+import { dashboardHref, dashboardKeys, editorHref, useDashboardAccess } from "./shared";
 
 /** Where a new dashboard opens: the editor where there is room for it, else the dashboard itself. */
 export function useOpenNew() {

@@ -7,7 +7,8 @@
 //!    so the start applies no migration step (its log says so), and access step A2 is not applied again with the
 //!    wrong key's passwords for the probe identities, which still sign in with the right key's. The start also
 //!    has another `sql.statements_per_hour`, which changes A2's content; a step that changed applies again only
-//!    under a key the service identities accept.
+//!    under a key the service identities accept. `crucible migrate` with that key and setting fails, naming the
+//!    step that waits, why, and the key to run it with.
 //! 3. With the right key again the workspace runs queries, and no operator had to repair anything.
 //!
 //! The test runs only when `CRUCIBLE_SQLISO_CLICKHOUSE_URL` is set and passes as skipped otherwise. It takes the
@@ -195,6 +196,28 @@ impl Rig {
         server
     }
 
+    /// `crucible migrate` with the master key in `key_file` and the variables of `vars`: whether it succeeded, and
+    /// what it wrote to standard error.
+    fn migrate(&self, key_file: &str, vars: &[(&str, &str)]) -> (bool, String) {
+        let output = Command::new(&self.binary)
+            .arg("migrate")
+            .args(["--clickhouse-url", &self.clickhouse_url])
+            .args(["--clickhouse-user", &self.clickhouse_user])
+            .arg("--clickhouse-password-file")
+            .arg(self.dir.join("clickhouse-password"))
+            .arg("--master-key-file")
+            .arg(self.dir.join(key_file))
+            .env_remove("CRUCIBLE_CLICKHOUSE_URL")
+            .env("CRUCIBLE_POSTGRES_URL", &self.postgres_url)
+            .envs(vars.iter().copied())
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
     /// `crucible admin <args>` with the right key: whether it succeeded, and what it printed.
     fn admin(&self, args: &[&str]) -> (bool, String, String) {
         let output = Command::new(&self.binary)
@@ -376,6 +399,22 @@ fn a_start_with_a_wrong_master_key_leaves_the_sql_workspace_working() {
     );
     server.applied_no_step("with the wrong key");
     drop(server);
+    // `crucible migrate` with that key and setting applies the changed step no more than the start did, and fails:
+    // the migration is not complete, and the error says which step waits, why, and which key runs it.
+    let (migrated, said) =
+        rig.migrate("wrong-key", &[("CRUCIBLE_SQL_STATEMENTS_PER_HOUR", "1200")]);
+    assert!(
+        !migrated,
+        "crucible migrate exited 0 with a master key the service identities refuse: {said}"
+    );
+    for needed in [
+        "step 0003_access_workspace changed",
+        "refuse this server's master key",
+        "the master key this deployment was migrated with",
+    ] {
+        assert!(said.contains(needed), "{needed:?} is missing from: {said}");
+    }
+    assert!(!said.contains("the migrations are applied"), "{said}");
     let clickhouse = rig
         .clickhouse_url
         .trim_start_matches("http://")

@@ -201,10 +201,16 @@ pub trait AuthProviderRepo: Send + Sync {
     /// Creates a provider. A second row from configuration of one kind is
     /// `UniqueViolation("auth_providers_seeded_kind_key")`.
     async fn insert(&self, provider: &AuthProvider) -> Result<(), TxError>;
-    /// Overwrites the provider's columns. `false` when there is no such provider.
-    async fn update(&self, provider: &AuthProvider) -> Result<bool, TxError>;
-    /// Deletes a provider with its linked accounts. `false` when there is no such provider.
-    async fn delete(&self, id: Uuid) -> Result<bool, TxError>;
+    /// Writes `provider` with version `expected + 1` if the stored version is `expected`. `false` when it is not,
+    /// or when there is no such provider.
+    async fn update_if_version(
+        &self,
+        provider: &AuthProvider,
+        expected: u64,
+    ) -> Result<bool, TxError>;
+    /// Deletes the provider with its linked accounts if the stored version is `expected`. `false` when it is not,
+    /// or when there is no such provider.
+    async fn delete_if_version(&self, id: Uuid, expected: u64) -> Result<bool, TxError>;
 }
 
 /// Provider identities linked to users.
@@ -217,6 +223,8 @@ pub trait OauthAccountRepo: Send + Sync {
     /// Links a provider subject to a user. A subject that is already linked is
     /// `UniqueViolation("oauth_accounts_pkey")`.
     async fn insert(&self, account: &OauthAccount) -> Result<(), TxError>;
+    /// Unlinks every account of a provider; returns how many.
+    async fn delete_for_provider(&self, provider_id: Uuid) -> Result<u64, TxError>;
 }
 
 /// Sign-in attempts through a provider.

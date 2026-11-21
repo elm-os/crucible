@@ -9,10 +9,11 @@ use crucible_control::{
 };
 use crucible_records::{ProjectId, Timestamp, UserId, Uuid};
 
-use crate::sql::{Cols, P};
+use crate::sql::{Cols, P, int};
 use crate::store::{Handle, every, first};
 
-const PROVIDER: &str = "id, kind, display_name, issuer, client_id, secret_id, scopes, allowed_domains, enabled, seeded";
+const PROVIDER: &str = "id, kind, display_name, issuer, client_id, secret_id, scopes, allowed_domains, enabled, seeded, \
+     version";
 
 fn provider(c: &mut Cols<'_>) -> Result<AuthProvider, TxError> {
     Ok(AuthProvider {
@@ -26,6 +27,7 @@ fn provider(c: &mut Cols<'_>) -> Result<AuthProvider, TxError> {
         allowed_domains: c.texts()?,
         enabled: c.bool()?,
         seeded: c.bool()?,
+        version: c.u64()?,
     })
 }
 
@@ -33,8 +35,9 @@ fn texts(items: &[String]) -> P<'_> {
     P::TextArray(items.iter().map(String::as_str).collect())
 }
 
-fn provider_params(provider: &AuthProvider) -> [P<'_>; 10] {
-    [
+/// The columns of `provider` in the order of [`PROVIDER`], without the version.
+fn provider_params(provider: &AuthProvider) -> Vec<P<'_>> {
+    vec![
         P::Uuid(provider.id),
         P::Text(provider.kind.as_str()),
         P::Text(&provider.display_name),
@@ -62,30 +65,38 @@ impl AuthProviderRepo for Handle {
 
     async fn insert(&self, provider: &AuthProvider) -> Result<(), TxError> {
         let sql = format!(
-            "INSERT INTO auth_providers ({PROVIDER}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+            "INSERT INTO auth_providers ({PROVIDER}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
              RETURNING 1"
         );
-        self.write(&sql, &provider_params(provider)).await?;
+        let mut params = provider_params(provider);
+        params.push(int(provider.version)?);
+        self.write(&sql, &params).await?;
         Ok(())
     }
 
-    async fn update(&self, provider: &AuthProvider) -> Result<bool, TxError> {
+    async fn update_if_version(
+        &self,
+        provider: &AuthProvider,
+        expected: u64,
+    ) -> Result<bool, TxError> {
+        let mut params = provider_params(provider);
+        params.push(int(expected)?);
         let changed = self
             .write(
                 "UPDATE auth_providers SET kind = $2, display_name = $3, issuer = $4, client_id = $5, \
-                 secret_id = $6, scopes = $7, allowed_domains = $8, enabled = $9, seeded = $10 \
-                 WHERE id = $1 RETURNING 1",
-                &provider_params(provider),
+                 secret_id = $6, scopes = $7, allowed_domains = $8, enabled = $9, seeded = $10, \
+                 version = version + 1 WHERE id = $1 AND version = $11 RETURNING 1",
+                &params,
             )
             .await?;
         Ok(changed == 1)
     }
 
-    async fn delete(&self, id: Uuid) -> Result<bool, TxError> {
+    async fn delete_if_version(&self, id: Uuid, expected: u64) -> Result<bool, TxError> {
         let deleted = self
             .write(
-                "DELETE FROM auth_providers WHERE id = $1 RETURNING 1",
-                &[P::Uuid(id)],
+                "DELETE FROM auth_providers WHERE id = $1 AND version = $2 RETURNING 1",
+                &[P::Uuid(id), int(expected)?],
             )
             .await?;
         Ok(deleted == 1)
@@ -135,6 +146,14 @@ impl OauthAccountRepo for Handle {
         )
         .await?;
         Ok(())
+    }
+
+    async fn delete_for_provider(&self, provider_id: Uuid) -> Result<u64, TxError> {
+        self.write(
+            "DELETE FROM oauth_accounts WHERE provider_id = $1 RETURNING 1",
+            &[P::Uuid(provider_id)],
+        )
+        .await
     }
 }
 

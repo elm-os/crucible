@@ -836,13 +836,7 @@ fn provider_sign_in_links_invited_known_and_allowed_domain_users_only() {
         );
         // A disabled provider is refused at the start.
         identity
-            .update_provider(
-                provider.id,
-                ProviderChange {
-                    enabled: Some(false),
-                    ..ProviderChange::default()
-                },
-            )
+            .update_provider(provider.id, provider.version, toggle(false))
             .await
             .unwrap();
         assert_eq!(
@@ -850,6 +844,898 @@ fn provider_sign_in_links_invited_known_and_allowed_domain_users_only() {
             FlowFailure::ProviderDisabled
         );
     });
+}
+
+/// The fake OpenID Connect provider as a provider to add, with the button text `name`.
+fn oidc(name: &str) -> ProviderInput {
+    ProviderInput {
+        kind: ProviderKind::Oidc,
+        display_name: name.to_owned(),
+        issuer: Some(ISSUER.to_owned()),
+        client_id: CLIENT_ID.to_owned(),
+        client_secret: CLIENT_SECRET.to_owned(),
+        scopes: Vec::new(),
+        allowed_domains: Vec::new(),
+    }
+}
+
+/// The fake GitHub as a provider to add.
+fn github() -> ProviderInput {
+    ProviderInput {
+        kind: ProviderKind::Github,
+        display_name: "Continue with GitHub".to_owned(),
+        issuer: None,
+        ..oidc("")
+    }
+}
+
+fn toggle(enabled: bool) -> ProviderChange {
+    ProviderChange {
+        enabled: Some(enabled),
+        ..ProviderChange::default()
+    }
+}
+
+/// Turns password sign-in on or off at the organization's current version.
+async fn set_password(identity: &Identity, on: bool) -> Result<crucible_control::Org, AuthError> {
+    let org = identity.org().await.unwrap().unwrap();
+    identity
+        .update_org(
+            org.version,
+            OrgChange {
+                password_login_enabled: Some(on),
+                ..OrgChange::default()
+            },
+        )
+        .await
+}
+
+/// Whether someone can sign in: password sign-in is on, or the sign-in page offers a provider.
+async fn a_way_in(identity: &Identity) -> bool {
+    let view = identity.sign_in_view().await.unwrap();
+    view.password_login_enabled || !view.providers.is_empty()
+}
+
+/// The provider with this id as stored.
+async fn stored(identity: &Identity, id: crucible_records::Uuid) -> crucible_control::AuthProvider {
+    identity
+        .providers()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|provider| provider.id == id)
+        .unwrap()
+}
+
+#[test]
+fn a_change_that_leaves_no_way_to_sign_in_is_refused() {
+    sim(13, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        owner(&identity).await;
+        // Password sign-in is the only way in, so it stays on; the refusal says what to turn on first.
+        let AuthError::Conflict(message) = set_password(&identity, false).await.unwrap_err() else {
+            panic!("turning off the only way in is a conflict");
+        };
+        assert!(message.contains("turn on a sign-in provider"), "{message}");
+        // A provider that is turned off is no way in either.
+        let first = identity.add_provider(oidc("Company SSO")).await.unwrap();
+        let first = identity
+            .update_provider(first.id, first.version, toggle(false))
+            .await
+            .unwrap();
+        assert!(matches!(
+            set_password(&identity, false).await,
+            Err(AuthError::Conflict(_))
+        ));
+        // With the provider on, password sign-in can go.
+        let first = identity
+            .update_provider(first.id, first.version, toggle(true))
+            .await
+            .unwrap();
+        let org = set_password(&identity, false).await.unwrap();
+        assert!(!org.settings.password_login_enabled);
+        assert!(a_way_in(&identity).await);
+        // The provider is now the only way in: turning it off or deleting it is refused, and the refusal says to
+        // turn password sign-in on first.
+        let AuthError::Conflict(message) = identity
+            .update_provider(first.id, first.version, toggle(false))
+            .await
+            .unwrap_err()
+        else {
+            panic!("turning off the last way in is a conflict");
+        };
+        assert!(message.contains("turn password sign-in on"), "{message}");
+        assert!(matches!(
+            identity.delete_provider(first.id, first.version).await,
+            Err(AuthError::Conflict(_))
+        ));
+        // A second provider that is on lets the first one go, and is then the last way in itself.
+        let second = identity.add_provider(github()).await.unwrap();
+        identity
+            .delete_provider(first.id, first.version)
+            .await
+            .unwrap();
+        assert!(matches!(
+            identity
+                .update_provider(second.id, second.version, toggle(false))
+                .await,
+            Err(AuthError::Conflict(_))
+        ));
+        // Turning password sign-in on is always allowed; then the last provider can go.
+        set_password(&identity, true).await.unwrap();
+        let second = stored(&identity, second.id).await;
+        identity
+            .delete_provider(second.id, second.version)
+            .await
+            .unwrap();
+        assert!(a_way_in(&identity).await);
+    });
+    // Without server.public_url no provider is offered, so the refusal names that setting.
+    sim(14, async |env, model| {
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.public_url = None;
+        owner(&identity).await;
+        identity.add_provider(oidc("Company SSO")).await.unwrap();
+        let AuthError::Conflict(message) = set_password(&identity, false).await.unwrap_err() else {
+            panic!("no provider is offered without server.public_url");
+        };
+        assert!(message.contains("server.public_url"), "{message}");
+    });
+}
+
+/// The guard reads two rows (the organization and the providers) and writes one, so two changes made at once could
+/// each see the other's way in. Every change that removes a way in also moves the organization's version, so one
+/// of two such changes fails instead.
+#[test]
+fn two_changes_made_at_once_never_leave_no_way_to_sign_in() {
+    let slow = PgFaults {
+        latency_micros: (0, 4_000),
+        ..PgFaults::default()
+    };
+    for seed in 0..24 {
+        let faults = slow.clone();
+        sim(200 + seed, async move |env, model| {
+            let identity = identity(&env, &model, OUTAGE_GRACE);
+            owner(&identity).await;
+            // Password sign-in goes while the only provider is turned off.
+            let only = identity.add_provider(oidc("Only")).await.unwrap();
+            model.set_faults(faults.clone());
+            let _ = futures::join!(
+                set_password(&identity, false),
+                identity.update_provider(only.id, only.version, toggle(false)),
+            );
+            model.set_faults(PgFaults::default());
+            assert!(
+                a_way_in(&identity).await,
+                "seed {seed}: password off and the provider off"
+            );
+            // With password sign-in off, two providers go at once.
+            set_password(&identity, true).await.unwrap();
+            let only = stored(&identity, only.id).await;
+            if !only.enabled {
+                identity
+                    .update_provider(only.id, only.version, toggle(true))
+                    .await
+                    .unwrap();
+            }
+            let other = identity.add_provider(github()).await.unwrap();
+            set_password(&identity, false).await.unwrap();
+            let only = stored(&identity, only.id).await;
+            model.set_faults(faults);
+            let _ = futures::join!(
+                identity.update_provider(only.id, only.version, toggle(false)),
+                identity.delete_provider(other.id, other.version),
+            );
+            model.set_faults(PgFaults::default());
+            assert!(a_way_in(&identity).await, "seed {seed}: both providers off");
+        });
+    }
+}
+
+/// A turn-off that loses to another change of its provider writes nothing, not even the organization's version.
+#[test]
+fn a_turn_off_that_loses_a_race_leaves_the_organization_as_it_was() {
+    let slow = PgFaults {
+        latency_micros: (0, 4_000),
+        ..PgFaults::default()
+    };
+    let mut lost = 0;
+    for seed in 0..24 {
+        let faults = slow.clone();
+        lost += sim(500 + seed, async move |env, model| {
+            let identity = identity(&env, &model, OUTAGE_GRACE);
+            owner(&identity).await;
+            let provider = identity.add_provider(oidc("SSO")).await.unwrap();
+            let before = identity.org().await.unwrap().unwrap().version;
+            let rename = ProviderChange {
+                display_name: Some("Renamed".to_owned()),
+                ..ProviderChange::default()
+            };
+            model.set_faults(faults);
+            let (_, off) = futures::join!(
+                identity.update_provider(provider.id, provider.version, rename),
+                identity.update_provider(provider.id, provider.version, toggle(false)),
+            );
+            model.set_faults(PgFaults::default());
+            let after = identity.org().await.unwrap().unwrap().version;
+            if off.is_ok() {
+                assert_eq!(after, before + 1, "seed {seed}");
+                0
+            } else {
+                assert_eq!(
+                    after, before,
+                    "seed {seed}: a refused turn-off moved the organization"
+                );
+                1
+            }
+        });
+    }
+    assert!(lost > 0, "no seed made the turn-off lose the race");
+}
+
+/// One step of [`no_sequence_of_changes_leaves_no_way_to_sign_in`]: providers are named by their place in the list.
+#[derive(Clone, Debug)]
+enum Step {
+    Password(bool),
+    Add(bool),
+    Toggle(usize),
+    Delete(usize),
+}
+
+fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+    use proptest::prelude::*;
+    prop_oneof![
+        any::<bool>().prop_map(Step::Password),
+        any::<bool>().prop_map(Step::Add),
+        (0..4usize).prop_map(Step::Toggle),
+        (0..4usize).prop_map(Step::Delete),
+    ]
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+    /// Whatever an administrator asks, in any order, someone can still sign in afterwards.
+    #[test]
+    fn no_sequence_of_changes_leaves_no_way_to_sign_in(
+        steps in proptest::collection::vec(step(), 1..14),
+    ) {
+        let left = sim(300, async move |env, model| {
+            let identity = identity(&env, &model, OUTAGE_GRACE);
+            owner(&identity).await;
+            for step in steps {
+                let providers = identity.providers().await.unwrap();
+                let pick = |n: usize| providers.get(n % providers.len().max(1)).cloned();
+                let _ = match step {
+                    Step::Password(on) => set_password(&identity, on).await.map(drop),
+                    Step::Add(oidc_kind) => {
+                        let input = if oidc_kind { oidc("SSO") } else { github() };
+                        identity.add_provider(input).await.map(drop)
+                    }
+                    Step::Toggle(n) => match pick(n) {
+                        Some(p) => identity
+                            .update_provider(p.id, p.version, toggle(!p.enabled))
+                            .await
+                            .map(drop),
+                        None => Ok(()),
+                    },
+                    Step::Delete(n) => match pick(n) {
+                        Some(p) => identity.delete_provider(p.id, p.version).await,
+                        None => Ok(()),
+                    },
+                };
+                if !a_way_in(&identity).await {
+                    return false;
+                }
+            }
+            true
+        });
+        proptest::prop_assert!(left, "a sequence of changes left no way to sign in");
+    }
+}
+
+#[test]
+fn provider_changes_name_the_version_they_read() {
+    sim(15, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        owner(&identity).await;
+        let provider = identity.add_provider(oidc("Company SSO")).await.unwrap();
+        assert_eq!(provider.version, 1);
+        let renamed = identity
+            .update_provider(
+                provider.id,
+                provider.version,
+                ProviderChange {
+                    display_name: Some("Acme SSO".to_owned()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (renamed.display_name.as_str(), renamed.version),
+            ("Acme SSO", 2)
+        );
+        assert_eq!(stored(&identity, provider.id).await, renamed);
+        // The version the provider was read at is stale now.
+        assert_eq!(
+            identity
+                .update_provider(provider.id, provider.version, toggle(false))
+                .await
+                .unwrap_err(),
+            AuthError::PreconditionFailed
+        );
+        assert_eq!(
+            identity
+                .delete_provider(provider.id, provider.version)
+                .await
+                .unwrap_err(),
+            AuthError::PreconditionFailed
+        );
+        identity
+            .delete_provider(renamed.id, renamed.version)
+            .await
+            .unwrap();
+        assert_eq!(
+            identity
+                .delete_provider(renamed.id, renamed.version)
+                .await
+                .unwrap_err(),
+            AuthError::NotFound
+        );
+    });
+}
+
+fn refused_field(result: Result<crucible_control::AuthProvider, AuthError>) -> &'static str {
+    match result {
+        Err(AuthError::Invalid { field, .. }) => field,
+        other => panic!("expected a field error, got {other:?}"),
+    }
+}
+
+#[test]
+fn provider_edits_change_the_client_and_keep_the_secret_unless_a_new_one_is_given() {
+    sim(16, async |env, model| {
+        let idp = FakeIdp::new(&env, person("grace@example.com", true));
+        let env = idp.env(&env);
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        let owner = owner(&identity).await.principal;
+        identity
+            .invite(&owner, "grace@example.com", OrgRole::Member, Vec::new())
+            .await
+            .unwrap();
+        let provider = identity
+            .add_provider(ProviderInput {
+                client_id: "an-old-client".to_owned(),
+                ..oidc("Company SSO")
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            provider_sign_in(&identity, &idp, provider.id)
+                .await
+                .unwrap_err(),
+            FlowFailure::ExchangeFailed
+        );
+        // The client id, issuer and scopes change, checked as on create; an empty secret is refused.
+        let change = |f: fn(&mut ProviderChange)| {
+            let mut change = ProviderChange::default();
+            f(&mut change);
+            change
+        };
+        for (bad, field) in [
+            (
+                change(|c| c.issuer = Some("login.example.com".to_owned())),
+                "issuer",
+            ),
+            (change(|c| c.client_id = Some("  ".to_owned())), "client_id"),
+            (
+                change(|c| c.client_secret = Some(String::new())),
+                "client_secret",
+            ),
+            (
+                change(|c| c.client_secret = Some("  ".to_owned())),
+                "client_secret",
+            ),
+        ] {
+            assert_eq!(
+                refused_field(
+                    identity
+                        .update_provider(provider.id, provider.version, bad)
+                        .await
+                ),
+                field
+            );
+        }
+        let changed = identity
+            .update_provider(
+                provider.id,
+                provider.version,
+                ProviderChange {
+                    client_id: Some(format!(" {CLIENT_ID} ")),
+                    scopes: Some(vec!["groups".to_owned()]),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (changed.client_id.as_str(), changed.scopes.as_slice()),
+            (CLIENT_ID, ["groups".to_owned()].as_slice())
+        );
+        assert_eq!(changed.secret_id, provider.secret_id);
+        // Without a client secret the stored one stays, and sign-in uses it.
+        let grace = provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap()
+            .session
+            .principal
+            .user
+            .id;
+        assert_eq!(
+            model
+                .oauth_accounts()
+                .list_for_user(grace)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // A subject at another issuer is another person, so an issuer change unlinks the provider's accounts; people
+        // link again by their verified email.
+        let moved = identity
+            .update_provider(
+                provider.id,
+                changed.version,
+                ProviderChange {
+                    issuer: Some("https://login.example.com".to_owned()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved.issuer, "https://login.example.com");
+        assert!(
+            model
+                .oauth_accounts()
+                .list_for_user(grace)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let back = identity
+            .update_provider(
+                provider.id,
+                moved.version,
+                ProviderChange {
+                    issuer: Some(ISSUER.to_owned()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        let again = provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap();
+        assert_eq!(again.session.principal.user.id, grace);
+        // A new secret replaces the stored one: the wrong one fails at the provider, the right one works.
+        let wrong = identity
+            .update_provider(
+                provider.id,
+                back.version,
+                ProviderChange {
+                    client_secret: Some("not-the-secret".to_owned()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            provider_sign_in(&identity, &idp, provider.id)
+                .await
+                .unwrap_err(),
+            FlowFailure::ExchangeFailed
+        );
+        identity
+            .update_provider(
+                provider.id,
+                wrong.version,
+                ProviderChange {
+                    client_secret: Some(CLIENT_SECRET.to_owned()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap();
+        // GitHub and Google have a fixed issuer, as on create.
+        let hub = identity.add_provider(github()).await.unwrap();
+        let hub = identity
+            .update_provider(
+                hub.id,
+                hub.version,
+                ProviderChange {
+                    issuer: Some("https://login.example.com".to_owned()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(hub.issuer, "");
+    });
+}
+
+#[test]
+fn a_provider_checks_its_allowed_domains_at_every_sign_in() {
+    sim(17, async |env, model| {
+        let idp = FakeIdp::new(&env, person("grace@example.com", true));
+        let env = idp.env(&env);
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        let owner = owner(&identity).await.principal;
+        identity
+            .invite(&owner, "grace@example.com", OrgRole::Member, Vec::new())
+            .await
+            .unwrap();
+        let provider = identity.add_provider(oidc("Company SSO")).await.unwrap();
+        provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap();
+        // The provider now allows other domains: the linked account is refused, and the refusal names them.
+        let provider = identity
+            .update_provider(
+                provider.id,
+                provider.version,
+                ProviderChange {
+                    allowed_domains: Some(vec!["acme.test".to_owned(), "@Partner.test".to_owned()]),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        let refused = provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            FlowFailure::DomainNotAllowed(vec!["acme.test".to_owned(), "partner.test".to_owned()])
+        );
+        assert_eq!(refused.code(), "not_invited");
+        assert_eq!(
+            refused.login_query(),
+            "error=not_invited&domains=acme.test%2Cpartner.test"
+        );
+        // An unverified email shows no domain, so a linked account is refused for that too.
+        idp.set_user(person("grace@acme.test", false));
+        assert_eq!(
+            provider_sign_in(&identity, &idp, provider.id)
+                .await
+                .unwrap_err(),
+            FlowFailure::EmailUnverified
+        );
+        // An allowed domain signs the linked account in.
+        idp.set_user(person("grace@acme.test", true));
+        let linked = provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            linked.session.principal.user.email.as_str(),
+            "grace@example.com"
+        );
+        // Without allowed domains, a linked account signs in as before, whatever its provider says of the email.
+        identity
+            .update_provider(
+                provider.id,
+                provider.version,
+                ProviderChange {
+                    allowed_domains: Some(Vec::new()),
+                    ..ProviderChange::default()
+                },
+            )
+            .await
+            .unwrap();
+        idp.set_user(person("grace@elsewhere.test", false));
+        provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap();
+    });
+}
+
+/// `crucible admin enable-password-login` for a deployment whose provider broke at the identity provider; a person
+/// who joined through a provider then sets a password with a reset link.
+#[test]
+fn password_sign_in_comes_back_from_the_command_line() {
+    sim(19, async |env, model| {
+        let idp = FakeIdp::new(&env, person("grace@example.com", true));
+        let env = idp.env(&env);
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        assert_eq!(
+            identity.enable_password_login().await.unwrap_err(),
+            AuthError::NotFound
+        );
+        let owner = owner(&identity).await.principal;
+        assert!(
+            !identity.enable_password_login().await.unwrap(),
+            "already on"
+        );
+        identity
+            .invite(&owner, "grace@example.com", OrgRole::Admin, Vec::new())
+            .await
+            .unwrap();
+        let provider = identity.add_provider(oidc("Company SSO")).await.unwrap();
+        provider_sign_in(&identity, &idp, provider.id)
+            .await
+            .unwrap();
+        set_password(&identity, false).await.unwrap();
+        assert!(matches!(
+            identity.login("owner@example.com", PASSWORD).await,
+            Err(AuthError::Forbidden(_))
+        ));
+        assert!(identity.enable_password_login().await.unwrap());
+        identity.login("owner@example.com", PASSWORD).await.unwrap();
+        // Grace joined through the provider and has no password yet; a reset link sets one.
+        let link = identity.issue_reset("grace@example.com").await.unwrap();
+        identity
+            .reset_password(link.token.as_str(), "a new password 1")
+            .await
+            .unwrap();
+        identity
+            .login("grace@example.com", "a new password 1")
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn providers_from_the_configuration_are_seeded_read_only_and_turned_off_when_removed() {
+    sim(18, async |env, model| {
+        let idp = FakeIdp::new(&env, person("grace@example.com", true));
+        let env = idp.env(&env);
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![oidc("Company SSO")];
+        let owner = owner(&identity).await.principal;
+        identity.seed_providers().await.unwrap();
+        let seeded = identity.providers().await.unwrap();
+        assert_eq!(seeded.len(), 1);
+        let row = seeded[0].clone();
+        assert!(row.seeded && row.enabled, "{row:?}");
+        assert_eq!(row.secret_id, None, "the secret stays in the configuration");
+        // A restart with the same configuration writes nothing.
+        identity.seed_providers().await.unwrap();
+        assert_eq!(identity.providers().await.unwrap(), seeded);
+        // Read-only through the API.
+        assert!(matches!(
+            identity
+                .update_provider(row.id, row.version, toggle(false))
+                .await,
+            Err(AuthError::Forbidden(_))
+        ));
+        assert!(matches!(
+            identity.delete_provider(row.id, row.version).await,
+            Err(AuthError::Forbidden(_))
+        ));
+        // Sign-in uses the secret from the configuration.
+        identity
+            .invite(&owner, "grace@example.com", OrgRole::Member, Vec::new())
+            .await
+            .unwrap();
+        provider_sign_in(&identity, &idp, row.id).await.unwrap();
+        // A changed configuration changes the row in place: its id is in the callback URL.
+        identity.config.providers[0].display_name = "Acme SSO".to_owned();
+        identity.config.providers[0].allowed_domains = vec!["Example.com".to_owned()];
+        identity.seed_providers().await.unwrap();
+        let changed = stored(&identity, row.id).await;
+        assert_eq!(
+            (
+                changed.display_name.as_str(),
+                changed.allowed_domains.as_slice(),
+                changed.version
+            ),
+            ("Acme SSO", ["example.com".to_owned()].as_slice(), 2)
+        );
+        // Removed from the configuration, the row stays, turned off, and the sign-in page no longer offers it.
+        identity.config.providers.clear();
+        identity.seed_providers().await.unwrap();
+        let off = stored(&identity, row.id).await;
+        assert!(!off.enabled);
+        assert!(identity.sign_in_providers().await.unwrap().is_empty());
+        assert!(!identity.nobody_can_sign_in().await.unwrap());
+        // Back in the configuration, the same row is on again.
+        identity.config.providers = vec![oidc("Acme SSO")];
+        identity.seed_providers().await.unwrap();
+        let on = identity.providers().await.unwrap();
+        assert_eq!(on.len(), 1);
+        assert!(on[0].enabled && on[0].id == row.id);
+        assert!(!identity.nobody_can_sign_in().await.unwrap());
+    });
+}
+
+/// Two nodes start at once with the same configuration: one row per kind, and neither start fails.
+#[test]
+fn nodes_that_start_together_seed_one_row_per_kind() {
+    for seed in 0..16 {
+        sim(400 + seed, async move |env, model| {
+            let mut first = identity(&env, &model, OUTAGE_GRACE);
+            let mut second = identity(&env, &model, OUTAGE_GRACE);
+            let configured = vec![oidc("Company SSO"), github()];
+            first.config.providers = configured.clone();
+            second.config.providers = configured;
+            model.set_faults(PgFaults {
+                latency_micros: (0, 4_000),
+                ..PgFaults::default()
+            });
+            let (a, b) = futures::join!(first.seed_providers(), second.seed_providers());
+            model.set_faults(PgFaults::default());
+            a.unwrap();
+            b.unwrap();
+            let rows = first.providers().await.unwrap();
+            let mut kinds: Vec<_> = rows.iter().map(|p| (p.kind, p.seeded, p.enabled)).collect();
+            kinds.sort();
+            assert_eq!(
+                kinds,
+                [
+                    (ProviderKind::Github, true, true),
+                    (ProviderKind::Oidc, true, true)
+                ],
+                "seed {seed}"
+            );
+        });
+    }
+}
+
+/// How many provider accounts `user` has linked.
+async fn links(model: &PgModel, user: crucible_records::UserId) -> usize {
+    model
+        .oauth_accounts()
+        .list_for_user(user)
+        .await
+        .unwrap()
+        .len()
+}
+
+/// A configured OpenID Connect provider moved to another issuer unlinks its accounts, as an edit through the API
+/// does: a subject at another issuer is another person. People link again through their verified email.
+#[test]
+fn a_configured_provider_at_another_issuer_unlinks_its_accounts() {
+    sim(24, async |env, model| {
+        let idp = FakeIdp::new(&env, person("grace@example.com", true));
+        let env = idp.env(&env);
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![oidc("Company SSO")];
+        let owner = owner(&identity).await.principal;
+        identity.seed_providers().await.unwrap();
+        let row = identity.providers().await.unwrap()[0].clone();
+        identity
+            .invite(&owner, "grace@example.com", OrgRole::Member, Vec::new())
+            .await
+            .unwrap();
+        let grace = provider_sign_in(&identity, &idp, row.id)
+            .await
+            .unwrap()
+            .session
+            .principal
+            .user
+            .id;
+        assert_eq!(links(&model, grace).await, 1);
+        // Another change keeps the links.
+        identity.config.providers[0].display_name = "Acme SSO".to_owned();
+        identity.seed_providers().await.unwrap();
+        assert_eq!(links(&model, grace).await, 1);
+        identity.config.providers[0].issuer = Some("https://login.example.com".to_owned());
+        assert_eq!(
+            identity.seed_providers().await.unwrap(),
+            [(ProviderKind::Oidc, Seeded::Changed)]
+        );
+        assert_eq!(
+            stored(&identity, row.id).await.issuer,
+            "https://login.example.com"
+        );
+        assert_eq!(links(&model, grace).await, 0);
+        // Back at the first issuer, Grace links again through her verified email.
+        identity.config.providers[0].issuer = Some(ISSUER.to_owned());
+        identity.seed_providers().await.unwrap();
+        let again = provider_sign_in(&identity, &idp, row.id).await.unwrap();
+        assert_eq!(again.session.principal.user.id, grace);
+        assert_eq!(links(&model, grace).await, 1);
+    });
+}
+
+/// A start whose configuration no longer declares the last way to sign in (password sign-in off, no other provider
+/// offered) keeps that provider's row on, so the start leaves the organization as it was and the section can come
+/// back. This server cannot sign anyone in through it, because its client secret was in the section. Once password
+/// sign-in is on, as the start's message says, the next start turns the row off.
+#[test]
+fn a_configured_provider_that_is_the_last_way_in_stays_on_when_its_section_goes() {
+    sim(25, async |env, model| {
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![oidc("Company SSO")];
+        owner(&identity).await;
+        identity.seed_providers().await.unwrap();
+        let row = identity.providers().await.unwrap()[0].clone();
+        set_password(&identity, false).await.unwrap();
+        let org = identity.org().await.unwrap().unwrap();
+        identity.config.providers.clear();
+        for _ in 0..2 {
+            assert_eq!(
+                identity.seed_providers().await.unwrap(),
+                [(ProviderKind::Oidc, Seeded::KeptOn)]
+            );
+            assert_eq!(stored(&identity, row.id).await, row);
+            assert_eq!(identity.org().await.unwrap().unwrap(), org);
+        }
+        assert!(identity.sign_in_providers().await.unwrap().is_empty());
+        assert!(identity.nobody_can_sign_in().await.unwrap());
+        assert!(identity.enable_password_login().await.unwrap());
+        assert_eq!(
+            identity.seed_providers().await.unwrap(),
+            [(ProviderKind::Oidc, Seeded::TurnedOff)]
+        );
+        assert!(!stored(&identity, row.id).await.enabled);
+    });
+}
+
+/// A start that swaps one configured provider for another adds the new one before it judges the old one, so the old
+/// one is turned off rather than kept as the last way in.
+#[test]
+fn a_start_that_swaps_configured_providers_turns_the_old_one_off() {
+    sim(26, async |env, model| {
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![github()];
+        owner(&identity).await;
+        identity.seed_providers().await.unwrap();
+        set_password(&identity, false).await.unwrap();
+        identity.config.providers = vec![oidc("Company SSO")];
+        let mut changed = identity.seed_providers().await.unwrap();
+        changed.sort_by_key(|(kind, _)| *kind);
+        assert_eq!(
+            changed,
+            [
+                (ProviderKind::Github, Seeded::TurnedOff),
+                (ProviderKind::Oidc, Seeded::Added)
+            ]
+        );
+        let mut rows: Vec<_> = identity
+            .providers()
+            .await
+            .unwrap()
+            .iter()
+            .map(|p| (p.kind, p.enabled))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [(ProviderKind::Github, false), (ProviderKind::Oidc, true)]
+        );
+        assert!(a_way_in(&identity).await);
+    });
+}
+
+/// One node starts without a provider's section while another, which still declares it, turns password sign-in off.
+/// The start's turn-off moves the organization's version as an API change does, so one of the two refuses or fails
+/// and someone can still sign in.
+#[test]
+fn a_removal_at_start_and_a_password_turn_off_at_once_leave_a_way_in() {
+    let slow = PgFaults {
+        latency_micros: (0, 4_000),
+        ..PgFaults::default()
+    };
+    for seed in 0..24 {
+        let faults = slow.clone();
+        sim(600 + seed, async move |env, model| {
+            let mut declares = identity(&env, &model, OUTAGE_GRACE);
+            declares.config.providers = vec![oidc("Company SSO")];
+            owner(&declares).await;
+            declares.seed_providers().await.unwrap();
+            let dropped = identity(&env, &model, OUTAGE_GRACE);
+            model.set_faults(faults);
+            let _ = futures::join!(set_password(&declares, false), dropped.seed_providers());
+            model.set_faults(PgFaults::default());
+            assert!(
+                a_way_in(&declares).await,
+                "seed {seed}: password off and the provider off"
+            );
+        });
+    }
 }
 
 impl Identity {
