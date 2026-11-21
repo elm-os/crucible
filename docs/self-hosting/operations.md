@@ -154,6 +154,7 @@ docker run --rm --network container:crucible-crucible-1 curlimages/curl:8.23.0 -
 | `crucible_shipper_quarantined_frames_total`, `crucible_shipper_quarantined_pairs_total` | counter | Frames this binary could not decode or normalize, copied to the `quarantine` directory, and data that failed repeatedly |
 | `crucible_shipper_deletion_drops_total{kind}` | counter | Spans, MCP operations and facts (`span`, `mcp_operation`, `fact`) that the shipper dropped before they reached ClickHouse because a deletion request selects them |
 | `crucible_shipper_encoded_bytes`, `crucible_shipper_drain_bytes_per_second` | gauge | Rows the shipper holds, against its budget; the rate at which the log drains |
+| `crucible_shipper_task_microseconds_total{phase}` | counter | The shipper's time by what it was doing: reading the log (`read`), normalizing (`stage_a`, `stage_b`), building rows (`rows`), encoding blocks (`encode`), writing its own log records (`wal_append`), waiting for inserts to ClickHouse (`wait_inserts`) and idle (`wait_frames`). The phases add up to the time it ran. While `crucible_wal_unshipped_bytes` grows, little `wait_inserts` and `wait_frames` means the shipper is the limit; much `wait_inserts` means ClickHouse is |
 | `crucible_clickhouse_connections_opened_total` | counter | Connections opened to ClickHouse |
 | `crucible_auth_key_snapshot_age_seconds` | gauge | Seconds since the API keys last loaded from Postgres; -1 before the first load |
 | `crucible_net_accept_errors_total` | counter | Failed accepts on a listener |

@@ -114,18 +114,20 @@ behind its connections during server stalls (send lag p99 19 ms at 830,000 spans
 
 - CPU per container comes from each container's cgroup `cpu.stat`, read before and after the measured load with
   that container's clock, and is given in cores (CPU seconds per second).
-- Inside Crucible, the runs used three metrics from the companion branch `feat/shipper-phase-metrics`, which is not
-  part of this change:
+- Inside Crucible, the runs used three metrics of commit `7801d64`, built on `4a6e68b`:
   - `crucible_shipper_task_microseconds_total{phase}`: the shipper task's time, charged to the phase it was in:
     `read` (the next durable frame), `stage_a` (decode and normalize), `stage_b` (duplicate window, first-seen set,
     recent-index insert), `rows` (table rows into the builders), `encode` (sort, Native encoding and compression
     of a sealed batch), `wal_append` (durable `BatchSeal` and `Checkpoint` frames, garbage collection),
     `wait_inserts` (the open batch is full and the most batches are in flight) and `wait_frames` (caught up with
-    the durable log). The phases add up to the task's running time, which a directed simulation test checks;
+    the durable log). The phases add up to the task's running time, which a directed simulation test checks.
+    `main` has this counter since #168, which also charges the task's waits for the control store, its retries
+    and its frame quarantine copies to `wait_frames`;
   - `crucible_shipper_insert_duration_microseconds`: each insert, from the send to the answer;
   - `crucible_wal_append_duration_microseconds`: each commit group's append, beside the existing sync histogram.
-- `system.query_log` gives the inserts per table as ClickHouse saw them. Without the companion metrics the script
-  still runs and leaves those fields out.
+    `main` has neither histogram.
+- `system.query_log` gives the inserts per table as ClickHouse saw them. Without the two histograms the script still
+  runs and leaves those fields out.
 
 ## Results
 
@@ -307,16 +309,11 @@ keeps up by definition and shows idle time.
   accurate at 25,600 spans/s (above), but the burst searches of that lane are still to repeat; only the 10-span
   gate runs measure Crucible in it.
 - Burst searches for 10 KiB spans with 10 spans per request: only the gate runs were done.
-- The companion branch `feat/shipper-phase-metrics` (the three metrics above, a directed simulation test, and an
-  assertion in the group-commit test) passed `cargo fmt`, `cargo clippy --workspace --all-targets` and the tests of
-  `crucible-env`, `crucible-wal`, `crucible-shipper` and the two directed simulation suites; the workspace test
-  run, `cargo deny` and its own pull request are still to do.
 - A repeat on a quiet machine: other jobs' containers had no cpuset, and the burst spread follows them.
 
 ## Reproducing
 
-From the repository root, with release builds of `crucible` (with the companion metrics for the phase split) and
-`crucible-loadgen` in a cargo target volume:
+From the repository root, with release builds of `crucible` and `crucible-loadgen` in a cargo target volume:
 
 ```sh
 TARGET_VOLUME=crucible-target tools/perf/baseline.sh all
