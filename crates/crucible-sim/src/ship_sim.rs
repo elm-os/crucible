@@ -657,7 +657,7 @@ struct Shipping {
 
 /// A quarantine directory whose pair is in fact quarantined.
 #[derive(Clone, Debug)]
-pub(crate) struct Quarantined {
+pub struct Quarantined {
     pub(crate) table: TableId,
     pub(crate) partition: PartitionId,
     pub(crate) first: u64,
@@ -668,7 +668,7 @@ pub(crate) struct Quarantined {
 
 /// What is wrong with a quarantine.
 #[derive(Clone, Debug)]
-pub(crate) enum QuarantineFault {
+pub enum QuarantineFault {
     /// Contract 5.6: a pair of which the store had accepted a block was quarantined without a probe that read
     /// absent.
     InDoubt { table: &'static str, batch_seq: u64 },
@@ -768,10 +768,18 @@ pub(crate) fn manifests(disk: &SimDisk) -> Vec<(String, Option<(Quarantined, usi
 /// The number of quarantine directories with a manifest, those whose pair is quarantined, and what is wrong
 /// with them (contract 5.6). A directory whose pair landed after all is what a crash between the copy and the
 /// `Quarantine` frame leaves behind.
-pub(crate) fn read_quarantines(
+///
+/// With `named`, the pairs that a `Quarantine` frame names (see [`named_pairs`]), a directory of any other pair
+/// is such a leftover too, whatever the store answered last. That is the rule where a restart can leave a pair
+/// of a sealed batch without rows, because it knows deletion requests that select all of them: nothing ships
+/// the pair again, and the store's last answer can be a data error of a process that crashed before it
+/// quarantined the pair again. A named pair gets no answer after its `Quarantine` frame, so its last answer is
+/// still the one its quarantine followed.
+pub fn read_quarantines(
     disk: &SimDisk,
     model: &ChModel,
     through: u64,
+    named: Option<&BTreeSet<(u64, TableId, PartitionId)>>,
 ) -> (u64, Vec<Quarantined>, Vec<QuarantineFault>) {
     let mut found = Vec::new();
     let mut faults = Vec::new();
@@ -785,7 +793,12 @@ pub(crate) fn read_quarantines(
         if q.last > through {
             continue;
         }
+        // Asked for every directory, named or not: each call settles the store model, which draws from its seeded
+        // streams, so the checks call it as often whatever the frames name.
         let (accepted, last) = model.pair_history(&(q.table, q.partition, q.first));
+        if named.is_some_and(|named| !named.contains(&(q.first, q.table, q.partition))) {
+            continue;
+        }
         match last {
             Some(LastAnswer::ProbeAbsent) => {}
             Some(LastAnswer::InsertPoison) if !accepted => {}
@@ -810,6 +823,24 @@ pub(crate) fn read_quarantines(
         found.push(q);
     }
     (directories, found, faults)
+}
+
+/// The pairs that a `Quarantine` frame names, as (batch, table, partition); none for another frame.
+pub fn named_pairs(frame: &WalFrame) -> Vec<(u64, TableId, PartitionId)> {
+    if frame.record_type() != RecordType::Quarantine {
+        return Vec::new();
+    }
+    let Ok(payload) = frame.payload() else {
+        return Vec::new();
+    };
+    match Record::decode(RecordType::Quarantine, &payload) {
+        Ok(Record::Quarantine(q)) => q
+            .pairs
+            .iter()
+            .map(|pair| (q.first_lsn.get(), pair.table_id, pair.partition_id))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 struct Run<'a> {
@@ -897,9 +928,10 @@ impl Run<'_> {
         Some((host, wal, report))
     }
 
-    /// The quarantine directories whose pair is quarantined, checked against contract 5.6.
+    /// The quarantine directories whose pair is quarantined, checked against contract 5.6. Without deletions
+    /// every restart ships each pair of a sealed batch again, so the store's last answer tells a leftover copy.
     fn quarantines(&self, through: u64) -> Vec<Quarantined> {
-        let (directories, found, faults) = read_quarantines(&self.disk, &self.model, through);
+        let (directories, found, faults) = read_quarantines(&self.disk, &self.model, through, None);
         for fault in faults {
             self.violate(match fault {
                 QuarantineFault::InDoubt { table, batch_seq } => {
