@@ -671,6 +671,8 @@ struct StoreTask {
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
     mcp: McpConfig,
+    /// `metrics.queries_per_project`: the metrics queries one project runs at once.
+    metrics_per_project: u32,
     /// What the export job reads with, given the query service once the store is up.
     exports: ExportRuntime,
     /// The API's exports, with a control plane.
@@ -764,6 +766,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         identity,
         facts: fact_writer,
         mcp,
+        metrics_per_project,
         exports,
         export_service,
         alerts,
@@ -897,7 +900,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("starting the shipper")?;
     let telemetry = Arc::clone(&stores.telemetry);
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch)
-        .with_metrics(env.metrics.as_ref());
+        .with_metrics(env.metrics.as_ref())
+        .with_metrics_per_project(metrics_per_project);
     // Every typed read, the export job's included, leaves out what a pending deletion selects.
     let service = match &lifecycle {
         Some(lifecycle) => {
@@ -1312,6 +1316,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         calls_per_second: config.mcp.calls_per_second,
         burst: config.mcp.burst,
     };
+    let metrics_per_project = config.metrics_queries_per_project;
     // The pools close last at shutdown, once nothing uses them.
     let postgres = control.as_ref().map(|control| control.store.clone());
     // Without a store the task is one that never ends, so the wait below has one shape.
@@ -1330,6 +1335,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
+                metrics_per_project,
                 exports,
                 export_service,
                 alerts,

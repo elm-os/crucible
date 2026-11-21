@@ -118,6 +118,12 @@ pub const SETTINGS: &[Setting] = &[
         "statements one project's SQL workspace may send to ClickHouse per hour; a run is three",
     ),
     plain(
+        "metrics.queries_per_project",
+        Some("4"),
+        "metrics queries one project runs at once on this server (a dashboard sends one per widget); the others \
+         wait their turn within their deadline",
+    ),
+    plain(
         "clickhouse.url",
         None,
         "HTTP endpoint of the ClickHouse telemetry store; without it the server only ingests",

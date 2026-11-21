@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible_plan::{
-    Aggregation, DimensionId, DimensionType, MeasureId, MetricsQuery, Row, Source, Step, Tier,
-    Value, metrics_keys, metrics_other, metrics_ranking, metrics_series, metrics_shape,
+    Aggregation, DimensionId, DimensionType, MeasureId, MetricsQuery, QueryClass, Row, Source,
+    Step, Tier, Value, metrics_keys, metrics_other, metrics_ranking, metrics_series, metrics_shape,
 };
 use crucible_records::{Histogram, Level, ObservationType, TableId, TimeWindow, Timestamp};
 
@@ -190,6 +190,12 @@ impl QueryService {
         let MetricsRequest { window, query } = request;
         let shape = metrics_shape(window, &query)
             .map_err(|error| QueryServiceError::Internal(error.to_string()))?;
+        // A dashboard's widgets take turns; the read waits for one within the deadline of its class.
+        let class = match query.measures.first().map(|(m, _)| m.tier()) {
+            Some(Tier::Core) => QueryClass::AnalyticsRaw,
+            _ => QueryClass::Analytics,
+        };
+        let _turn = self.metrics_turn(ctx, class).await?;
         let mut read = self.read(ctx, "metrics");
         let (scope, caller) = (ctx.scope, ctx.caller);
         let consistency = self.consistency();

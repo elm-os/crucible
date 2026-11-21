@@ -179,6 +179,8 @@ impl QueryService {
             return Err(QueryServiceError::Validation("measures"));
         };
         let (measure, aggregation) = (*measure, *aggregation);
+        // A dashboard's widgets take turns; the read waits for one within the deadline of its class.
+        let _turn = self.metrics_turn(ctx, QueryClass::Analytics).await?;
         let consistency = self.consistency();
         let mut read = self.read(ctx, "mcp_metrics");
         let selection = read
