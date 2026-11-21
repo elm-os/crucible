@@ -8,8 +8,9 @@
 //!   way the object appears whole at the commit and never in part, so a crash leaves no object, at most an upload
 //!   the store holds until the bucket's lifecycle rule removes it.
 //! - **Reading.** A download is a presigned GET that lives [`DOWNLOAD_TTL`] and saves the file as an attachment.
-//! - **Removing.** [`sweep_objects`] removes the objects that no export needs, as the disk sweep does on each node;
-//!   [`ExportObjects::remove`] removes the objects of the exports a deletion request expired.
+//! - **Removing.** [`sweep_objects`] removes the objects that no export needs, as the disk sweep does on each node,
+//!   run by one node at a time ([`crate::object_sweep_job`]); [`ExportObjects::remove`] removes the objects of the
+//!   exports a deletion request expired.
 
 use std::fmt;
 use std::sync::Arc;

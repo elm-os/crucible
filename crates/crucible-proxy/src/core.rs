@@ -43,6 +43,9 @@ pub const MODERN_VERSION: &str = "2026-07-28";
 /// The most bytes of an operation's error message (contract 3.5), after scrubbing.
 pub const MAX_ERROR_MESSAGE: usize = 2 * 1024;
 
+/// The most estimated bytes of finished operations waiting for export (contract 9.10).
+pub const BUFFER_BYTES: usize = 8 << 20;
+
 /// The size charged to the analysis queue for an item that carries no bytes.
 const CONTROL_ITEM_BYTES: usize = 64;
 /// Sessions and exchanges remembered at once; the oldest is forgotten beyond this.
@@ -185,7 +188,7 @@ impl CoreConfig {
             capture_source,
             queue_bytes: 4 << 20,
             queue_items: 8_192,
-            buffer_bytes: 8 << 20,
+            buffer_bytes: BUFFER_BYTES,
             buffer_ops: 10_000,
             max_pending: 10_000,
             batch_ops: 512,

@@ -154,8 +154,9 @@ func String(s string) string {
 	return s
 }
 
-// apply is the rule behind guards that take time linear in s and change nothing: text shorter than any match, or
-// without the rule's required literal, is left alone, and a lead pattern is tried once per anchor.
+// apply is the rule behind guards that take time linear in s and change nothing: text shorter than any match,
+// without the rule's required literal, or without the class and literal pair every match holds, is left alone, and
+// a lead pattern is tried once per anchor.
 func (r *rule) apply(s string) string {
 	f := &r.facts
 	if len(s) < f.minLength {
@@ -163,6 +164,15 @@ func (r *rule) apply(s string) string {
 	}
 	if f.literals != nil && !slices.ContainsFunc(f.literals, func(lit string) bool { return strings.Contains(s, lit) }) {
 		return s
+	}
+	if f.pairs != nil {
+		// One search for the pair, which a matcher takes at most one step per start for.
+		if h := matcherHook.Load(); h != nil {
+			(*h)(r.name, len(s))
+		}
+		if !f.holdsPair(s) {
+			return s
+		}
 	}
 	if r.rest != nil {
 		return r.applyLead(s)

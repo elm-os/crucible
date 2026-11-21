@@ -567,7 +567,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            refused.contains("max_bytes must be a whole number from 1 to 8388608"),
+            refused.contains("max_bytes must be a whole number from 1 to 8323072"),
             "{refused}"
         );
     }

@@ -46,6 +46,11 @@ const KILL_DEADLINE: Duration = Duration::from_secs(LOOKUP_SECS);
 /// The Rust-side deadline of a statement that changes data or schema. On expiry the outcome is unknown and the
 /// idempotent call is repeated.
 pub(crate) const CHANGE_DEADLINE: Duration = Duration::from_secs(300);
+/// The first wait of a read of `crucible_read_agent` that the server refused because the identity ran as many
+/// statements as its profile allows; each later wait doubles, up to [`AGENT_RETRY_MAX`].
+const AGENT_RETRY_FIRST: Duration = Duration::from_millis(50);
+/// The longest wait between two sends of a refused read of `crucible_read_agent`.
+const AGENT_RETRY_MAX: Duration = Duration::from_secs(1);
 
 /// How long the client waits for each statement of a migration step: [`CHANGE_DEADLINE`], or longer when the
 /// step sets its own `max_execution_time`, so that the client never gives up on a statement the server still
@@ -359,6 +364,10 @@ pub(crate) struct Reading {
     slots: Option<Arc<Semaphore>>,
     /// The slot the statement holds until its answer ends.
     slot: Option<OwnedSemaphorePermit>,
+    /// For an identity whose concurrent statements the server caps: the statement and its output format, to send
+    /// it again while the server refuses it for running as many as the cap, which other nodes' statements of the
+    /// identity can fill.
+    refused_resend: Option<(clickhouse::query::Query, String)>,
     inner: Arc<Inner>,
 }
 
@@ -390,7 +399,7 @@ impl Reading {
             kill.armed = true;
         }
         let first = clock.timeout_at(self.deadline, cursor.next()).await;
-        let outcome = match (first, self.resend.take()) {
+        let mut outcome = match (first, self.resend.take()) {
             // No byte of the request was sent, so the read changed nothing: it is sent once more, on a new
             // connection.
             (Ok(Err(error)), Some((query, format))) if codes::not_sent(&error) => {
@@ -404,6 +413,36 @@ impl Reading {
             }
             (first, _) => first,
         };
+        // The server refused the statement because the identity runs as many statements as its profile allows,
+        // which other nodes' statements of the identity can fill: nothing ran, so it is sent again after a wait,
+        // within its deadline, as a statement waits for a slot of this node's own.
+        let mut wait = AGENT_RETRY_FIRST;
+        while !self.answered
+            && let Ok(Err(error)) = &outcome
+            && codes::too_many_queries(error)
+            && let Some((query, format)) = &self.refused_resend
+        {
+            if let Some(kill) = &mut self.kill {
+                kill.armed = false;
+            }
+            if clock.now().saturating_add(wait) >= self.deadline {
+                self.cursor = None;
+                self.slot = None;
+                return Some(Err(Failure::Timeout));
+            }
+            clock.sleep(wait).await;
+            wait = wait.saturating_mul(2).min(AGENT_RETRY_MAX);
+            outcome = match query.clone().fetch_bytes(format) {
+                Ok(fresh) => {
+                    *cursor = fresh;
+                    if let Some(kill) = &mut self.kill {
+                        kill.armed = true;
+                    }
+                    clock.timeout_at(self.deadline, cursor.next()).await
+                }
+                Err(error) => Ok(Err(error)),
+            };
+        }
         let finished = !matches!(outcome, Ok(Ok(Some(_))));
         if finished {
             // Dropping the cursor closes the connection, which cancels the statement on the server
@@ -606,6 +645,7 @@ impl ClickHouseStore {
             .map_err(Failure::into_query)?;
         if identity == ServiceIdentity::ReadAgent {
             reading.slots = Some(Arc::clone(&self.inner.agent_slots));
+            reading.refused_resend.clone_from(&reading.resend);
         }
         Ok((query_id, reading))
     }
@@ -633,6 +673,7 @@ impl ClickHouseStore {
             }),
             slots: None,
             slot: None,
+            refused_resend: None,
             inner: Arc::clone(&self.inner),
         })
     }
@@ -1365,5 +1406,160 @@ mod tests {
             password: "hunter2".to_owned(),
         };
         assert!(!format!("{credentials:?}").contains("hunter2"));
+    }
+}
+
+/// Reads of `crucible_read_agent` that the server refuses because the identity runs as many statements as its
+/// profile allows, as it does when the reads of several nodes together fill its cap (contract 7.1), against a fake
+/// of the server's HTTP interface on the simulated network.
+#[cfg(test)]
+mod refused_agent_reads {
+    use std::convert::Infallible;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use crucible_env::{Clock as _, Listener, Net, NetError, Stream};
+    use http_body_util::Full;
+    use hyper::body::Incoming;
+    use hyper_util::rt::TokioIo;
+
+    use super::*;
+
+    /// The server's answer to a statement it refuses for its user's statement count.
+    const REFUSAL: &str = "Code: 202. DB::Exception: Too many simultaneous queries for user crucible_read_agent. \
+                           Maximum: 16. (TOO_MANY_SIMULTANEOUS_QUERIES) (version 26.8.1.1)";
+
+    /// A server that refuses its first `refusals` statements that way and answers `1` to the others.
+    #[derive(Debug)]
+    struct FakeServer {
+        env: Env,
+        refusals: u32,
+        statements: Arc<AtomicU32>,
+    }
+
+    #[async_trait]
+    impl Net for FakeServer {
+        async fn listen(&self, _: SocketAddr) -> Result<Box<dyn Listener>, NetError> {
+            Err(NetError::Io(std::io::Error::other(
+                "the fake network does not listen",
+            )))
+        }
+
+        async fn connect(&self, _: SocketAddr, _: Instant) -> Result<Stream, NetError> {
+            let (client, server) = tokio::io::duplex(1 << 16);
+            let statements = Arc::clone(&self.statements);
+            let refusals = self.refusals;
+            self.env.spawn("fake-clickhouse", async move {
+                let service = hyper::service::service_fn(move |_: http::Request<Incoming>| {
+                    let refused = statements.fetch_add(1, Ordering::Relaxed) < refusals;
+                    let answer = if refused {
+                        http::Response::builder()
+                            .status(500)
+                            .header("X-ClickHouse-Exception-Code", "202")
+                            .body(Full::new(Bytes::from_static(REFUSAL.as_bytes())))
+                    } else {
+                        http::Response::builder().body(Full::new(Bytes::from_static(b"1\n")))
+                    };
+                    async move { Ok::<_, Infallible>(answer.unwrap()) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(server), service)
+                    .await;
+            });
+            Ok(Stream::new(client))
+        }
+
+        async fn resolve(&self, _: &str) -> Result<Vec<IpAddr>, NetError> {
+            Ok(vec![IpAddr::V4(Ipv4Addr::new(10, 9, 0, 9))])
+        }
+
+        async fn tls_connect(
+            &self,
+            stream: Stream,
+            _: &str,
+            _: &TlsRoots,
+        ) -> Result<Stream, NetError> {
+            Ok(stream)
+        }
+    }
+
+    fn credentials(user: &str) -> Credentials {
+        Credentials {
+            user: user.to_owned(),
+            password: "fake".to_owned(),
+        }
+    }
+
+    /// Reads `SELECT 1` as `identity` from a server that refuses its first `refusals` statements, within
+    /// `deadline`: the answer, the statements the server saw and how long the read took.
+    fn read_from(
+        refusals: u32,
+        identity: ServiceIdentity,
+        deadline: Duration,
+    ) -> (Result<Bytes, QueryError>, u32, Duration) {
+        crucible_sim::run(7, |sim| async move {
+            let host = sim.host("node", &sim.disk("node"), 0);
+            let statements = Arc::new(AtomicU32::new(0));
+            let mut env = host.env.clone();
+            env.net = Arc::new(FakeServer {
+                env: host.env.clone(),
+                refusals,
+                statements: Arc::clone(&statements),
+            });
+            let store = ClickHouseStore::new(
+                env,
+                StoreConfig {
+                    url: "http://clickhouse.test:8123".to_owned(),
+                    read_url: None,
+                    admin: credentials("crucible_admin"),
+                    ingest: credentials("crucible_ingest"),
+                    read_ui: credentials("crucible_read_ui"),
+                    read_agent: credentials("crucible_read_agent"),
+                    maint: credentials("crucible_maint"),
+                    flavour: Some(StoreFlavour::SingleNode),
+                    tls_roots: TlsRoots::WebPki,
+                    connect_timeout: Duration::from_secs(5),
+                    idle_timeout: Some(Duration::from_secs(5)),
+                },
+            );
+            let statement = Binder::default().finish("SELECT 1".to_owned());
+            let started = host.clock.now();
+            let (_, mut reading) = store
+                .read(identity, &statement, &[], "TabSeparated", deadline, false)
+                .unwrap();
+            let answer = reading.next().await.unwrap();
+            let took = host.clock.now().saturating_duration_since(started);
+            (answer, statements.load(Ordering::Relaxed), took)
+        })
+    }
+
+    #[test]
+    fn a_refused_agent_read_waits_and_is_sent_again_until_the_server_runs_it() {
+        let (answer, statements, took) =
+            read_from(4, ServiceIdentity::ReadAgent, Duration::from_secs(10));
+        assert_eq!(answer.unwrap(), Bytes::from_static(b"1\n"));
+        assert_eq!(statements, 5);
+        // The waits double from 50 ms: 50, 100, 200 and 400 ms.
+        assert!(took >= Duration::from_millis(750), "{took:?}");
+    }
+
+    #[test]
+    fn a_refusal_that_outlasts_the_deadline_is_a_timeout() {
+        let (answer, statements, took) =
+            read_from(u32::MAX, ServiceIdentity::ReadAgent, Duration::from_secs(3));
+        assert_eq!(answer, Err(QueryError::Timeout));
+        assert!(statements > 3, "{statements}");
+        assert!(took <= Duration::from_secs(3), "{took:?}");
+    }
+
+    #[test]
+    fn a_refused_read_of_another_identity_is_not_sent_again() {
+        let (answer, statements, _) =
+            read_from(1, ServiceIdentity::ReadUi, Duration::from_secs(10));
+        assert!(
+            matches!(answer, Err(QueryError::Unavailable(_))),
+            "{answer:?}"
+        );
+        assert_eq!(statements, 1);
     }
 }

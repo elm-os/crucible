@@ -940,7 +940,11 @@ acknowledgement to the first list that names the trace, the second list of each 
   reads together, a request holds up to five of them, so the adapter makes each such read wait for one of 16
   slots, within its deadline, instead of sending it to be refused; the conformance row "Agent reads wait for a
   statement slot" holds the 16 with running statements and checks that a typed read waits for one (1,480 ms on
-  26.8) and succeeds, where the server answered `TOO_MANY_SIMULTANEOUS_QUERIES` before.
+  26.8) and succeeds, where the server answered `TOO_MANY_SIMULTANEOUS_QUERIES` before. Each node counts only its
+  own reads, so several nodes together can still fill the cap: a read the server refuses that way waits and is sent
+  again within its deadline, after 50 ms, then twice as long each time up to 1 s. The row "Agent reads wait for a
+  statement slot another node holds" holds the 16 through one store and reads through another (1,566 ms on 26.8),
+  which answered `telemetry_store_unavailable` before.
 
 ### Ingest with the read-path changes
 

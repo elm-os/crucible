@@ -36,8 +36,13 @@ tracing = { workspace = true }
 [dev-dependencies]
 crucible-auth = { workspace = true, features = ["test-support"] }
 crucible-plan = { workspace = true, features = ["test-support"] }
+# The simulated `Env`, on whose network a fake of the server's HTTP interface answers the directed read tests.
+crucible-sim = { path = "../crucible-sim" }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
 insta = { workspace = true }
 proptest = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 
 [lints]
 workspace = true
