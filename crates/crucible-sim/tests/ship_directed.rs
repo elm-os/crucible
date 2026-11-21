@@ -21,11 +21,11 @@ use crucible_records::{
 use crucible_schema::Granularity;
 use crucible_shipper::{
     Barrier, Barriers, DeletionRequests, DeletionsUnavailable, FRAMES_FILE, FrameManifest, Hooks,
-    KnownDeletion, MANIFEST_FILE, ShipError, Shipper, ShipperConfig, StatsSnapshot,
+    KnownDeletion, MANIFEST_FILE, Mutant, ShipError, Shipper, ShipperConfig, StatsSnapshot,
     frame_quarantine_ref,
 };
 use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
-use crucible_sim::ship_sim::{SpanSpec, read_quarantines, request_payload};
+use crucible_sim::ship_sim::{QuarantineFault, SpanSpec, read_quarantines, request_payload};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use crucible_wal_codec::{
@@ -947,6 +947,45 @@ fn a_copy_that_no_quarantine_frame_names_is_no_quarantine() {
         assert!(quarantined.is_empty() && faults.is_empty(), "{faults:?}");
         node.host.stop().await;
     });
+}
+
+/// Contract 5.6 as the quarantine check reads it: a pair in doubt that the shipper quarantines after an absent
+/// probe is a quarantine; one that it quarantines straight after its third data error, as the seeded defect
+/// does, is a quarantine in doubt. Returns the quarantines the check counts and the faults it finds.
+fn quarantined_after_data_errors(mutant: Option<Mutant>) -> (usize, Vec<QuarantineFault>) {
+    directed_seeded(7, |rig| async move {
+        poison_in_flight(&rig.model);
+        let config = ShipperConfig {
+            mutant,
+            ..config()
+        };
+        let retain = Duration::from_secs(3_600);
+        let (node, _) = rig.boot_with(retain, config, Hooks::default()).await;
+        let lsn = node.ingest(1, 2).await;
+        node.sleep(300).await;
+        let watermark = node.watermark();
+        assert!(watermark >= lsn.get());
+        assert_eq!(node.snapshot().quarantined, TABLES.len() as u64);
+        let (_, quarantined, faults) = read_quarantines(&rig.disk, &rig.model, watermark);
+        node.host.stop().await;
+        (quarantined.len(), faults)
+    })
+}
+
+#[test]
+fn a_pair_in_doubt_quarantined_without_an_absent_probe_is_a_quarantine_in_doubt() {
+    let (counted, faults) = quarantined_after_data_errors(None);
+    assert_eq!(counted, TABLES.len());
+    assert!(faults.is_empty(), "{faults:?}");
+    let (counted, faults) = quarantined_after_data_errors(Some(Mutant::QuarantineWithoutProbe));
+    assert_eq!(counted, TABLES.len());
+    assert_eq!(faults.len(), TABLES.len(), "{faults:?}");
+    assert!(
+        faults
+            .iter()
+            .all(|fault| matches!(fault, QuarantineFault::InDoubt { batch_seq: 1, .. })),
+        "{faults:?}"
+    );
 }
 
 #[test]
