@@ -34,7 +34,7 @@ fn registry(
     registry.register(housekeeping::job());
     if let Some(exports) = exports {
         registry.register(crucible_export::job(exports.clone()));
-        registry.register(crucible_export::sweep_job());
+        registry.register(crucible_export::sweep_job(exports.objects().cloned()));
     }
     for job in alerts {
         registry.register(job);
@@ -143,7 +143,7 @@ mod tests {
                 sim.rng("pg").as_ref(),
                 crucible_sim::pg_model::PgFaults::default(),
             ));
-            let lifecycle = Lifecycle::new(&host.env, control, wal, false);
+            let lifecycle = Lifecycle::new(&host.env, control, wal, None);
             assert_eq!(
                 registry(None, Vec::new(), Some(&lifecycle), None).names(),
                 [

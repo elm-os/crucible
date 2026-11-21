@@ -93,8 +93,9 @@ The SDKs move images, audio and files out of a payload and upload them separatel
 `@@@langfuseMedia:type=image/png|id=...|source=base64_data_uri@@@` in its place. Crucible serves their media
 endpoint, `/api/public/media`, on both HTTP listeners:
 
-- With object storage configured ([media](../self-hosting/media.md)), the uploads go to the bucket, and the span
-  panel shows the media beside the span's input or output ([media](../guides/media.md)).
+- With object storage configured ([media](../self-hosting/media.md)), the uploads go to the bucket, and the
+  **Media** tab of the span panel reads the references in the span's input, output and metadata and shows the media
+  each one names, with where it appears ([media](../guides/media.md)).
 - Without it, the SDK has already put the reference in the payload when it asks for the upload, so the media are
   lost. The media endpoint answers `501 media_not_supported` with the two ways to keep them, which the SDK logs as
   a media upload error. Crucible names the SDK setting in its startup log, and logs the same warning the first

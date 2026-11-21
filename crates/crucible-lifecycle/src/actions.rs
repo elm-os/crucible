@@ -29,6 +29,7 @@ const MAX_STEPS_PER_RUN: usize = 500;
 pub(crate) struct Shared {
     pub(crate) telemetry: Arc<dyn TelemetryStore>,
     pub(crate) subjects: Arc<dyn crate::Subjects>,
+    pub(crate) exports: Option<crucible_export::ExportObjects>,
     pub(crate) config: LifecycleConfig,
 }
 

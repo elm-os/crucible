@@ -5,8 +5,8 @@ import type { PayloadField } from "@/api/generated/PayloadField";
 import { EmptyState } from "@/components/empty-state";
 import { useLoadingPhase } from "@/components/section";
 import { StatusLabel } from "@/components/status";
-import { MediaUses } from "@/features/payload/media-uses";
 import { PayloadViewer } from "@/features/payload/payload-viewer";
+import { SpanMedia } from "@/features/payload/span-media";
 import { formatCost, formatCount, formatDuration, formatOffset, formatTime } from "@/lib/format";
 import { useUrlParam } from "@/lib/url-state";
 import { TYPE_LABEL } from "./span-waterfall";
@@ -87,7 +87,8 @@ function SpanDetails({
 }) {
   const { span } = node;
   const [tabParam, setTab] = useUrlParam("tab");
-  const tab = PAYLOAD_TABS.some((t) => t.field === tabParam) ? tabParam : "overview";
+  const tab =
+    tabParam === "media" || PAYLOAD_TABS.some((t) => t.field === tabParam) ? tabParam : "overview";
   const payloadSpan = { traceId: trace, spanId: span.span_id, startTime: span.start_time };
   return (
     <div className="flex flex-col gap-4">
@@ -107,6 +108,7 @@ function SpanDetails({
               {t.label}
             </TabsTab>
           ))}
+          <TabsTab value="media">Media</TabsTab>
         </TabsList>
         <TabsPanel value="overview">
           <SpanOverview node={node} tree={tree} />
@@ -121,16 +123,11 @@ function SpanDetails({
               noun={t.noun}
               ioShape={span.io_shape}
             />
-            <MediaUses
-              key={`${span.span_id}/${t.field}/media`}
-              project={project}
-              traceId={trace}
-              spanId={span.span_id}
-              field={t.field}
-              noun={t.noun}
-            />
           </TabsPanel>
         ))}
+        <TabsPanel value="media">
+          <SpanMedia key={`${span.span_id}/media`} project={project} span={payloadSpan} />
+        </TabsPanel>
       </Tabs>
     </div>
   );

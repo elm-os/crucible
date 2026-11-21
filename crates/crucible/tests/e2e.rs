@@ -20,7 +20,7 @@
 //! | `CRUCIBLE_E2E_NODE` | The Node binary; `node` when unset |
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
 //! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key, reads the trace back with the session and builds a dashboard over it |
-//! | `CRUCIBLE_E2E_S3_ENDPOINT` | An S3-compatible endpoint that the server and the test both reach, for example `http://localhost:7070`, with `CRUCIBLE_E2E_S3_BUCKET` (default `media`, which must exist), `CRUCIBLE_E2E_S3_ACCESS_KEY` and `CRUCIBLE_E2E_S3_SECRET_KEY`. When set, the control-plane path also uploads media through the compat media endpoint and reads them back; when unset, it checks that the endpoint answers `media_not_supported` |
+//! | `CRUCIBLE_E2E_S3_ENDPOINT` | An S3-compatible endpoint that the server and the test both reach, for example `http://localhost:7070`, with `CRUCIBLE_E2E_S3_BUCKET` (default `media`, which must exist), `CRUCIBLE_E2E_S3_ACCESS_KEY` and `CRUCIBLE_E2E_S3_SECRET_KEY`. When set, the control-plane path also uploads media through the compat media endpoint and reads them back, and its export downloads from the store through a 303; when unset, it checks that the endpoint answers `media_not_supported` |
 //!
 //! `docs/development.md` ("The end-to-end test") has the commands.
 
@@ -118,6 +118,40 @@ fn http(
         .and_then(|head| head.split(' ').nth(1)?.parse().ok())
         .ok_or_else(|| std::io::Error::other("no status"))?;
     Ok((status, response[end + 4..].to_vec()))
+}
+
+/// One GET on a fresh connection: the status, the `Location` header, and the body.
+fn http_located(
+    addr: SocketAddr,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> std::io::Result<(u16, Option<String>, Vec<u8>)> {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let mut head = format!("GET {path} HTTP/1.1\r\nHost: e2e\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("Content-Length: 0\r\n\r\n");
+    stream.write_all(head.as_bytes())?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    let end = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| std::io::Error::other("no response head"))?;
+    let head = String::from_utf8_lossy(&response[..end]).into_owned();
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .ok_or_else(|| std::io::Error::other("no status"))?;
+    let location = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("location")
+            .then(|| value.trim().to_owned())
+    });
+    Ok((status, location, response[end + 4..].to_vec()))
 }
 
 /// A running `crucible serve`.
@@ -1598,14 +1632,20 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         );
         std::thread::sleep(Duration::from_millis(500));
     };
-    let (status, file) = http(
+    let (status, location, file) = http_located(
         server.api,
-        "GET",
         ready["download_path"].as_str().unwrap(),
         &[("cookie", cookie.as_str())],
-        b"",
     )
     .unwrap();
+    // With an object store the file is there, and the download is a 303 to a presigned link to it.
+    let (status, file) = match &rig.media {
+        Some(_) => {
+            assert_eq!(status, 303, "{}", String::from_utf8_lossy(&file));
+            http_url("GET", location.as_deref().expect("a Location"), &[], b"")
+        }
+        None => (status, file),
+    };
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&file));
     let checksum: String = Sha256::digest(&file)
         .iter()

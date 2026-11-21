@@ -8,7 +8,7 @@ use crate::build::{RetentionClamp, trace_bounds_window};
 use crate::class::{Caller, QueryClass};
 use crate::error::PlanError;
 use crate::literal::Literal;
-use crate::node::{FieldRange, Node};
+use crate::node::{FieldRange, Node, PointLookup};
 use crate::plan::QueryPlan;
 
 /// A payload field the viewer can read: the string columns of `span_payload`. The `metadata` selector of the
@@ -127,5 +127,46 @@ pub fn payload_range(
         trace_bounds_window(request.start_time, request.start_time)?,
         caller.class(QueryClass::Point),
         Node::FieldRange(range),
+    )
+}
+
+/// The bodies of one span's payload that can reference media (contract 14): the outputs are, in order, `input`,
+/// `output`, `metadata_keys`, `metadata_values` and `lsn`. A span sent twice has a row per copy, told apart by
+/// `lsn`; a span whose payload expired under the payload retention, or was never stored, has none.
+pub fn span_bodies(
+    scope: ProjectScope,
+    clamp: &RetentionClamp,
+    caller: Caller,
+    trace_id: TraceId,
+    span_id: SpanId,
+    start_time: Timestamp,
+) -> Result<Option<QueryPlan>, PlanError> {
+    let lookup = PointLookup::new(
+        TableId::SpanPayload,
+        [
+            SpanPayloadCol::StartMinute,
+            SpanPayloadCol::TraceHash,
+            SpanPayloadCol::SpanId,
+            SpanPayloadCol::TraceId,
+        ],
+        vec![vec![
+            start_time.floor_minute().into(),
+            trace_id.trace_hash().into(),
+            Literal::from(span_id),
+            trace_id.into(),
+        ]],
+        [
+            SpanPayloadCol::Input,
+            SpanPayloadCol::Output,
+            SpanPayloadCol::MetadataKeys,
+            SpanPayloadCol::MetadataValues,
+            SpanPayloadCol::Lsn,
+        ],
+    )?;
+    clamp.plan(
+        scope,
+        trace_bounds_window(start_time, start_time)?,
+        caller.class(QueryClass::Point),
+        Node::PointLookup(lookup),
     )
 }

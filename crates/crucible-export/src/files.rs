@@ -2,14 +2,17 @@
 //! own, `<project>/<export>.<attempt>.part`; the commit is `sync_data`, a rename to the attempt's final name
 //! `<project>/<export>.<attempt>.<extension>` and `sync_dir`, and only then does the row record the file. A
 //! crash before the rename leaves a temporary file and no committed one; a crash between the rename and the row
-//! leaves a file no row names. The sweep removes both, and files whose export expired.
+//! leaves a file no row names. The sweep removes both, and files whose export expired. With an object store the
+//! file goes there instead ([`crate::objects`]).
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible_control::{ClaimStatus, ExportFormat, ExportJob, Repos, TxError};
-use crucible_env::{Disk, DiskError, DiskPath, File, OpenMode, Root};
+use crucible_env::{Disk, DiskError, DiskPath, File, ObjectError, OpenMode, Root};
 use crucible_records::{ExportJobId, ProjectId, Timestamp};
+
+use crate::objects::{ExportObjects, ObjectDraft, object_of};
 
 /// The file name extension of a format.
 pub(crate) const fn extension(format: ExportFormat, gzip: bool) -> &'static str {
@@ -25,12 +28,12 @@ fn project_dir(project_id: ProjectId) -> Result<DiskPath, DiskError> {
     DiskPath::new(Root::Exports, &project_id.to_string())
 }
 
-/// What a file name in a project's directory says.
+/// What a file name in a project's directory, or an export object's key, says.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Named {
-    id: ExportJobId,
-    attempt: u32,
-    temporary: bool,
+pub(crate) struct Named {
+    pub(crate) id: ExportJobId,
+    pub(crate) attempt: u32,
+    pub(crate) temporary: bool,
 }
 
 fn parse_name(name: &str) -> Option<Named> {
@@ -135,21 +138,37 @@ pub(crate) async fn remove(disk: &dyn Disk, file: &str) -> Result<(), DiskError>
     }
 }
 
-/// Whether a file of the exports root should go: its export is gone, expired or failed, or the file belongs to
-/// an attempt that is neither the committed one nor one still holding its claim.
-fn stale(named: Named, path: &str, row: Option<&ExportJob>, now: Timestamp) -> bool {
+/// Removes a committed file that no row records: from this node's disk, or from the object store. Without the
+/// store an object stays for the sweep of a node that has it.
+pub(crate) async fn discard(
+    disk: &dyn Disk,
+    objects: Option<&ExportObjects>,
+    file: &str,
+) -> Result<(), FilesError> {
+    match (object_of(file), objects) {
+        (Some(key), Some(objects)) => objects.delete(key).await?,
+        (Some(_), None) => {}
+        (None, _) => remove(disk, file).await?,
+    }
+    Ok(())
+}
+
+/// Whether a file of the exports root, or an export object, should go: its export is gone, expired or failed, or
+/// the file belongs to an attempt that is neither the committed one nor one still holding its claim. A file of the
+/// attempt that holds the claim stays, also once committed and before the row records it.
+pub(crate) fn stale(named: Named, path: &str, row: Option<&ExportJob>, now: Timestamp) -> bool {
     let Some(job) = row else { return true };
     if job.expires_at.is_some_and(|at| at <= now) || job.error.is_some() {
         return true;
     }
+    let running = job.status == ClaimStatus::Pending
+        && job.file.is_none()
+        && job.attempts == named.attempt
+        && job.lease_until.is_some_and(|until| until > now);
     if named.temporary {
-        let running = job.status == ClaimStatus::Pending
-            && job.file.is_none()
-            && job.attempts == named.attempt
-            && job.lease_until.is_some_and(|until| until > now);
         !running
     } else {
-        job.file.as_deref() != Some(path)
+        !running && job.file.as_deref() != Some(path)
     }
 }
 
@@ -162,7 +181,7 @@ pub struct Swept {
     pub directories: u64,
 }
 
-/// Why a sweep or a purge stopped.
+/// Why a sweep, a purge or a file's commit stopped.
 #[derive(Debug, thiserror::Error)]
 pub enum FilesError {
     /// The disk failed.
@@ -171,6 +190,58 @@ pub enum FilesError {
     /// The control store failed.
     #[error(transparent)]
     Store(#[from] TxError),
+    /// The object store failed.
+    #[error("the object store failed: {0}")]
+    Objects(#[from] ObjectError),
+}
+
+/// Where an attempt writes its file: this node's exports root, or the object store.
+#[derive(Debug)]
+pub(crate) enum Sink {
+    /// A temporary file on the disk, renamed at the commit.
+    Disk(Draft),
+    /// An object that appears whole at the commit.
+    Object(ObjectDraft),
+}
+
+impl Sink {
+    /// Opens the file of an attempt: on the object store when the deployment has one, else on the disk.
+    pub(crate) async fn open(
+        disk: Arc<dyn Disk>,
+        objects: Option<&ExportObjects>,
+        job: &ExportJob,
+        attempt: u32,
+        gzip: bool,
+    ) -> Result<Self, FilesError> {
+        Ok(match objects {
+            Some(objects) => Self::Object(objects.draft(job, attempt, gzip)),
+            None => Self::Disk(Draft::open(disk, job, attempt, gzip).await?),
+        })
+    }
+
+    /// Appends bytes.
+    pub(crate) async fn append(&mut self, chunk: Bytes) -> Result<(), FilesError> {
+        match self {
+            Self::Disk(draft) => Ok(draft.append(chunk).await?),
+            Self::Object(draft) => Ok(draft.append(chunk).await?),
+        }
+    }
+
+    /// Makes the file whole and durable, and returns the row's reference to it.
+    pub(crate) async fn commit(self) -> Result<String, FilesError> {
+        match self {
+            Self::Disk(draft) => Ok(draft.commit().await?),
+            Self::Object(draft) => Ok(draft.commit().await?),
+        }
+    }
+
+    /// Gives the file up.
+    pub(crate) async fn abandon(self) {
+        match self {
+            Self::Disk(draft) => draft.abandon().await,
+            Self::Object(draft) => draft.abandon().await,
+        }
+    }
 }
 
 /// Removes the files of this node's exports root that no export needs (see [`stale`]). `now` is compared with
@@ -238,7 +309,9 @@ pub struct Purged {
 /// sweep. Exports created at or after `requested_at` hold new data and are kept.
 ///
 /// `repos` may be a transaction, for example the fenced transaction of the deletion executor; the files are
-/// removed after the expiry is written, so a purge that fails can be run again.
+/// removed after the expiry is written, so a purge that fails can be run again. A file on the object store is
+/// never removed here, because a transaction must not wait on the store: once the expiry has committed, pass
+/// [`Purged::expired`] to [`ExportObjects::remove`]; the sweep removes what that misses.
 pub async fn purge(
     repos: &dyn Repos,
     disk: &dyn Disk,
@@ -252,7 +325,7 @@ pub async fn purge(
         .await?;
     let mut files_removed = 0;
     for job in &expired {
-        if let Some(file) = &job.file {
+        if let Some(file) = job.file.as_deref().filter(|file| object_of(file).is_none()) {
             remove(disk, file).await?;
             files_removed += 1;
         }

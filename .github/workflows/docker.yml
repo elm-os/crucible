@@ -2,7 +2,7 @@ name: docker
 
 # The container image (deploy/docker/Dockerfile).
 # - Pull requests that can change it: build it for linux/amd64 and linux/arm64 without pushing, then run the Compose
-#   smoke test (deploy/compose/smoke-test.sh) on the amd64 build.
+#   smoke test (deploy/compose/smoke-test.sh) on the amd64 build, with the media overlay as its last step.
 # - A v* tag: build both platforms with SBOM and provenance attestations and push the multi-platform image to
 #   ghcr.io/elm-os/crucible. Only that job may write packages.
 
@@ -85,8 +85,29 @@ jobs:
           path: ${{ runner.temp }}
       - name: Load the image
         run: docker load --input "$RUNNER_TEMP/crucible-image.tar"
-      - name: Start Compose, send a trace with curl and read it back through the API
+      - name: Start Compose, send a trace and read it back, upgrade, then upload media and export to the object store
         run: bash deploy/compose/smoke-test.sh crucible:ci
+
+  # An upgrade from the newest published release (deploy/compose/upgrade-test.sh): the restarts after it apply no
+  # migration step, and the trace and the MCP calls sent to the release read back.
+  compose-upgrade:
+    name: compose upgrade
+    if: github.event_name == 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: crucible-image-amd64
+          path: ${{ runner.temp }}
+      - name: Load the image
+        run: docker load --input "$RUNNER_TEMP/crucible-image.tar"
+      - name: Upgrade from ghcr.io/elm-os/crucible:latest, restart twice and read back
+        run: bash deploy/compose/upgrade-test.sh crucible:ci
 
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

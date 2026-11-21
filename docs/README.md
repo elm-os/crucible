@@ -9,6 +9,7 @@
 | [Configuration](self-hosting/configuration.md) | Every setting, with its key, environment variable, flag and default |
 | [Operations](self-hosting/operations.md) | Upgrades, backups and restores, health checks, metrics and logs |
 | [Security](self-hosting/security.md) | What is protected by default, and the switches that harden a deployment |
+| [Sign-in and the organization](self-hosting/sign-in.md) | Project access, sign-up by email domain, and sign-in providers |
 | [Retention and deletion](self-hosting/retention-and-deletion.md) | How long data is kept, and deleting a trace, a user or a session |
 | [Alerts and egress](self-hosting/alerts-and-egress.md) | Outbound calls of channels, the egress policy and email |
 | [SQL workspace](self-hosting/sql-workspace.md) | The per-project ClickHouse users, the self-probe, limits and the quota |

@@ -12,6 +12,12 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
   server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
   as the copy of step 0005.
+- A migration step whose content changed, such as steps 0001 to 0003 on an upgrade from 0.1.1, applies once and the
+  ledger records its new content; it no longer applies again, with a warning, at every start.
+- A start whose master key the ClickHouse service users refuse leaves a changed migration step for a start with the
+  right key, so it no longer gives the SQL workspace's probe users that key's passwords.
+- With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the migrations ledger
+  records every step of its version, and says to run `crucible migrate` or to start one server with `--migrate`.
 - Settings has an Organization page for the organization's name, project access (every project, or only the projects
   someone is added to) and the allowed email domains, whose people join as viewers without an invitation once their
   sign-in provider verifies their address. Members and viewers read it; editing needs a screen at least 768 pixels
@@ -19,6 +25,29 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - Settings has a Sign-in page that adds, edits, turns off and deletes GitHub, Google and OpenID Connect sign-in
   providers, replaces a client secret without ever showing the stored one, and copies the callback URL to register
   with the provider.
+- `crucible proxy` records the arguments and results of the tool calls a `--capture` rule (or
+  `CRUCIBLE_PROXY_CAPTURE`) names, with the SDKs' rules: off by default, sampled per call, scrubbed with the shared
+  rules and cut at 16 KiB per field, keeping no more than the cap plus 1 KiB of a value, and never on the forwarding
+  path.
+- The Python SDK encodes captured content without a step per JSON token: a result of 500 records took 0.4 ms
+  instead of 5.2 ms per call on a laptop, with the same text as before.
+- The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
+  a pair of characters every match of it holds (a hexadecimal digit before a `:` for the ipv6 rule), so capturing
+  500 records or 64 KiB of hexadecimal text costs about half as much.
+- The Rust SDK's `flush` waits at most the export timeout in all, for the spans and the queued scores together; it
+  waited as long again for the scores.
+- The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
+  manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
+  all four variants.
+- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
+  a presigned link that any server hands out; expiry and deletion requests remove the objects.
+- The span panel has a Media tab, in place of the media section under each payload tab, that lists the media a span's
+  input, output and metadata reference, with where each appears, and the media uploaded for the span; without object
+  storage it says so and links the media guide.
+- `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` lists the media a span references.
+- With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
+- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
+  needs.
 - The metric `crucible_shipper_task_microseconds_total{phase}` gives the shipper's time by what it was doing:
   reading the log, normalizing, building rows, encoding blocks, writing its own log records, waiting for inserts and
   idle.

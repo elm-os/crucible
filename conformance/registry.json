@@ -213,7 +213,7 @@
   },
   "mcp_rules": [
     { "field": "side", "assert": "server", "contract": "9.1" },
-    { "field": "capture_source", "assert": "sdk", "contract": "9.1" },
+    { "field": "capture_source", "assert": "$capture_source", "contract": "9.1" },
     { "field": "era", "assert": "$era", "contract": "9.1" },
     { "field": "transport", "assert": "$transport", "contract": "9.1" },
     { "field": "direction", "assert": "client_to_server", "contract": "9.1" },

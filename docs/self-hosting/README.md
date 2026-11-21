@@ -19,6 +19,7 @@ To get a server running, follow the [quickstart](quickstart.md).
 | [Configuration](configuration.md) | Every setting, with its key, environment variable, flag and default |
 | [Operations](operations.md) | Upgrades, backups and restores, health checks, Prometheus metrics and logs |
 | [Security](security.md) | What is protected by default, and the switches that harden a deployment |
+| [Sign-in and the organization](sign-in.md) | Project access, sign-up by email domain, and GitHub, Google and OpenID Connect sign-in |
 | [Retention and deletion](retention-and-deletion.md) | How long data is kept, and deleting a trace, a user or a session |
 | [Alerts and egress](alerts-and-egress.md) | The outbound calls of webhook, Slack and email channels, and how to limit them |
 | [SQL workspace](sql-workspace.md) | The per-project ClickHouse users behind the SQL workspace, and its quota |

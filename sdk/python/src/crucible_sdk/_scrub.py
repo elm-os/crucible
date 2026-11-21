@@ -8,6 +8,8 @@ scrubbing work is bounded by the cap however large the input is.
 from __future__ import annotations
 
 import json
+import json.encoder as json_encoder
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -300,6 +302,22 @@ class Scrubber:
             value = rule.apply(value)
         return value
 
+    def leaves_alone(self, texts: list[str]) -> bool:
+        """Whether the rules leave every one of `texts` unchanged, checked over all of them at once.
+
+        The texts are joined by a NUL, which no rule but `pem` matches, so a rule that changes one of them changes the
+        joined text too; a match across a NUL can only make the answer no. A rule whose matches are longer than the
+        longest text cannot change any of them and is skipped.
+        """
+        longest = max(map(len, texts), default=0)
+        if longest < self._shortest:
+            return True
+        joined = value = "\0".join(texts)
+        for rule in self.rules:
+            if rule.facts.min_length <= longest:
+                value = rule.apply(value)
+        return value == joined
+
     def text_plain(self, value: str) -> str:
         """`value` with every rule applied in order without its guards, for the differential tests."""
         for rule in self.rules:
@@ -323,9 +341,9 @@ class Scrubber:
         A cut value is a prefix of the full encoding, so it is no longer valid JSON (contract 3.1).
         """
         encoder = _CappedJson(self, max_bytes)
-        encoder.value(value, 0)
+        encoder.value(value, 0, None)
         note_work(encoder.serialized, encoder.scrubbed)
-        return b"".join(encoder.parts).decode("utf-8", "ignore"), encoder.cut
+        return "".join(encoder.parts), encoder.cut
 
 
 @dataclass(frozen=True)
@@ -343,79 +361,268 @@ class LazyArray:
     items: Iterable[object]
 
 
+@dataclass(frozen=True)
+class JsonData:
+    """Builtin data (dicts, lists, tuples and scalars) to encode as `convert` has it, converted while it is encoded.
+
+    The encoder applies the rules of `model_dump(mode="json")` to the builtin types itself: strings, integers,
+    booleans and None stay, a float that is not finite becomes null, and a key that is not a string goes through
+    `key`. Any other value goes through `convert`, whose result is encoded as it is. So a capped encoding converts
+    no more of the data than the cap holds, without wrapping each container it reads.
+    """
+
+    value: object
+    convert: Callable[[object], object]
+    key: Callable[[object], str]
+
+
+_REDACTED_JSON = json.dumps(_REDACTED)
+_encode_string = json_encoder.encode_basestring
+_int_text = int.__repr__
+_float_repr = float.__repr__
+_isfinite = math.isfinite
+# One call writes a whole run of flat objects, as the item-by-item walk would write them.
+_encode_run = json.JSONEncoder(ensure_ascii=False, separators=(",", ":")).encode
+# A run of flat objects is at most this many objects, with strings of at most this many characters each and this
+# many in all, so that a run which does not fit costs little.
+_RUN_ITEMS = 64
+_RUN_KEYS = 16
+_RUN_STRING = 128
+_RUN_CHARS = 2048
+
+
+def _scalar(value: object) -> str:
+    """`json.dumps` of None, a boolean or a number."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return _int_text(value)
+    number = float(value)  # type: ignore[arg-type]
+    if number != number:
+        return "NaN"
+    if number == math.inf:
+        return "Infinity"
+    if number == -math.inf:
+        return "-Infinity"
+    return _float_repr(number)
+
+
 class _CappedJson:
+    """`value` as scrubbed JSON text within a byte budget.
+
+    It writes what a walk token by token writes (`tests/capture_reference.py` holds that walk, and property tests
+    hold this class to it), with two shortcuts. Text is kept as `str` and measured without encoding when it is
+    ASCII. And a run of flat objects in an array (records: string, number, boolean and null values under string
+    keys) is written by the standard library's encoder in one call, when no text in the run would be scrubbed and the
+    whole run fits the budget, the only case in which the token walk writes the same text without a cut.
+    """
+
     def __init__(self, scrubber: Scrubber, max_bytes: int) -> None:
         self._scrubber = scrubber
-        self._left = max_bytes
-        self.parts: list[bytes] = []
+        self._scrub = scrubber.text
+        self.left = max_bytes
+        self.parts: list[str] = []
         self.cut = False
         self.serialized = 0
         self.scrubbed = 0
+        # Per tuple of keys: their length in all when an object with these keys may stand in a run, else -1.
+        self._shapes: dict[tuple[object, ...], int] = {}
 
-    def _emit(self, text: str) -> bool:
+    def emit(self, text: str) -> bool:
         self.serialized += len(text)
-        data = text.encode("utf-8", "replace")
-        if len(data) <= self._left:
-            self.parts.append(data)
-            self._left -= len(data)
-            return True
-        self.parts.append(data[: self._left])
-        self._left = 0
+        if text.isascii():
+            if len(text) <= self.left:
+                self.parts.append(text)
+                self.left -= len(text)
+                return True
+            self.parts.append(text[: self.left])
+        else:
+            data = text.encode("utf-8", "replace")
+            if len(data) <= self.left:
+                self.parts.append(data.decode("utf-8"))
+                self.left -= len(data)
+                return True
+            # A character the budget cuts is dropped whole.
+            self.parts.append(data[: self.left].decode("utf-8", "ignore"))
+        self.left = 0
         self.cut = True
         return False
 
-    def value(self, value: object, depth: int) -> bool:
+    def value(self, value: object, depth: int, data: JsonData | None) -> bool:
+        if data is not None:
+            kind = type(value)
+            if kind is float:
+                if not math.isfinite(value):  # type: ignore[arg-type]
+                    value = None
+            elif kind is dict or kind is list or kind is tuple:
+                if depth >= _MAX_DEPTH:
+                    self.cut = True
+                    return False
+                if kind is dict:
+                    return self.mapping(value.items(), depth, data)  # type: ignore[attr-defined]
+                return self.array(value, depth, data)  # type: ignore[arg-type]
+            elif not (kind is str or kind is int or kind is bool or value is None):
+                # Not a builtin type: converted, and its result encoded as it is.
+                value, data = data.convert(value), None
         if value is None or isinstance(value, bool | int | float):
-            return self._emit(json.dumps(value))
+            return self.emit(_scalar(value))
         if isinstance(value, str):
-            return self._string(value)
+            return self.string(value)
+        if isinstance(value, JsonData):
+            return self.value(value.value, depth, value)
         if depth >= _MAX_DEPTH:
             self.cut = True
             return False
         if isinstance(value, Mapping):
-            return self._object(value.items(), depth)
+            return self.mapping(value.items(), depth, None)
         if isinstance(value, LazyObject):
-            return self._object(value.members, depth)
+            return self.mapping(value.members, depth, None)
         if isinstance(value, list | tuple):
-            return self._array(value, depth)
+            return self.array(value, depth, None)
         if isinstance(value, LazyArray):
-            return self._array(value.items, depth)
-        return self._string(str(value))
+            return self.array(value.items, depth, None)
+        return self.string(str(value))
 
-    def _string(self, value: str, suffix: str = "") -> bool:
+    def string(self, value: str, suffix: str = "") -> bool:
         """Emits a string (an object key with `suffix` ":"), scrubbing no more of it than the budget can hold."""
-        raw = value[: self._left + _MARGIN]
+        raw = value[: self.left + _MARGIN]
         self.scrubbed += len(raw)
-        text = json.dumps(self._scrubber.text(raw), ensure_ascii=False)
+        text = _encode_string(self._scrub(raw))
         if len(raw) < len(value):
             # Cut before scrubbing: emit it without the closing quote, as a prefix of the full encoding.
-            self._emit(text[:-1])
+            self.emit(text[:-1])
             self.cut = True
             return False
-        return self._emit(text + suffix)
+        return self.emit(text + suffix)
 
-    def _object(self, members: Iterable[tuple[Any, Any]], depth: int) -> bool:
-        if not self._emit("{"):
+    def mapping(self, members: Iterable[tuple[Any, Any]], depth: int, data: JsonData | None) -> bool:
+        if not self.emit("{"):
             return False
-        for i, (key, item) in enumerate(members):
+        first = True
+        for key, item in members:
+            if data is not None and type(key) is not str:
+                key = data.key(key)
             name = key if isinstance(key, str) else str(key)
-            if i and not self._emit(","):
+            if not first and not self.emit(","):
                 return False
-            if not self._string(name, ":"):
+            first = False
+            if not self.string(name, ":"):
                 return False
             if Scrubber.is_denied_key(name):
-                if not self._emit(json.dumps(_REDACTED)):
+                if not self.emit(_REDACTED_JSON):
                     return False
-            elif not self.value(item, depth + 1):
+            elif not self.value(item, depth + 1, data):
                 return False
-        return self._emit("}")
+        return self.emit("}")
 
-    def _array(self, value: Iterable[Any], depth: int) -> bool:
-        if not self._emit("["):
+    def array(self, items: Iterable[Any], depth: int, data: JsonData | None) -> bool:
+        if not self.emit("["):
             return False
-        for i, item in enumerate(value):
-            if i and not self._emit(","):
+        first = True
+        run: list[object] = []
+        strings: list[str] = []
+        chars = 0
+        for item in items:
+            mark = len(strings)
+            added = self._flat(item, depth + 1, data, strings)
+            if added >= 0:
+                run.append(item)
+                chars += added
+                if len(run) < _RUN_ITEMS and chars < _RUN_CHARS:
+                    continue
+            else:
+                del strings[mark:]
+            if run:
+                if not self._run(run, strings, first, depth, data):
+                    return False
+                first = False
+                run, strings, chars = [], [], 0
+            if added < 0:
+                if not first and not self.emit(","):
+                    return False
+                first = False
+                if not self.value(item, depth + 1, data):
+                    return False
+        if run and not self._run(run, strings, first, depth, data):
+            return False
+        return self.emit("]")
+
+    def _flat(self, item: object, depth: int, data: JsonData | None, strings: list[str]) -> int:
+        """Adds the string values of `item` to `strings` and returns their length and its keys', when `item` may stand
+        in a run; else returns -1."""
+        if not isinstance(item, dict) or type(item) is not dict or len(item) > _RUN_KEYS or depth >= _MAX_DEPTH:
+            return -1
+        keys = tuple(item)
+        shape = self._shapes.get(keys)
+        if shape is None:
+            usable = all(self._key(key) for key in keys)
+            shape = self._shapes[keys] = sum(map(len, keys)) if usable else -1
+        if shape < 0:
+            return -1
+        # The keys count toward the run's size like the strings, since a run that does not fit is written again.
+        added = shape
+        for value in item.values():
+            kind = type(value)
+            if kind is str:
+                if len(value) > _RUN_STRING:
+                    return -1
+                strings.append(value)
+                added += len(value)
+            elif kind is float:
+                # A float that is not finite is written as JSON has it, unless conversion makes it null.
+                if data is not None and not _isfinite(value):
+                    return -1
+            elif kind is not int and kind is not bool and value is not None:
+                return -1
+        return added
+
+    def _key(self, key: object) -> bool:
+        """Whether a key may stand in a run: a string that scrubbing leaves alone and that is not denied."""
+        if type(key) is not str:
+            return False
+        self.scrubbed += len(key)
+        return len(key) <= _RUN_STRING and not Scrubber.is_denied_key(key) and self._scrub(key) == key
+
+    def _run(self, run: list[object], strings: list[str], first: bool, depth: int, data: JsonData | None) -> bool:
+        """Writes a run of flat objects in one call when the rules leave all its strings alone and it fits; else item
+        by item."""
+        self.scrubbed += sum(map(len, strings)) + len(strings)
+        if self._scrubber.leaves_alone(strings):
+            return self._clean_run(run, first, depth, data)
+        return self._items(run, first, depth, data)
+
+    def _clean_run(self, run: list[object], first: bool, depth: int, data: JsonData | None) -> bool:
+        """Writes a run that scrubbing leaves alone in one call when it fits; else its halves, down to the one object
+        that does not fit, which goes item by item and meets the cut."""
+        text = _encode_run(run)[1:-1]
+        # Counted whether it fits or not: a run that does not fit is serialized again, in halves.
+        self.serialized += len(text)
+        if not first:
+            text = "," + text
+        if text.isascii():
+            size = len(text)
+        else:
+            encoded = text.encode("utf-8", "replace")
+            size = len(encoded)
+            text = encoded.decode("utf-8")
+        if size <= self.left:
+            self.parts.append(text)
+            self.left -= size
+            return True
+        if len(run) == 1:
+            return self._items(run, first, depth, data)
+        half = len(run) // 2
+        return self._clean_run(run[:half], first, depth, data) and self._clean_run(run[half:], False, depth, data)
+
+    def _items(self, items: list[object], first: bool, depth: int, data: JsonData | None) -> bool:
+        for item in items:
+            if not first and not self.emit(","):
                 return False
-            if not self.value(item, depth + 1):
+            first = False
+            if not self.value(item, depth + 1, data):
                 return False
-        return self._emit("]")
+        return True

@@ -84,6 +84,7 @@ presigned URLs:
 | S3 4 | A presigned GET serves the bytes with `inline` or `attachment` as asked; a stream of the object gives the bytes |
 | S3 5 | An expired presigned GET is refused |
 | S3 6 | Listing pages in key order from a start key; delete, and a batch delete with a missing key |
+| S3 7 | A multipart upload of a 5 MiB part and a short last part is invisible until it is finished, then served whole with its content type; an abandoned one stores nothing, and abandoning it again succeeds |
 
 ```sh
 docker network create media-net
@@ -96,5 +97,11 @@ docker run --rm --network media-net -v "$PWD":/work -w /work -v crucible-target:
   --secret-key conformance-secret --label versitygw
 ```
 
-`.github/workflows/s3-conformance.yml` runs the rows on pull requests that touch `crucible-media`,
-`crucible-env/src/object.rs` or the rows themselves.
+`.github/workflows/s3-conformance.yml` runs the rows against the Versity S3 gateway, SeaweedFS and Garage on pull
+requests that touch `crucible-media`, `crucible-env/src/object.rs` or the rows themselves
+([tested object stores](../self-hosting/media.md#tested-object-stores)).
+
+Export files on the object store are checked in `crates/crucible-export`: unit tests of the writer (a file appears
+whole at its commit, in one request or in 8 MiB parts, and an abandoned one leaves neither an object nor an open
+upload), and the export job over `PgModel` and `SimObjectStore` (the file is an object any node links to, the sweep
+removes expired and stray objects, a deletion removes the objects of the exports it predates).

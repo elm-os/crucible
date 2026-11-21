@@ -5,7 +5,7 @@
 //!   receivers of a self-hosted deployment usually live there.
 //! - `egress.mode = strict` is the operator's switch: `https` only, and no loopback, private, link-local,
 //!   carrier-grade NAT or reserved address (nor an IPv6 form that carries one) outside `egress.allow_cidrs`, and
-//!   none of Crucible's own databases.
+//!   none of Crucible's own databases or its object store.
 //!
 //! Every refusal names the setting that changes it.
 
@@ -51,7 +51,7 @@ pub struct EgressPolicy {
     pub mode: Mode,
     /// `egress.allow_cidrs`: ranges that strict mode lets through. They never open a metadata address.
     pub allow_cidrs: Vec<Cidr>,
-    /// The hosts of Crucible's own databases (ClickHouse, Postgres), which strict mode refuses.
+    /// The hosts of Crucible's own databases (ClickHouse, Postgres) and object store, which strict mode refuses.
     pub infrastructure: Vec<String>,
 }
 
@@ -70,7 +70,7 @@ pub enum Refusal {
     Metadata(IpAddr),
     /// Strict mode refuses the address's range.
     Range(IpAddr, AddrClass),
-    /// Strict mode refuses Crucible's own databases.
+    /// Strict mode refuses Crucible's own databases and object store.
     Infrastructure(String),
 }
 
@@ -122,8 +122,8 @@ impl Refusal {
                 class.describe()
             ),
             Self::Infrastructure(host) => format!(
-                "{host} is one of the databases of this Crucible deployment, which egress.mode = strict \
-                 refuses; set egress.mode = open (CRUCIBLE_EGRESS_MODE=open) to allow it"
+                "{host} is one of the databases or the object store of this Crucible deployment, which \
+                 egress.mode = strict refuses; set egress.mode = open (CRUCIBLE_EGRESS_MODE=open) to allow it"
             ),
         }
     }
@@ -163,7 +163,7 @@ impl EgressPolicy {
         }
     }
 
-    /// Whether `host` names one of the deployment's own databases.
+    /// Whether `host` names one of the deployment's own databases or its object store.
     pub(crate) fn is_infrastructure(&self, host: &str) -> bool {
         self.infrastructure
             .iter()

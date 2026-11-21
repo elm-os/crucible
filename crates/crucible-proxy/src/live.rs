@@ -235,6 +235,7 @@ async fn run(
 ) -> Stats {
     let mut in_flight: Option<BoxFuture<'static, (Batch, ExportResult)>> = None;
     let mut stopping = false;
+    let mut reported_content_drops = 0;
     loop {
         core.drain();
         let now = env.clock.now();
@@ -268,6 +269,15 @@ async fn run(
                         dropped,
                         "operations were dropped while the collector was unreachable or the buffer was full"
                     );
+                }
+                let content_drops = core.stats().dropped_content;
+                if content_drops > reported_content_drops {
+                    tracing::warn!(
+                        dropped = content_drops - reported_content_drops,
+                        "captured calls were recorded without their content: the arguments of the calls waiting \
+                         for a response reached their 8 MiB bound"
+                    );
+                    reported_content_drops = content_drops;
                 }
             }
             () = wake.notified() => {}

@@ -7,7 +7,8 @@
     "Work, through the SDK's capture work hook, per captured field: serialized counts the JSON text the capture path produced for the field before any cut, and scrubbed counts the text it handed to the scrubber, in the SDK's string unit (bytes, characters or UTF-16 code units; the fills are ASCII, so they agree). Both must stay at or below work_bound for every field of every call.",
     "Matcher steps, through the SDK's matcher hook, count what the scrubber asked of its regular-expression matcher, as a backtracking matcher takes the steps at the least: one per start position a search tries, plus, from a start where a pattern that opens with a class repetition can begin, the class run that repetition consumes before it backtracks; an anchored attempt counts the characters it can read. Per captured call they must stay at or below matcher_steps_per_rule_char times the number of scrub rules times the characters scrubbed, which keeps scrubbing linear in its length.",
     "ceiling_ms bounds, for every shape, how much the slowest captured call exceeds the median call without capture. It is a generous backstop for runners of any speed, race detectors and debug builds included; the work bound is the check.",
-    "Added p99 is the 99th percentile of the calls with capture minus that of the calls without. Every run reports it per shape; only a run with CRUCIBLE_CAPTURE_GATE=1 (the laptop rig) fails when it exceeds gate_added_p99_ms, because timing on shared CI runners is too noisy to gate.",
+    "Added p99 is the 99th percentile of the calls with capture minus that of the calls without. Every run reports it per shape; only a run with CRUCIBLE_CAPTURE_GATE=1 (the laptop rig) fails when it exceeds the shape's gate, because timing on shared CI runners is too noisy to gate. The gate is gate_added_p99_ms, or, for a shape with gate_relative_p99, that share of the calls without capture's p99 when it is larger.",
+    "text-5m is gated relative to its calls: each moves 5 MiB through the SDK's MCP library, so where the library serializes the result its calls without capture have a p99 of 24 ms (Rust) to 105 ms (Go) on the laptop rig, and two arms that both run without capture differed by 1.15 ms there (Go), more than gate_added_p99_ms. Capture's own work on it is bounded by work_bound like every shape's; an SDK whose library hands the result over in memory has a p99 below 1 ms without capture, and so keeps the 1 ms gate.",
     "Fills repeat their unit and cut it to the length. base64 is the standard encoding, with padding, of the bytes 0, 1, ..., 255, 0, 1, ... (bytes / 4 * 3 of them), so a block can carry the raw bytes where the SDK's MCP library holds image data decoded. records builds the structured content {\"records\": [{\"id\": 1, \"sku\": \"SKU-00001\", \"qty\": 1}, ...]} with id from 1 to records, sku the id in five digits and qty the id modulo 7."
   ],
   "tool": "shape",
@@ -35,6 +36,6 @@
       "id": "image-1m",
       "blocks": [{ "type": "image", "fill": "base64", "length": 1048576, "mime_type": "image/png" }]
     },
-    { "id": "text-5m", "blocks": [{ "type": "text", "fill": "prose", "length": 5242880 }] }
+    { "id": "text-5m", "blocks": [{ "type": "text", "fill": "prose", "length": 5242880 }], "gate_relative_p99": 0.05 }
   ]
 }

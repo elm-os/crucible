@@ -2,11 +2,13 @@
 //! contract 6.6.
 //!
 //! With Postgres configured, `crucible migrate` and `serve --migrate` apply the Postgres migrations and then
-//! the ClickHouse schema and access steps that the ledger (`schema_migrations`) does not hold yet. The
-//! ClickHouse steps run under the `migrations` lease (contract 11.7), renewed every 5 s while a step applies, and
-//! each is recorded in a transaction fenced by the lease's token, so two nodes that migrate at once never
-//! interleave, even over a step that runs longer than the lease lives. Without Postgres there is
-//! no ledger and every step is applied each time, which their idempotence allows.
+//! the ClickHouse schema and access steps that the ledger (`schema_migrations`) does not hold yet, or holds with
+//! other content. The ClickHouse steps run under the `migrations` lease (contract 11.7), renewed every 5 s while a
+//! step applies, and each is recorded with the checksum of what was applied in a transaction fenced by the lease's
+//! token, so two nodes that migrate at once never interleave, even over a step that runs longer than the lease
+//! lives, and a step whose content changed applies once. A server started without `--migrate` waits until the
+//! ledger records every step ([`ensure_migrated`]). Without Postgres there is no ledger and every step is applied
+//! each time, which their idempotence allows.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -21,7 +23,7 @@ use crucible_control::{
 };
 use crucible_control_pg::{PgConfig, PgControlStore};
 use crucible_env::{ClockExt as _, Env, Instant};
-use crucible_schema::{MigrationStep, StepKind, without_secrets};
+use crucible_schema::{LEDGER_ORDER, MigrationStep, StepKind, without_secrets};
 use sha2::{Digest, Sha256};
 
 /// How long a migration waits for another node's `migrations` lease before it gives up.
@@ -34,10 +36,18 @@ const RECORD_ATTEMPTS: u32 = 5;
 /// A step being applied.
 pub(crate) type Applying<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+/// Why the service identities refuse this node's master key, or `None` when they accept it.
+pub(crate) type Refusal<'a> = Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
+
 /// What applies a step to ClickHouse.
 pub(crate) trait ApplyStep: Sync {
     /// Applies the step. It is idempotent, so a step that failed part-way is applied again.
     fn apply<'a>(&'a self, step: &'a MigrationStep) -> Applying<'a>;
+
+    /// Why the service identities refuse this node's master key, or `None` when they accept it. A step that the
+    /// ledger records with other content applies again only under a key they accept: a start with another master
+    /// key applies nothing that a start with the right key recorded (contract 6.6).
+    fn refusal(&self) -> Refusal<'_>;
 }
 
 /// The control plane of this node.
@@ -187,7 +197,9 @@ async fn record(
         // An unknown commit is settled by reading the ledger back.
         if error == TxError::CommitUnknown
             && let Ok(applied) = store.migrations().applied().await
-            && applied.iter().any(|row| row.id == entry.id)
+            && applied
+                .iter()
+                .any(|row| row.id == entry.id && row.checksum == entry.checksum)
         {
             return Ok(());
         }
@@ -258,7 +270,33 @@ async fn apply_holding(
     }
 }
 
-/// Applies the steps the ledger does not hold, in order, under the `migrations` lease, and records each.
+/// Refuses unless the ledger records every step of this version (`crucible_schema::LEDGER_ORDER`). A server
+/// started without `--migrate` checks it before it takes ingest, so its shipper never writes before another node or
+/// `crucible migrate` has applied the steps it writes for, such as the copy of the minute rollup that step 0005
+/// makes before the shipper fills the hourly rollup (contract 6.6).
+pub(crate) async fn ensure_migrated(store: &dyn ControlStore) -> anyhow::Result<()> {
+    let recorded =
+        store.migrations().applied().await.context(
+            "reading the migrations ledger in Postgres, which `crucible migrate` creates",
+        )?;
+    let missing: Vec<&str> = LEDGER_ORDER
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| !recorded.iter().any(|row| row.id == *id))
+        .collect();
+    anyhow::ensure!(
+        missing.is_empty(),
+        "this version needs ClickHouse migration {} {}, which the migrations ledger does not record: run \
+         `crucible migrate`, or start one server with --migrate",
+        if missing.len() == 1 { "step" } else { "steps" },
+        missing.join(", ")
+    );
+    Ok(())
+}
+
+/// Applies the steps the ledger does not hold, in order, under the `migrations` lease, and records each with the
+/// checksum of what was applied. A step that the ledger holds with other content applies again too, unless the
+/// service identities refuse this node's master key ([`ApplyStep::refusal`]).
 pub(crate) async fn apply_steps(
     env: &Env,
     store: &dyn ControlStore,
@@ -279,6 +317,8 @@ pub(crate) async fn apply_steps(
             .into_iter()
             .map(|entry| (entry.id, entry.checksum))
             .collect();
+        // Asked once, and only when a recorded step changed.
+        let mut refusal = None;
         for step in steps {
             let checksum = checksum(step);
             match ledger.get(step.id) {
@@ -288,11 +328,26 @@ pub(crate) async fn apply_steps(
                     tracing::debug!(step = step.id, "migration step already recorded");
                     continue;
                 }
-                Some(_) => tracing::warn!(
-                    step = step.id,
-                    "the ledger records this step with other content (for example from an earlier version, or \
-                     with another sql.statements_per_hour); applying it again"
-                ),
+                Some(_) => {
+                    if refusal.is_none() {
+                        refusal = Some(apply.refusal().await);
+                    }
+                    if let Some(Some(reason)) = &refusal {
+                        tracing::warn!(
+                            step = step.id,
+                            reason,
+                            "this step changed since the ledger recorded it, and the service identities refuse \
+                             this node's master key, so it is not applied again: it applies at the next start \
+                             with the master key this deployment was migrated with"
+                        );
+                        continue;
+                    }
+                    tracing::warn!(
+                        step = step.id,
+                        "the ledger records this step with other content (for example from an earlier version, \
+                         or with another sql.statements_per_hour); applying it again"
+                    );
+                }
                 None => {}
             }
             let asked = env.clock.now();
@@ -328,13 +383,16 @@ pub(crate) async fn apply_steps(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use crucible_control::Repos as _;
+    use crucible_schema::SqlProfile;
     use crucible_sim::pg_model::{PgFaults, PgModel};
+    use crucible_store_clickhouse::Credentials;
 
     use super::*;
+    use crate::store::{ClickHouse, MasterKey};
 
     fn step(id: &'static str, kind: StepKind, statement: &str) -> MigrationStep {
         MigrationStep {
@@ -356,7 +414,11 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         applied: AtomicUsize,
+        /// The ids of the steps applied, in order.
+        log: Mutex<Vec<&'static str>>,
         refuse_access: bool,
+        /// The service identities refuse this node's master key.
+        refuse_key: bool,
         /// Run for three lease lifetimes on this clock while another node tries every second to take the lease.
         outlive: Option<(Arc<dyn crucible_env::Clock>, PgModel)>,
         /// Step the database clock past the lease, let another node take it, and finish at once.
@@ -368,6 +430,11 @@ mod tests {
     impl Fake {
         fn applied(&self) -> usize {
             self.applied.load(Ordering::SeqCst)
+        }
+
+        /// The ids of the steps applied so far, in order.
+        fn steps(&self) -> Vec<&'static str> {
+            self.log.lock().unwrap().clone()
         }
     }
 
@@ -408,8 +475,16 @@ mod tests {
                     clock.sleep(2 * LEASE_TTL).await;
                 }
                 self.applied.fetch_add(1, Ordering::SeqCst);
+                self.log.lock().unwrap().push(step.id);
                 Ok(())
             })
+        }
+
+        fn refusal(&self) -> Refusal<'_> {
+            let refused = self
+                .refuse_key
+                .then(|| "AUTHENTICATION_FAILED for crucible_maint".to_owned());
+            Box::pin(async move { refused })
         }
     }
 
@@ -453,14 +528,25 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(apply.applied(), 2);
-            // A step whose content changed is applied again; the ledger row stays.
+            // A step whose content changed is applied again, once: its row takes the new checksum.
             let mut changed = steps();
             changed[1].statements = vec!["CREATE USER c".to_owned()];
-            apply_steps(&env, &model, "node-a", &changed, &apply)
-                .await
-                .unwrap();
-            assert_eq!(apply.applied(), 3);
-            assert_eq!(ledger(&model).await.len(), 2);
+            for holder in ["node-a", "node-b"] {
+                apply_steps(&env, &model, holder, &changed, &apply)
+                    .await
+                    .unwrap();
+                assert_eq!(apply.applied(), 3);
+            }
+            let rows = model.migrations().applied().await.unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (row.id.as_str(), row.checksum.clone()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("0001_schema_base", checksum(&changed[0])),
+                    ("0002_access_service", checksum(&changed[1])),
+                ]
+            );
         });
     }
 
@@ -644,6 +730,275 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(apply.applied(), 1);
+        });
+    }
+
+    /// What a test's log subscriber writes.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Captured {
+        /// What was written since the last call.
+        fn take(&self) -> String {
+            String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap()
+        }
+    }
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Captures this thread's log, at the server's level, until the guard drops. The simulation runs on this
+    /// thread.
+    fn capture() -> (Captured, tracing::subscriber::DefaultGuard) {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        (captured, guard)
+    }
+
+    const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    const OTHER_KEY: &str = "0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad";
+
+    /// This version's steps as `--migrate` renders them under `key` in the default configuration: the admin user
+    /// `crucible_admin`, `sql.statements_per_hour = 1800` and the SQL workspace profile's defaults.
+    fn release_steps(key: &str) -> [MigrationStep; 5] {
+        ClickHouse {
+            url: "http://localhost:8123".to_owned(),
+            admin: Credentials {
+                user: "crucible_admin".to_owned(),
+                password: "admin-secret".to_owned(),
+            },
+            master_key: MasterKey::parse(key).unwrap(),
+            sql_statements_per_hour: 1_800,
+            idle_timeout: None,
+        }
+        .steps(SqlProfile::default())
+        .unwrap()
+    }
+
+    /// The ledger that crucible 0.1.1 records in the configuration of [`release_steps`]: its four steps with the
+    /// checksums that its own code computes (`steps` and `checksum` of the binary, `profile_caps` of
+    /// `crucible-plan`, run at the tag `v0.1.1`).
+    const LEDGER_0_1_1: [(&str, MigrationKind, &str); 4] = [
+        (
+            "0001_schema_base",
+            MigrationKind::ClickhouseSchema,
+            "6c945aaa8b837ff32b9d45bd6c6e706dcc14cfe457a2fb7788c5b643b0942d14",
+        ),
+        (
+            "0002_access_service",
+            MigrationKind::ClickhouseAccess,
+            "62be73963edae234c6adc63d17bbe6dbad0aa0d6c1791d28e8e6694e1c39ff23",
+        ),
+        (
+            "0003_access_workspace",
+            MigrationKind::ClickhouseAccess,
+            "80517a4776b6d84eef8c5228348adda358038baff26c203f0615f15e704d7994",
+        ),
+        (
+            "0004_span_usage_aggregate",
+            MigrationKind::ClickhouseSchema,
+            "353adc83aeb9edd0e807ecf25e11c76a9bfcd2e11a4400966202b9de0405ee56",
+        ),
+    ];
+
+    /// The steps a start applies on a ledger that 0.1.1 recorded.
+    const UPGRADE: [&str; 4] = [
+        "0001_schema_base",
+        "0002_access_service",
+        "0003_access_workspace",
+        "0005_mcp_tool_rollup_hourly",
+    ];
+
+    async fn record_0_1_1(env: &Env, model: &PgModel) {
+        for (id, kind, checksum) in LEDGER_0_1_1 {
+            let entry = LedgerEntry {
+                id: id.to_owned(),
+                kind,
+                applied_at: env.clock.wall_now(),
+                checksum: checksum.to_owned(),
+            };
+            assert!(model.migrations().apply(&entry).await.unwrap());
+        }
+    }
+
+    /// Whether a start's log tells of a step applied, or of one recorded with other content.
+    fn applied_something(log: &str) -> bool {
+        log.contains("migration step applied") || log.contains("with other content")
+    }
+
+    /// A server upgraded from 0.1.1 finds steps 0001 to 0003 recorded with other content, because they render from
+    /// the table list and it gained `mcp_tool_rollup_hourly`. Its first start applies them again, with a warning,
+    /// and step 0005. The second start and every later one find each step recorded with the content it applied,
+    /// so they apply nothing and warn of nothing (contract 6.6).
+    #[test]
+    fn a_ledger_from_0_1_1_applies_each_changed_step_once() {
+        let (log, _guard) = capture();
+        sim(PgFaults::default(), async move |env, model| {
+            record_0_1_1(&env, &model).await;
+            let steps = release_steps(KEY);
+            for ((id, _, recorded), step) in LEDGER_0_1_1.into_iter().zip(&steps) {
+                assert_eq!(step.id, id);
+                // Step 0004 is as 0.1.1 shipped it.
+                assert_eq!(
+                    checksum(step) == recorded,
+                    id == "0004_span_usage_aggregate",
+                    "{id}"
+                );
+            }
+            let apply = Fake::default();
+            apply_steps(&env, &model, "node-a", &steps, &apply)
+                .await
+                .unwrap();
+            assert_eq!(apply.steps(), UPGRADE);
+            let first = log.take();
+            assert_eq!(first.matches("with other content").count(), 3, "{first}");
+            let recorded: Vec<(String, String)> = model
+                .migrations()
+                .applied()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| (row.id, row.checksum))
+                .collect();
+            let applied: Vec<(String, String)> = steps
+                .iter()
+                .map(|step| (step.id.to_owned(), checksum(step)))
+                .collect();
+            assert_eq!(recorded, applied);
+            for holder in ["node-b", "node-a"] {
+                apply_steps(&env, &model, holder, &steps, &apply)
+                    .await
+                    .unwrap();
+                assert_eq!(apply.steps(), UPGRADE);
+                let later = log.take();
+                assert!(!applied_something(&later), "{later}");
+            }
+        });
+    }
+
+    /// The service identities refuse every master key but the one the deployment was migrated with.
+    fn other_key() -> Fake {
+        Fake {
+            refuse_key: true,
+            ..Fake::default()
+        }
+    }
+
+    /// A start with another master key finds every step recorded, also on a ledger that an upgrade from 0.1.1
+    /// brought up to date, so it sends no statement: no identity's password changes (contract 6.6, #114).
+    #[test]
+    fn a_start_with_another_master_key_applies_nothing() {
+        let (log, _guard) = capture();
+        for upgraded in [false, true] {
+            let log = log.clone();
+            sim(PgFaults::default(), async move |env, model| {
+                if upgraded {
+                    record_0_1_1(&env, &model).await;
+                }
+                let right = Fake::default();
+                apply_steps(&env, &model, "node-a", &release_steps(KEY), &right)
+                    .await
+                    .unwrap();
+                let _ = log.take();
+                let wrong = other_key();
+                apply_steps(&env, &model, "node-b", &release_steps(OTHER_KEY), &wrong)
+                    .await
+                    .unwrap();
+                assert!(wrong.steps().is_empty(), "upgraded: {upgraded}");
+                let other = log.take();
+                assert!(!applied_something(&other), "{other}");
+            });
+        }
+    }
+
+    /// The first start after an upgrade from 0.1.1 uses another master key. The service identities refuse it, so
+    /// the steps that 0.1.1 recorded with other content are not applied again under it (access step A2 would give
+    /// the probe identities that key's passwords); only step 0005, which is new and holds no password, applies.
+    /// The next start, with the right key, applies the changed steps once (contract 6.6, #114).
+    #[test]
+    fn an_upgrade_started_with_another_master_key_applies_no_changed_step() {
+        let (log, _guard) = capture();
+        sim(PgFaults::default(), async move |env, model| {
+            record_0_1_1(&env, &model).await;
+            let wrong = other_key();
+            apply_steps(&env, &model, "node-a", &release_steps(OTHER_KEY), &wrong)
+                .await
+                .unwrap();
+            assert_eq!(wrong.steps(), ["0005_mcp_tool_rollup_hourly"]);
+            let refused = log.take();
+            assert_eq!(
+                refused
+                    .matches("refuse this node's master key, so it is not applied again")
+                    .count(),
+                3,
+                "{refused}"
+            );
+            assert!(!refused.contains("with other content"), "{refused}");
+            let steps = release_steps(KEY);
+            let right = Fake::default();
+            apply_steps(&env, &model, "node-b", &steps, &right)
+                .await
+                .unwrap();
+            assert_eq!(right.steps(), UPGRADE[..3]);
+            let recorded: Vec<(String, String)> = model
+                .migrations()
+                .applied()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| (row.id, row.checksum))
+                .collect();
+            let applied: Vec<(String, String)> = steps
+                .iter()
+                .map(|step| (step.id.to_owned(), checksum(step)))
+                .collect();
+            assert_eq!(recorded, applied);
+            let later = Fake::default();
+            apply_steps(&env, &model, "node-a", &steps, &later)
+                .await
+                .unwrap();
+            assert!(later.steps().is_empty());
+        });
+    }
+
+    /// A server started without `--migrate` opens ingest only once the ledger records every step of its version,
+    /// so its shipper never writes before step 0005 has copied the minute rollup. Until then the reason names the
+    /// missing step and the two ways to apply it (contract 1.7).
+    #[test]
+    fn a_server_without_migrate_waits_until_every_step_is_recorded() {
+        sim(PgFaults::default(), async |env, model| {
+            record_0_1_1(&env, &model).await;
+            let error = format!("{:#}", ensure_migrated(&model).await.unwrap_err());
+            assert!(
+                error.contains("step 0005_mcp_tool_rollup_hourly")
+                    && error.contains("run `crucible migrate`")
+                    && error.contains("--migrate"),
+                "{error}"
+            );
+            apply_steps(
+                &env,
+                &model,
+                "node-a",
+                &release_steps(KEY),
+                &Fake::default(),
+            )
+            .await
+            .unwrap();
+            ensure_migrated(&model).await.unwrap();
         });
     }
 

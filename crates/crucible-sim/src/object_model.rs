@@ -11,6 +11,8 @@
 //! - **Eventually consistent listing.** Every write and delete reaches the listing after a seeded lag of up to
 //!   [`ObjectFaults::list_lag`], in order per key.
 //! - **Throttling.** Every call other than a presign fails as unavailable at the seeded rate.
+//! - **Multipart uploads.** Parts are held apart from the objects until the upload is finished, which refuses
+//!   any part but the last below `MIN_PART_BYTES` and any part list that is not the uploaded parts in order.
 //!
 //! The model may be stricter than a real store and is never more permissive.
 
@@ -21,8 +23,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crucible_env::{
-    ByteStream, Clock, Disposition, ObjectError, ObjectMeta, ObjectPage, ObjectStore, Presigned,
-    Rng,
+    ByteStream, Clock, Disposition, MIN_PART_BYTES, ObjectError, ObjectMeta, ObjectPage,
+    ObjectStore, Presigned, Rng,
 };
 use crucible_records::Timestamp;
 use futures::StreamExt as _;
@@ -79,11 +81,21 @@ struct Change {
     object: Option<ObjectMeta>,
 }
 
+/// A multipart upload in progress: its key, its content type and its parts by number, each with its `ETag`.
+#[derive(Clone, Debug)]
+struct Upload {
+    key: String,
+    content_type: String,
+    parts: BTreeMap<u16, (String, Bytes)>,
+}
+
 #[derive(Debug, Default)]
 struct State {
     objects: BTreeMap<String, StoredObject>,
     grants: BTreeMap<String, Grant>,
     next_grant: u64,
+    uploads: BTreeMap<String, Upload>,
+    next_upload: u64,
     /// Changes not yet in `listed`, in the order they were made.
     changes: Vec<Change>,
     /// When the last change of each key reaches the listing, so that one key's changes arrive in order.
@@ -258,6 +270,15 @@ impl SimObjectStore {
         lock(&self.state).objects.clone()
     }
 
+    /// The keys of the multipart uploads that are neither finished nor abandoned.
+    pub fn open_uploads(&self) -> Vec<String> {
+        lock(&self.state)
+            .uploads
+            .values()
+            .map(|upload| upload.key.clone())
+            .collect()
+    }
+
     /// Stores an object directly, bypassing grants: the state an upload outside Crucible leaves.
     pub fn plant(&self, key: &str, bytes: Bytes, created_at: Timestamp) {
         let mut state = lock(&self.state);
@@ -333,16 +354,129 @@ impl ObjectStore for SimObjectStore {
         }))
     }
 
-    async fn put_small(&self, key: &str, bytes: Bytes) -> Result<(), ObjectError> {
+    async fn put_small(
+        &self,
+        key: &str,
+        content_type: &str,
+        bytes: Bytes,
+    ) -> Result<(), ObjectError> {
         let mut state = lock(&self.state);
         self.gate(&mut state)?;
         let object = StoredObject {
             sha256: Some(sha256(&bytes)),
             bytes,
-            content_type: "application/octet-stream".to_owned(),
+            content_type: content_type.to_owned(),
             created_at: self.now(),
         };
         self.store(&mut state, key, object);
+        Ok(())
+    }
+
+    async fn start_upload(&self, key: &str, content_type: &str) -> Result<String, ObjectError> {
+        let mut state = lock(&self.state);
+        self.gate(&mut state)?;
+        state.next_upload += 1;
+        let id = format!("upload-{}", state.next_upload);
+        state.uploads.insert(
+            id.clone(),
+            Upload {
+                key: key.to_owned(),
+                content_type: content_type.to_owned(),
+                parts: BTreeMap::new(),
+            },
+        );
+        Ok(id)
+    }
+
+    async fn upload_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        number: u16,
+        bytes: Bytes,
+    ) -> Result<String, ObjectError> {
+        let mut state = lock(&self.state);
+        self.gate(&mut state)?;
+        if !(1..=10_000).contains(&number) {
+            return Err(ObjectError::Rejected {
+                status: 400,
+                code: "InvalidArgument".to_owned(),
+            });
+        }
+        let upload = state
+            .uploads
+            .get_mut(upload_id)
+            .filter(|upload| upload.key == key)
+            .ok_or(ObjectError::NotFound)?;
+        let etag = format!(
+            "\"{}\"",
+            sha256(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        upload.parts.insert(number, (etag.clone(), bytes));
+        Ok(etag)
+    }
+
+    async fn finish_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        etags: &[String],
+    ) -> Result<(), ObjectError> {
+        let mut state = lock(&self.state);
+        self.gate(&mut state)?;
+        let upload = state
+            .uploads
+            .get(upload_id)
+            .filter(|upload| upload.key == key)
+            .cloned()
+            .ok_or(ObjectError::NotFound)?;
+        let refused = |code: &str| ObjectError::Rejected {
+            status: 400,
+            code: code.to_owned(),
+        };
+        let mut bytes = Vec::new();
+        for (at, etag) in etags.iter().enumerate() {
+            let number = u16::try_from(at + 1).map_err(|_| refused("InvalidPart"))?;
+            let (stored, part) = upload
+                .parts
+                .get(&number)
+                .ok_or_else(|| refused("InvalidPart"))?;
+            if stored != etag {
+                return Err(refused("InvalidPart"));
+            }
+            if at + 1 < etags.len() && part.len() < MIN_PART_BYTES {
+                return Err(refused("EntityTooSmall"));
+            }
+            bytes.extend_from_slice(part);
+        }
+        if etags.is_empty() {
+            return Err(refused("MalformedXML"));
+        }
+        state.uploads.remove(upload_id);
+        // A joined object has no whole-object checksum: S3 keeps one per part.
+        let object = StoredObject {
+            bytes: Bytes::from(bytes),
+            content_type: upload.content_type,
+            created_at: self.now(),
+            sha256: None,
+        };
+        self.store(&mut state, key, object);
+        Ok(())
+    }
+
+    async fn abort_upload(&self, key: &str, upload_id: &str) -> Result<(), ObjectError> {
+        let mut state = lock(&self.state);
+        self.gate(&mut state)?;
+        if state
+            .uploads
+            .get(upload_id)
+            .is_some_and(|upload| upload.key == key)
+        {
+            state.uploads.remove(upload_id);
+        }
         Ok(())
     }
 
