@@ -113,7 +113,8 @@ Each seeded defect is a value of `crucible_lifecycle::Mutant`, which exists only
 | Drop the mask cycle | The mask scheduler plans nothing | I9: masked rows are still on disk; L3: no request is verified | 3 of seeds 4000..4003, both reports in each |
 | Delete without fencing | An action is sent without its fenced record | L1: an action reached the store with no row recorded as issued | 5 of seeds 5000..5005, with every fault |
 | MCP rows by trace only | A deletion by user reaches the MCP tables only through the traces its spans resolve to, never by the operations' own `user_id` and `user_subject_hash` | I9: an MCP row that carries the user, by `user_id` or subject hash, in a trace no span of which names the user is still there | 6 of seeds 6000..6006, without other faults |
-| Drop shared partitions | A project deletion drops each old partition it reaches, whatever other projects hold rows there | I9: a span of a project that is not deleted, which no request selects and retention keeps, is gone | 6 of seeds 7000..7006, without other faults |
+| Drop shared partitions | A project deletion drops each partition it reaches, whatever other projects hold rows there | I9: a span of a project that is not deleted, which no request selects and retention keeps, is gone | 6 of seeds 7000..7006, without other faults |
+| Drop within reach | A project deletion drops a partition in which every project with rows is deleted although a live project can still write there, the rule before the live projects' retention horizons were consulted | I9: a late span of the second project, which no request selects and retention keeps, is gone | 6 of seeds 8000..8006, without other faults |
 
 The checkpoint mutant needs frames that a live node has not shipped when the request is logged: that is what the
 shipper stalls are for. It runs in the profile without other faults, and a seed that shows the defect is run again
