@@ -14,6 +14,11 @@ shipper follows is in [`formal-model.md`](formal-model.md); the disk and the WAL
 | Recovery driver | `crucible_sim::boot` (crate-private) | Recovers the WAL through crashes and faults and compares it with an uninterrupted reference recovery. Both suites use it |
 | Suite | `crates/crucible-sim/tests/ship_dst.rs` | The per-pull-request seeds, the mutants, the determinism test, the long run and the replay tool |
 | Directed tests | `crates/crucible-sim/tests/ship_directed.rs` | One scripted situation each, with the calls the store received checked in order; and a crash at every disk operation of the two quarantine copies, after which every whole manifest must stand beside the copy it declares |
+| Pipeline tests | `crates/crucible-sim/tests/ship_pipeline.rs` | The shipper's blocking jobs (stage A of the frames it reads ahead, the encoding of each block) out of order: a spawner keeps them and runs them later, in a seeded order and after a draw of virtual time each. A property over random logs of requests, deletions and facts: the shipper inserts the same pairs with the same bytes as when the jobs run in place, and every attempt of a pair sends one body |
+
+The simulation's spawner runs blocking jobs in place, so in this suite and in the system simulation the shipper
+reads one frame at a time and encodes at the seal, as its task did before the jobs moved off it: the seeds' trace
+hashes did not move. The pipeline tests are where the jobs end out of order.
 
 The WAL suite keeps its stand-in shipper (seal, checkpoint, collect). It checks `crucible-wal` alone, with opaque
 frames and incarnations of a few milliseconds, and its recorded mutant seeds do not depend on the shipper. The

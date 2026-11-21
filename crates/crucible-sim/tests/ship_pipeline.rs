@@ -59,6 +59,9 @@ const PHASES: [&str; 9] = [
 /// Blocking jobs a [`Deferred`] spawner keeps for its runners.
 type Jobs = Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>;
 
+/// How the shipper's run ended, and when it started and stopped.
+type Ended = Arc<Mutex<Option<(Result<(), ShipError>, Instant, Instant)>>>;
+
 /// A spawner that runs tasks as the simulation's does but keeps every blocking job for its runners.
 struct Deferred {
     inner: Arc<dyn Spawner>,
@@ -451,7 +454,7 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
         )
         .unwrap();
         let stats = shipper.stats();
-        let ended: Arc<Mutex<Option<(Result<(), ShipError>, Instant, Instant)>>> = Arc::default();
+        let ended: Ended = Arc::default();
         let (slot, clock) = (Arc::clone(&ended), Arc::clone(&env.clock));
         drop(env.spawn("shipper", async move {
             let started = clock.now();
