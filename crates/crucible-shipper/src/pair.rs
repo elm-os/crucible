@@ -8,19 +8,22 @@ use crucible_env::{ClockExt, InsertError, InsertSettings, RetryReason};
 use crucible_records::{BatchToken, TableId, WalEpoch};
 
 use crate::batch::BatchId;
+use crate::cpu::{ENCODE, Pending};
 use crate::error::ShipError;
 use crate::hooks::Barrier;
 use crate::limits::backoff;
 use crate::probe::batch_probe;
 use crate::quarantine::quarantine_pair;
 use crate::shipper::Ctx;
+use crate::value::BuildError;
 
 /// One pair to ship.
 #[derive(Debug)]
 pub(crate) struct PairJob {
     pub(crate) token: BatchToken,
-    /// The compressed block, kept until the pair is resolved so that every retry sends identical bytes.
-    pub(crate) block: EncodedBlock,
+    /// The job that encodes the compressed block. The block is kept until the pair is resolved, so that every
+    /// retry sends identical bytes.
+    pub(crate) block: Pending<Result<EncodedBlock, BuildError>>,
     /// An attempt of this pair may have landed: every pair of a batch recovered after a restart.
     pub(crate) in_doubt: bool,
 }
@@ -92,8 +95,13 @@ async fn probe(ctx: &Ctx, token: &BatchToken) -> Result<bool, ShipError> {
 pub(crate) async fn ship_pair(
     ctx: &Arc<Ctx>,
     batch: &BatchId,
-    job: PairJob,
+    mut job: PairJob,
 ) -> Result<PairEnd, ShipError> {
+    // The block's encoding ends before anything about the pair is sent, and holds no connection meanwhile.
+    let block = job.block.take().await.map_err(|_| ShipError::JobLost {
+        stage: ENCODE,
+        lsn: batch.first_lsn,
+    })??;
     let pair = (job.token.table(), job.token.partition());
     let mut in_doubt = job.in_doubt;
     let mut attempt: u32 = 0;
@@ -153,9 +161,7 @@ pub(crate) async fn ship_pair(
             .clock
             .timeout(
                 ctx.config.insert_timeout,
-                ctx.stores
-                    .telemetry
-                    .insert_block(job.block.clone(), settings),
+                ctx.stores.telemetry.insert_block(block.clone(), settings),
             )
             .await;
         let latency = ctx.env.clock.now().saturating_duration_since(now);

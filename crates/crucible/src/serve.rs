@@ -683,6 +683,8 @@ struct StoreTask {
     lifecycle: Option<Arc<Lifecycle>>,
     /// Media, with an object store and a control plane.
     media: Option<crucible_media::Media>,
+    /// The CPU budget's shares, of which the shipper takes stage A's and encoding's.
+    cpu: CpuShares,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -772,6 +774,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         alerts,
         lifecycle,
         media,
+        cpu,
     } = task;
     let store = config.store(&env);
     let mut shutdown = env.shutdown();
@@ -806,6 +809,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
 
     let shipper_config = ShipperConfig {
         flavour: facts.flavour,
+        stage_a_permits: cpu.stage_a,
+        encode_permits: cpu.encode,
         ..ShipperConfig::default()
     };
     let view = Arc::new(WalSpans {
@@ -1245,7 +1250,8 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
             None => service,
         }
     });
-    let ingest = ingest_config(CpuShares::of(cpu_permits).ingest_prepare);
+    let cpu = CpuShares::of(cpu_permits);
+    let ingest = ingest_config(cpu.ingest_prepare);
     let inflight_bytes = ingest.inflight_bytes;
     let (app, report) = open_app(
         env,
@@ -1312,6 +1318,11 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 bytes: ShipperConfig::default().encoded_bytes,
                 changed_by: None,
             },
+            Budget {
+                setting: "normalize.cache_bytes",
+                bytes: ShipperConfig::default().cache_bytes,
+                changed_by: None,
+            },
         ]
     } else {
         vec![ingest_budget]
@@ -1348,6 +1359,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 alerts,
                 lifecycle: app.lifecycle.clone(),
                 media: media.as_ref().map(|media| media.service.clone()),
+                cpu,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }

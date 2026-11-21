@@ -282,10 +282,11 @@ fn wal_backend(backend: crucible_config::WalBackend) -> crucible_env_prod::WalBa
 /// name lookups and password hashing.
 const BLOCKING_RESERVE: usize = 8;
 
-/// Permits per CPU when `cpu.permits` is unset (default; revisit when the shipper's stages take their shares). The
-/// blocking jobs share the CPUs with the runtime's workers, which run the rest of ingest and the shipper. With one
-/// permit per CPU, a burst on the perf gate's small rig (2 CPUs) acknowledged 12 to 26% fewer spans per second than
-/// with main's unbounded blocking pool (docs/development.md).
+/// Permits per CPU when `cpu.permits` is unset (default; revisit). The blocking jobs share the CPUs with the
+/// runtime's workers, which run the rest of ingest and the shipper's task. With one permit per CPU, a burst on the
+/// perf gate's small rig (2 CPUs) acknowledged 12 to 26% fewer spans per second than with main's unbounded blocking
+/// pool (docs/development.md). The shipper's stage A and encoding take a sixteenth of the total each
+/// (`CpuShares`).
 const PERMITS_PER_CPU: u32 = 8;
 
 /// `cpu.permits`: the setting, or [`PERMITS_PER_CPU`] per CPU this process may use (its affinity and its cgroup

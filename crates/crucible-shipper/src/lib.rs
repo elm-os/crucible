@@ -4,7 +4,14 @@
 //! stage B in LSN order), and fills per-(table, partition) row builders. A batch seals at the linger, row or byte
 //! threshold of contract 5.1; its `BatchSeal` frame is durable before any insert is sent. Each pair is then one
 //! Native block and one insert whose deduplication token is the batch identity plus the pair, sent through
-//! `Stores::telemetry` with the explicit settings of contract 5.4. Outcomes are handled per contract 5.6 under
+//! `Stores::telemetry` with the explicit settings of contract 5.4.
+//!
+//! The task keeps the order-dependent work: reading the log, stage B, the rows and the WAL's records. Stage A, pure
+//! per frame (contract 3.2), runs on the frames the task reads ahead, up to twice the stage A share of the CPU
+//! budget and `normalize.cache_bytes`, each as a blocking job; stage B takes the frames strictly in LSN order with
+//! the records their jobs made. Each block of a sealed batch is encoded by a blocking job under the encode share,
+//! and the bytes are kept until the pair resolves, so every retry sends them unchanged (contract 5.2). The
+//! simulation's spawner runs blocking jobs in place, where the task runs them as it did before they moved off. Outcomes are handled per contract 5.6 under
 //! the probe rules of 5.5, including the two the ingest model found (`docs/testing/formal-model.md`): once an
 //! attempt of a pair is in doubt every later send is preceded by a probe, and a pair in doubt is quarantined only
 //! after a probe read absent. A `Checkpoint` frame follows once a batch and every earlier batch are resolved, and
@@ -36,6 +43,7 @@
 
 mod batch;
 mod config;
+mod cpu;
 mod error;
 mod frames;
 mod hooks;
@@ -48,10 +56,12 @@ mod recent_hook;
 mod shipper;
 pub mod tables;
 pub mod value;
+mod window;
 
 pub use batch::{BatchId, OpenBatch, Pair, pair_block, pair_token};
 pub use config::{
-    DEFAULT_ENCODED_BYTES, FrameFault, Mutant, POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig,
+    DEFAULT_CACHE_BYTES, DEFAULT_ENCODED_BYTES, DEFAULT_SHIPPER_PERMITS, FrameFault, Mutant,
+    POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig,
 };
 pub use error::ShipError;
 pub use hooks::{

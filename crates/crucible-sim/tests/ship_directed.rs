@@ -1447,7 +1447,7 @@ fn a_whole_pair_manifest_names_a_durable_copy_at_every_crash_point() {
 }
 
 /// The `phase` labels of `crucible_shipper_task_microseconds_total`.
-const PHASES: [&str; 8] = [
+const PHASES: [&str; 9] = [
     "read",
     "stage_a",
     "stage_b",
@@ -1456,6 +1456,7 @@ const PHASES: [&str; 8] = [
     "wal_append",
     "wait_inserts",
     "wait_frames",
+    "wait_stage_a",
 ];
 
 /// The shipper task charges every moment of its run to one phase, so the phases add up to the run exactly. Work
@@ -1512,6 +1513,8 @@ fn the_shipper_task_phases_add_up_to_its_run() {
         // The third batch is full while the first two wait 100 ms for their inserts.
         assert!(phase("wait_inserts") >= 90_000, "{phases:?}");
         assert!(phase("wait_frames") > 0, "{phases:?}");
+        // The simulation's spawner runs stage A in place, so the task never waits for it.
+        assert_eq!(phase("wait_stage_a"), 0, "{phases:?}");
         node.host.stop().await;
     });
 }

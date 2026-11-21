@@ -31,6 +31,15 @@ pub enum ShipError {
     /// One frame alone exceeds a block, which the admission caps rule out (contract 5.1).
     #[error("frame {0} alone exceeds one block")]
     FrameTooLarge(Lsn),
+    /// A blocking job of the CPU budget ended without its result: it panicked, or the runtime dropped it while
+    /// shutting down. A restart does the work again.
+    #[error("the {stage} job of frame {lsn} ended without a result")]
+    JobLost {
+        /// The job's stage in the CPU budget: `stage_a` or `encode`.
+        stage: &'static str,
+        /// The frame, or the first frame of the batch whose block it encoded.
+        lsn: Lsn,
+    },
     /// The seals above the watermark are not adjacent ranges.
     #[error("recovered seals are not adjacent: expected a seal from {expected}, found {found}")]
     SealChain {

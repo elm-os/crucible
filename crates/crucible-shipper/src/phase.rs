@@ -25,10 +25,12 @@ pub(crate) enum Phase {
     /// The rest: caught up with the durable log, or waiting for the control store, a retry or a frame
     /// quarantine copy.
     WaitFrames,
+    /// Waiting for stage A of the frame stage B takes next, which runs as a blocking job.
+    WaitStageA,
 }
 
 /// The label of each phase, in the order of [`Phase`].
-const LABELS: [&str; 8] = [
+const LABELS: [&str; 9] = [
     "read",
     "stage_a",
     "stage_b",
@@ -37,6 +39,7 @@ const LABELS: [&str; 8] = [
     "wal_append",
     "wait_inserts",
     "wait_frames",
+    "wait_stage_a",
 ];
 
 /// Charges the task's time to phases. Each lap charges the time since the previous lap to one phase, so the
@@ -45,8 +48,8 @@ const LABELS: [&str; 8] = [
 #[derive(Debug)]
 pub(crate) struct Laps {
     mark: Instant,
-    counters: [Counter; 8],
-    carry_nanos: [u64; 8],
+    counters: [Counter; 9],
+    carry_nanos: [u64; 9],
 }
 
 impl Laps {
@@ -54,7 +57,7 @@ impl Laps {
         Self {
             mark: now,
             counters: LABELS.map(|label| metrics.counter(&registry::SHIPPER_TASK_TIME, &[label])),
-            carry_nanos: [0; 8],
+            carry_nanos: [0; 9],
         }
     }
 
@@ -85,7 +88,7 @@ mod tests {
 
     use super::*;
 
-    const PHASES: [Phase; 8] = [
+    const PHASES: [Phase; 9] = [
         Phase::Read,
         Phase::StageA,
         Phase::StageB,
@@ -94,9 +97,10 @@ mod tests {
         Phase::WalAppend,
         Phase::WaitInserts,
         Phase::WaitFrames,
+        Phase::WaitStageA,
     ];
 
-    fn charged(recorder: &MemoryRecorder) -> [u64; 8] {
+    fn charged(recorder: &MemoryRecorder) -> [u64; 9] {
         LABELS.map(|label| recorder.counter_value(&registry::SHIPPER_TASK_TIME, &[label]))
     }
 
@@ -106,13 +110,13 @@ mod tests {
         #[test]
         fn each_phase_holds_the_whole_microseconds_charged_to_it(
             start in 0u64..1 << 40,
-            laps in proptest::collection::vec((0usize..8, 0u64..5_000_000), 0..200),
+            laps in proptest::collection::vec((0usize..9, 0u64..5_000_000), 0..200),
         ) {
             let recorder = MemoryRecorder::new();
             let mut timer = Laps::new(&recorder, Instant::from_nanos(0));
             timer.start(Instant::from_nanos(start));
             let mut now = start;
-            let mut expected = [0u64; 8];
+            let mut expected = [0u64; 9];
             for (phase, nanos) in laps {
                 now += nanos;
                 timer.lap(PHASES[phase], Instant::from_nanos(now));
@@ -122,7 +126,7 @@ mod tests {
             prop_assert_eq!(held, expected.map(|nanos| nanos / 1_000));
             let total: u64 = held.iter().sum();
             prop_assert!(total * 1_000 <= now - start);
-            prop_assert!(now - start - total * 1_000 < 8 * 1_000);
+            prop_assert!(now - start - total * 1_000 < 9 * 1_000);
         }
     }
 
@@ -133,7 +137,7 @@ mod tests {
         timer.start(Instant::from_nanos(5_000_000));
         timer.lap(Phase::Encode, Instant::from_nanos(7_500_400));
         timer.lap(Phase::Encode, Instant::from_nanos(7_500_900));
-        let mut expected = [0; 8];
+        let mut expected = [0; 9];
         expected[Phase::Encode as usize] = 2_500;
         assert_eq!(charged(&recorder), expected);
     }
