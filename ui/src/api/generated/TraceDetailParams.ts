@@ -6,7 +6,7 @@
  */
 export type TraceDetailParams = { 
 /**
- * When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;
- * the read does not need it yet.
+ * When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked,
+ * then unused: the read finds the trace's time bounds itself.
  */
 hint_time?: string, };

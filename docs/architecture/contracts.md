@@ -467,6 +467,7 @@ Decisions made while implementing the traits above; they bind every backend.
 | Read counters (#86) | Each read service records, once per request, `crucible_api_store_reads{class}` (a histogram: its count is the requests, its sum the store reads they issued) and, for the reads that wait for the recent index's read barrier, `crucible_api_barrier_wait_microseconds{class}`, timed by the service with the `Env` clock. The classes are one per read-service method, listed in `crucible_query::READ_CLASSES`. Store connections stay counted by `crucible_clickhouse_connections_opened_total` |
 | Read deadline (#117) | A read whose Rust-side deadline passes before the server sent any byte of its answer ends with `QueryError::Unavailable` (`telemetry_store_unavailable`): a server that runs the statement ends it at its class limit, which falls before the deadline, so one that sent nothing is not answering. A read the server began to answer stays `Timeout` (`query_timeout`) |
 | Agent statement slots (#142) | Each node holds its own `crucible_read_agent` reads to the 16 statements that identity may run at once (section 7.1): a read waits for one of 16 slots before it is sent and keeps it until its answer ends, and the wait counts against its Rust-side deadline. A read that finds no slot by its deadline ends with `query_timeout` and was never sent; one whose slot frees too late for the server to answer in time ends as the read deadline row says |
+| Metrics turns (#158) | Each server lets one project run at most `metrics.queries_per_project` metrics queries at once (`CRUCIBLE_METRICS_QUERIES_PER_PROJECT`, default 4): the reads of `POST metrics/query`, and so of every dashboard widget, for both sources. The others wait, oldest first, within the deadline of the query's class, and one that gets no turn by then ends as `query_timeout`, never as unavailable. A metrics query sends its statements one after another, so a turn is at most one statement in flight. Alert evaluation does not take turns |
 | Deletion drops (#144) | `crucible_shipper_deletion_drops_total{kind}` counts what stage B drops from the frames the shipper ships because a deletion request selects it (section 13.3), by `kind`: `span`, `mcp_operation` and `fact`. An MCP operation counts whether it went with its span or a deletion by user named it by its own identity. The rebuild of the retained prefix is not counted |
 | Shutdown order (#114) | One signal reaches every task. The listeners finish their open requests, the jobs let a leader run end and release their leases (section 11.7), and the telemetry store's task stops the shipper, whose in-flight inserts are left in doubt for the next start to probe (section 5.5); every loop of the key feed, the SQL workspace and the project salts ends at the signal. The Postgres pools close after those tasks, because each may still need Postgres, and the WAL committer stops once no handle to the log is left. Whatever is still running after the 30 s grace is aborted |
 | Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
@@ -2758,11 +2759,13 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   missing), except adding a widget, which re-reads and compares on its own; `PATCH dashboards/{dashboard_id}` with
   `widgets` replaces the whole set in one change. The rules are checked whole on every write: at most 50 widgets; a
   12-column grid, a smallest size per kind, at most 12 by 12 cells, no overlap; a stat is one measure without
-  dimensions, a bar chart one measure with one or two dimensions, a time series at most four series of one unit, a
-  table any query, and a Markdown widget text without a query. Each query passes the checks of `metrics/query`,
-  and a widget query carries `side`, `capture_source` and `include_caller_faults` as the metrics body does
-  (section 8.8). The five starters (Agent overview, Cost and tokens, Latency, Errors, MCP servers) are read-only:
-  a change is refused with `conflict` and says to duplicate. Without a control plane the starters are still served.
+  dimensions, a bar chart one measure with one or two dimensions, a time series at most four series of one unit,
+  drawn as lines, bars or areas (areas are a chart form of the time series, `ChartForm::Area`, appended in #158, not
+  a widget kind), a table any query, and a Markdown widget text without a query. Each query passes the checks of
+  `metrics/query`, and a widget query carries `side`, `capture_source` and `include_caller_faults` as the metrics
+  body does (section 8.8). The five starters (Agent overview, Cost and tokens, Latency, Errors, MCP servers) are
+  read-only: a change is refused with `conflict` and says to duplicate. Without a control plane the starters are
+  still served.
 
 ## 12. API
 
@@ -2936,12 +2939,18 @@ message, because a user writing SQL needs the engine's error. Guardrail errors a
   unknown target is `not_found` only when the lookup is whole and strong, else 503 with `Retry-After: 1`. The API's
   1 MiB body limit caps a correction request at 1 MiB.
 - Search and payload routes (#59): `POST search` takes query, mode, fields (input, output, metadata), from, to,
-  limit and cursor (cursor route 3: window, `as_of` and `(start_minute, trace_hash, span_id)`; its filter hash covers
-  the mode, the fields and the tokens). `fields` takes no `name` and the body has no `filters` member, so a request
-  that sends either is refused with 422 `validation_failed`.
-  The payload route takes a required `start_time`, serves only the nine `FieldRange` fields (others are a 422),
-  honours a single byte range (206, or 416 without a problem body), and answers a miss that is not whole and strong
-  with 503 `telemetry_store_unavailable`, because a byte response cannot carry `meta`.
+  limit and cursor (cursor route 3: window, `as_of` and `(start_minute, trace_hash, span_id)`; its filter hash
+  covers the mode, the fields, the tokens and the filter, and is unchanged for a search without one). `fields` takes
+  no `name`, and a request that sends one is refused with 422 `validation_failed`; a name is matched under `filters`
+  instead. The optional `filters` member (#158) takes the span list's filters as a `ListFilter`, turned into the
+  plan's filter by the one conversion that the trace and span lists and the MCP server's `list_traces` and
+  `list_spans` use (`crucible_api::plan_filter`), so every surface refuses the same filter with the same member and
+  code, under its own pointer (`/<member>`, `/filters/<member>`, `/filter/<member>`). Search applies `user_id`,
+  `session_id` and `metadata` to the hits and the other members, `name` included, to the page's core rows, which it
+  looks up at most 64 hits at a time (`SEARCH_SPANS_PER_LOOKUP`). The payload route takes a required `start_time`,
+  serves only the nine `FieldRange` fields (others are a 422), honours a single byte range (206, or 416 without a
+  problem body), and answers a miss that is not whole and strong with 503 `telemetry_store_unavailable`, because a
+  byte response cannot carry `meta`.
 - List routes (#58): `GET users/{user_id}/sessions` joins the session and user routes. `GET traces` and `GET spans`
   take the filters environment, release, version, level, observation_type, user_id, session_id, tags, metadata
   (`key=value`, split at the first `=`) and name (a case-insensitive substring, at most once); repeating a parameter
@@ -3009,7 +3018,7 @@ the capability from section 11.6; key principals need the matching scope from 11
 | `GET spans/{trace_id}/{span_id}/payload` | `field` selector (`input`, `output`, `system_instructions`, `metadata`, `attributes`, `resource_attributes`, `events`, `links`, `tool_definitions`, `tool_calls`, `mcp_args`, `mcp_result`); raw bytes with `Content-Length`, `ETag`, immutable caching and HTTP byte ranges; `download=1` forces attachment disposition |
 | `GET sessions`, `GET sessions/{session_id}` | |
 | `GET users`, `GET users/{user_id}` | |
-| `POST search` | Query, fields (`input`, `output`, `metadata`, `name`), filters, window; span hits with highlights |
+| `POST search` | Query, fields (`input`, `output`, `metadata`), filters (the span list's, `name` included), window; span hits with highlights |
 
 **Facts** (under `projects/{id}/`; append-only writes)
 
@@ -3207,7 +3216,7 @@ Stage B as built (#121):
 | **Media** | `media_refs` rows for the affected traces are deleted; an object is deleted when its last reference goes; project deletion removes the project's key prefix. Media also follows `payload_retention_days` by reference target time. A presigned download issued earlier can outlive a deletion by at most 5 minutes |
 | **SQL workspace path** | Retention applies immediately through the per-project row policy. A deletion becomes invisible to SQL when the executor issues the masking delete (step 5), not at request time. The target is 60 s after the request; it is a target and not a bound, because step 5 waits for every live node's checkpoint. Project deletion also drops the project's ClickHouse identity and policies |
 | Export files | Files created before the request are expired (`export_expired`); with an object store, the deletion executor deletes their objects after the expiring transaction commits, and the exports sweep removes any it misses (#157) |
-| Control-plane rows (project deletion) | Project, memberships, keys (through the key feed), dashboards, alerts, channels, saved queries, runs, salts and secrets |
+| Control-plane rows (project deletion) | As built (#158): the project row is marked deleted, its keys are revoked (through the key feed), its dashboards with their widgets and its media rows are deleted, the route deletes its key prefix in the object store (13.6), and the SQL reconciler drops its workspace identity. Its memberships, alert rules with their state and events, channels, saved queries, sealed secrets, salts and SQL runs stay in Postgres (the reconciler deletes runs older than 30 days), and its telemetry and rollups stay in ClickHouse, which no read of the deleted project reaches |
 
 ### 13.5 SLA
 
@@ -3230,8 +3239,14 @@ Stage B as built (#121):
 - Stage B applies deletion requests, and a node reads them before it ships (section 13.3; #121, #144). Requests are
   never pruned; the read covers the requests made after the arrival of the oldest frame stage B admits.
 - The deletion route takes the kinds `trace`, `user` and `session`; a body that names `project` is refused with 422
-  `validation_failed`. `DELETE projects/{id}` marks the project deleted and revokes its keys; it makes no deletion
-  request, so the project's key prefix in the object store stays (13.4).
+  `validation_failed`. `DELETE projects/{id}` marks the project deleted and revokes its keys, and makes no deletion
+  request. In the same transaction it deletes the project's dashboards (their widgets cascade) and its `media_refs`
+  and `media_objects` rows; the route then deletes every object under `<prefix>/<project_id>/`, export files
+  included, page by page, and answers 204 also when the store fails: the objects it leaves have no row, so the
+  weekly orphan scan deletes the media among them, and an export file waits for the bucket's lifecycle rule. A purge
+  that outlasts the request's 30 s deadline answers `request_timeout` after the deletion committed. A media use
+  recorded after the deletion read the project's media makes the deletion apply nothing and answer 503
+  `control_plane_unavailable` with `Retry-After` (#158).
 - A request whose attempts are exhausted stays `failed`; no route resumes it.
 - The weekly delete of `mcp_tool_inventory` and `mcp_deploys` keys (13.2 step 4) and the marker purge (5.5) do not
   run: `DeletePlan::marker_purge` exists, but no job issues it, so those rows and the markers stay. The binary has
@@ -3341,3 +3356,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-21 | Settled in code by #162: the proxy's content capture, with its sampling, canonical JSON and result shape (9.10); the content keys the proxy sends (9.1); flush and shutdown share one deadline in every SDK (9.10) |
 | v2 | 2026-11-21 | Settled in code by #164: `Migrations::apply` records what was applied (2.7); a server without `--migrate` waits for every step (5.8, 6.6); a changed step applies once, and only under an accepted master key, which restates the master-key rule (6.6); released steps render from the current table list (6.7) |
 | v2 | 2026-11-21 | Settled in code by #157: multipart uploads and `put_small`'s content type (2.10); export files on the object store (11.10, 12.8, 13.4); the object store on strict egress's infrastructure list (11.10); the media of one span (14.2, 14.5) |
+| v2 | 2026-11-21 | Settled in code by #158: per-project metrics turns (2.14); the area chart form (11.10); search filters through the lists' conversion (12.5, 12.6); project deletion as built, with its object store prefix (13.4, 13.6) |

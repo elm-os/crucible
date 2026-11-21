@@ -78,5 +78,6 @@ An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_i
 at once and its API keys stop working, on every server within 5 seconds. Its dashboards with their widgets and its
 media records go with it, and with an object store every object under the project's key prefix is deleted next
 ([media](media.md#deletion-and-retention)). Its telemetry stays in ClickHouse, where no page, API answer or MCP tool
-reads it any more. A trace that records media in the project while it is being deleted makes the request answer
-503 `control_plane_unavailable` with `Retry-After` and delete nothing; send it again.
+reads it any more, and its memberships, alert rules, channels, saved queries and SQL runs stay in Postgres. A trace
+that records media in the project while it is being deleted makes the request answer 503 `control_plane_unavailable`
+with `Retry-After` and delete nothing; send it again.

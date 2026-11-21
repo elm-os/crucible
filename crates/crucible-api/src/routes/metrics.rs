@@ -239,7 +239,7 @@ pub(crate) fn parse_request(
         errors.push(field_error(
             "timezone",
             "unsupported",
-            "only UTC buckets are supported yet",
+            "only UTC buckets are supported: send UTC or Etc/UTC",
         ));
     }
     let granularity = match request.granularity.unwrap_or(wire::Granularity::Auto) {
