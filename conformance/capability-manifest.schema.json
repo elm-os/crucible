@@ -35,6 +35,11 @@
       "enum": ["observed", "unobserved"],
       "description": "observed: crucible.mcp.progress.count equals the progress notifications sent; unobserved: the key is absent"
     },
+    "source": {
+      "enum": ["sdk", "proxy"],
+      "default": "sdk",
+      "description": "What sends the spans: an SDK (capture source sdk) or the MCP proxy (proxy_stdio in the stdio variants, proxy_http in the HTTP variants)"
+    },
     "skips": {
       "type": "array",
       "items": {

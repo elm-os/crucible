@@ -1,7 +1,7 @@
 // Scrub rules, content capture and the keyed hashes, as pure functions.
 
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { captured, decide, glob, jsonPrefix, setCaptureWorkHook } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
 import { patternFacts } from "../src/pattern.ts";
@@ -238,20 +238,25 @@ describe("scrubbing work", () => {
   test("the rules' patterns yield the facts the guards use", () => {
     const facts = Object.fromEntries(
       shared.rules.map((rule) => {
-        const { minLength, literals, lead } = patternFacts(rule.pattern);
-        return [rule.name, { minLength, literals, lead: lead && [lead.prefix, lead.anchor] }];
+        const { minLength, literals, lead, pairs } = patternFacts(rule.pattern);
+        // A pair is shown as what it finds in a sample.
+        const finds = pairs && ["a:", "1.", "Z@", "0-", "x"].filter((sample) => pairs.test(sample));
+        return [
+          rule.name,
+          { minLength, literals, lead: lead && [lead.prefix, lead.anchor], pairs: finds },
+        ];
       }),
     );
     expect(facts).toEqual({
-      pem: { minLength: 32, literals: ["-----BEGIN "], lead: undefined },
-      jwt: { minLength: 7, literals: ["eyJ"], lead: ["eyJ", "."] },
-      bearer: { minLength: 23, literals: undefined, lead: undefined },
-      secret_key: { minLength: 12, literals: ["csk_"], lead: undefined },
-      card: { minLength: 14, literals: undefined, lead: undefined },
-      email: { minLength: 6, literals: ["@"], lead: ["", "@"] },
-      ipv6: { minLength: 6, literals: [":", ":"], lead: undefined },
-      ipv4: { minLength: 7, literals: ["."], lead: undefined },
-      phone: { minLength: 8, literals: undefined, lead: undefined },
+      pem: { minLength: 32, literals: ["-----BEGIN "], lead: undefined, pairs: ["0-"] },
+      jwt: { minLength: 7, literals: ["eyJ"], lead: ["eyJ", "."], pairs: ["1."] },
+      bearer: { minLength: 23, literals: undefined, lead: undefined, pairs: undefined },
+      secret_key: { minLength: 12, literals: ["csk_"], lead: undefined, pairs: undefined },
+      card: { minLength: 14, literals: undefined, lead: undefined, pairs: undefined },
+      email: { minLength: 6, literals: ["@"], lead: ["", "@"], pairs: ["Z@"] },
+      ipv6: { minLength: 6, literals: [":", ":"], lead: undefined, pairs: ["a:"] },
+      ipv4: { minLength: 7, literals: ["."], lead: undefined, pairs: ["1."] },
+      phone: { minLength: 8, literals: undefined, lead: undefined, pairs: undefined },
     });
   });
 
@@ -402,6 +407,71 @@ describe("capture", () => {
     expect(jsonPrefix(cyclic, 1_000)).toBeUndefined();
     expect(jsonPrefix({ big: 1n }, 1_000)).toBeUndefined();
     expect(jsonPrefix(undefined, 1_000)).toBeUndefined();
+  });
+
+  test("runs of flat records are written as full serialization writes them", () => {
+    // Records go through `JSON.stringify` a run at a time; anything else in a run ends it.
+    const random = seeded(20_261_120);
+    const odd = (i: number): unknown => {
+      switch (Math.floor(random() * 12)) {
+        case 0:
+          return { ...JSON.parse('{"__proto__":1}'), id: i };
+        case 1:
+          return { id: i, long: "y".repeat(129) };
+        case 2:
+          return { id: i, nested: { a: 1 } };
+        case 3:
+          return { id: i, gone: undefined, n: Number.NaN, z: -0 };
+        case 4:
+          return { id: i, toJSON: () => "custom" };
+        case 5:
+          return null;
+        case 6:
+          return Object.fromEntries(Array.from({ length: 17 }, (_, k) => [`k${k}`, k]));
+        default:
+          return { id: i, sku: `SKU-${i}`, ok: random() < 0.5, note: generatedText(random, 20) };
+      }
+    };
+    const mismatches: string[] = [];
+    for (let i = 0; i < 400; i += 1) {
+      const rows = Array.from({ length: Math.floor(random() * 150) }, (_, k) => odd(k));
+      const value = { records: rows, tail: [1, 2] };
+      const full = JSON.stringify(value);
+      for (const limit of [0, 1, Math.floor(random() * full.length), full.length, 1_000_000]) {
+        const got = jsonPrefix(value, limit);
+        const want = { text: full.slice(0, limit), more: full.length > limit };
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          mismatches.push(`${limit}: ${JSON.stringify(got)?.slice(0, 200)}`);
+        }
+      }
+    }
+    expect(mismatches.slice(0, 3)).toEqual([]);
+    // A record's getter runs once, as in full serialization.
+    let reads = 0;
+    const record = {
+      get id() {
+        reads += 1;
+        return 7;
+      },
+    };
+    expect(jsonPrefix([record, record], 1_000)?.text).toBe('[{"id":7},{"id":7}]');
+    expect(reads).toBe(2);
+    // A record with a long member name leaves the run, so no serializer call writes more than the window.
+    const stringify = JSON.stringify;
+    let longest = 0;
+    const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const text = stringify(...(args as Parameters<typeof stringify>));
+      longest = Math.max(longest, text?.length ?? 0);
+      return text;
+    });
+    try {
+      captured([{ ["k".repeat(5 * 1024 * 1024)]: 1 }, { id: 1 }], 16_384);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(longest).toBeLessThanOrEqual(16_384 + 1_024);
+    const named = [{ id: 1 }, { ["n".repeat(129)]: 2 }];
+    expect(jsonPrefix(named, 1_000_000)?.text).toBe(JSON.stringify(named));
   });
 
   test("a value that does not serialize is not captured", () => {

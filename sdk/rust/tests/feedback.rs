@@ -313,6 +313,36 @@ async fn feedback_returns_at_once_while_the_api_stalls() {
 }
 
 #[tokio::test]
+async fn flush_keeps_spans_and_queued_scores_within_one_export_timeout() {
+    // A span and scores queued behind it, with a collector that accepts connections and never answers: the spans
+    // and the scores share one deadline, the export timeout.
+    let _turn = GLOBAL.lock().await;
+    let collector = Collector::start(Mode::Stall).await;
+    let timeout = Duration::from_millis(800);
+    init(&collector, |o| {
+        o.project_id = PROJECT.to_owned();
+        o.export_timeout = timeout;
+    })
+    .await;
+    observe(&Context::new(), "answer", ObservationType::Agent).end();
+    for i in 0..3 {
+        crucible_sdk::feedback(Feedback {
+            value: i.into(),
+            ..helpful()
+        });
+    }
+    let began = Instant::now();
+    let flushed = crucible_sdk::flush().await;
+    let took = began.elapsed();
+    assert!(flushed.is_err(), "nothing could be sent");
+    assert!(
+        took < timeout + Duration::from_millis(400),
+        "flush took {took:?} with an export timeout of {timeout:?}"
+    );
+    let _stopped = crucible_sdk::shutdown().await;
+}
+
+#[tokio::test]
 async fn a_full_queue_drops_the_score_and_counts_it() {
     let _turn = GLOBAL.lock().await;
     let collector = Collector::start(Mode::Stall).await;

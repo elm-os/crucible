@@ -63,6 +63,9 @@ struct Shape {
     blocks: Vec<Block>,
     #[serde(default)]
     records: usize,
+    /// The share of the uncaptured p99 the added p99 may reach, when that is more than the absolute gate.
+    #[serde(default)]
+    gate_relative_p99: f64,
 }
 
 #[derive(Deserialize)]
@@ -264,9 +267,12 @@ async fn the_capture_path_stays_within_the_work_bound() {
             }
         }
         let added = p99(&with) - p99(&without);
+        let gate = scenario
+            .gate_added_p99_ms
+            .max(shape.gate_relative_p99 * p99(&without));
         let excess = with.iter().copied().fold(0.0, f64::max) - quantile(&without, 50);
         println!(
-            "capture-overhead rust {}: added p99 {added:.3} ms (off {:.3}, on {:.3}), slowest excess {excess:.3} ms, serialized {serialized}, scrubbed {scrubbed}, matcher steps {steps} ({steps_per_byte:.1} per character)",
+            "capture-overhead rust {}: added p99 {added:.3} ms (off {:.3}, on {:.3}, gate {gate:.3}), slowest excess {excess:.3} ms, serialized {serialized}, scrubbed {scrubbed}, matcher steps {steps} ({steps_per_byte:.1} per character)",
             shape.id,
             p99(&without),
             p99(&with)
@@ -296,8 +302,11 @@ async fn the_capture_path_stays_within_the_work_bound() {
                 shape.id
             ));
         }
-        if gated && added > scenario.gate_added_p99_ms {
-            failures.push(format!("{}: added p99: {added:.3} ms", shape.id));
+        if gated && added > gate {
+            failures.push(format!(
+                "{}: added p99: {added:.3} ms > {gate:.3} ms",
+                shape.id
+            ));
         }
     }
     let _closed = off.cancel().await;

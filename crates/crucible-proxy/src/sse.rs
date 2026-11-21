@@ -57,6 +57,11 @@ impl SseReader {
         self
     }
 
+    /// See [`Scanner::record_results`].
+    pub fn record_results(&mut self, window: usize) {
+        self.scanner.record_results(window);
+    }
+
     /// Takes the messages completed so far.
     pub fn take(&mut self) -> Vec<Message> {
         self.scanner.take()

@@ -4,7 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use crucible_proxy::scan::{JsonId, Message, Scanner, StateKey};
+use crucible_env::{ChaChaRng, Rng as _};
+use crucible_proxy::CaptureRule;
+use crucible_proxy::canonical::Recorded;
+use crucible_proxy::capture::ContentCapture;
+use crucible_proxy::scan::{JsonId, Message, ResultMembers, Scanner, StateKey};
 use crucible_proxy::sse::SseReader;
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use proptest::prelude::*;
@@ -414,6 +418,10 @@ fn reference(value: &Value, wire_len: usize, is_batch: bool) -> Message {
         state_out: hash(at(&["result", "requestState"])),
         is_batch,
         bytes: wire_len as u64,
+        // Without capture rules nothing is recorded.
+        capture_rule: None,
+        arguments: None,
+        result_members: ResultMembers::default(),
     }
 }
 
@@ -421,6 +429,39 @@ fn reference(value: &Value, wire_len: usize, is_batch: bool) -> Message {
 fn normal(mut message: Message) -> Message {
     message.version_in_meta = message.version_in_meta && message.protocol_version.is_some();
     message
+}
+
+/// A value with a long string in it, so that recordings reach their window.
+fn padded() -> BoxedStrategy<Value> {
+    (
+        junk(),
+        "[a-z \"\\\\\n\u{1}\u{e9}\u{1f600}]{0,24}",
+        0usize..120,
+    )
+        .prop_map(|(value, unit, times)| json!({"pad": unit.repeat(times), "value": value}))
+        .boxed()
+}
+
+/// Whether `recorded` is what a recording may keep of the canonical text `full` within `window`: the whole text,
+/// or a prefix cut before a unit (a character or an escape, at most 6 bytes) that did not fit.
+fn kept_within(recorded: Option<&Recorded>, full: &str, window: usize) -> Result<(), String> {
+    let Some(recorded) = recorded else {
+        return Err(format!("nothing recorded of {full:?}"));
+    };
+    let whole = full.len() <= window && recorded.text == full && !recorded.more;
+    let cut = full.len() > window
+        && recorded.more
+        && full.starts_with(&recorded.text)
+        && recorded.text.len() <= window
+        && recorded.text.len() + 6 > window;
+    if whole || cut {
+        Ok(())
+    } else {
+        Err(format!(
+            "recorded {recorded:?} of {} bytes within {window}: {full:?}",
+            full.len()
+        ))
+    }
 }
 
 fn chunked<'a>(wire: &'a [u8], cuts: &[usize]) -> Vec<&'a [u8]> {
@@ -493,5 +534,81 @@ proptest! {
         let got: Vec<Message> = reader.take().into_iter().map(normal).collect();
         prop_assert_eq!(got, vec![reference(&value, compact.len(), false)]);
         prop_assert_eq!(reader.malformed(), 0);
+    }
+
+    #[test]
+    fn recorded_content_is_the_canonical_text_of_a_full_parse(
+        (arguments, content, structured) in (padded(), padded(), junk()),
+        (is_error, captured_tool, name_first, escape, pretty) in
+            (any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>()),
+        max_bytes in prop_oneof![Just(16_384usize), 1usize..400],
+        cuts in prop::collection::vec(any::<usize>(), 0..12),
+    ) {
+        // Whitespace and escapes on the wire, and keys in either order, change nothing of the canonical text.
+        let render = |value: &Value| {
+            let text = if pretty {
+                serde_json::to_string_pretty(value).unwrap()
+            } else {
+                serde_json::to_string(value).unwrap()
+            };
+            if escape { escape_non_ascii(&text) } else { text }
+        };
+        let rule = CaptureRule { tool: "secret".to_owned(), max_bytes, ..CaptureRule::default() };
+        let window = rule.window();
+        let capture = ContentCapture::new(&[rule], ChaChaRng::from_u64(1).fork("capture"));
+
+        let name = if captured_tool { "secret" } else { "echo" };
+        let args_text = render(&arguments);
+        let params = if name_first {
+            format!(r#"{{"name": "{name}", "arguments": {args_text}}}"#)
+        } else {
+            format!(r#"{{"arguments": {args_text}, "name": "{name}"}}"#)
+        };
+        let request = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{params}}}"#);
+        let mut scanner = Scanner::document().capturing(capture);
+        for chunk in chunked(request.as_bytes(), &cuts) {
+            scanner.push(chunk);
+        }
+        scanner.end_document();
+        let messages = scanner.take();
+        prop_assert_eq!(messages.len(), 1);
+        if captured_tool {
+            prop_assert_eq!(messages[0].capture_rule, Some(0));
+            let full = serde_json::to_string(&arguments).unwrap();
+            prop_assert_eq!(kept_within(messages[0].arguments.as_ref(), &full, window), Ok(()));
+        } else {
+            prop_assert_eq!(messages[0].capture_rule, None);
+            prop_assert_eq!(&messages[0].arguments, &None);
+        }
+
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "s"}},
+                "content": content,
+                "requestState": "opaque",
+                "structuredContent": structured,
+                "isError": is_error,
+            },
+        });
+        let wire = render(&response);
+        let mut scanner = Scanner::document();
+        scanner.record_results(window);
+        for chunk in chunked(wire.as_bytes(), &cuts) {
+            scanner.push(chunk);
+        }
+        scanner.end_document();
+        let messages = scanner.take();
+        prop_assert_eq!(messages.len(), 1);
+        let members = &messages[0].result_members;
+        for (recorded, value) in [
+            (&members.content, &content),
+            (&members.structured_content, &structured),
+            (&members.is_error, &Value::Bool(is_error)),
+        ] {
+            let full = serde_json::to_string(value).unwrap();
+            prop_assert_eq!(kept_within(recorded.as_ref(), &full, window), Ok(()));
+        }
     }
 }

@@ -141,7 +141,7 @@ of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
   `/reset/?token=...`, to open at the address you reach the server at.
 - Sign-in through GitHub, Google or an OpenID Connect provider needs the address people use, which the provider
   redirects back to, as `server.public_url` ([configuration](configuration.md#server)). An `https` public URL also
-  makes the session cookie `Secure`.
+  makes the session cookie `Secure`. Add providers in **Settings**, **Sign-in** ([sign-in](sign-in.md)).
 - If Postgres becomes unreachable, open sessions keep working for `auth.session_outage_grace` (10 minutes by
   default), and keys the server already knows keep working for ingest (`auth.pg_outage_mode = "fail_open"`).
   Shipping to ClickHouse goes on too: the server keeps each project's salt for MCP user subjects in memory, loaded

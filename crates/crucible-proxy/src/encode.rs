@@ -1,8 +1,8 @@
 //! Operations to OTLP: one span per [`Op`], with the OTel MCP semantic-convention keys and the
-//! `crucible.mcp.*` keys of contract 9.1. Pure.
+//! `crucible.mcp.*` keys of contract 9.1, and captured content under the keys the SDKs send (contract 9.10). Pure.
 
 use crucible_records::{
-    CancelSource, CaptureSource, Era, ErrorClass, McpStatus, ResultType, Transport,
+    CancelSource, CaptureSource, Era, ErrorClass, McpStatus, ResultType, Transport, Truncation,
 };
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -56,6 +56,14 @@ fn flag(key: &str, flag: bool) -> KeyValue {
     }
 }
 
+fn double(key: &str, number: f64) -> KeyValue {
+    KeyValue {
+        key: key.to_owned(),
+        value: value(Value::DoubleValue(number)),
+        ..KeyValue::default()
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     bytes
@@ -80,8 +88,32 @@ fn attributes(op: &Op, capture_source: CaptureSource) -> Vec<KeyValue> {
         text("crucible.mcp.direction", op.direction.as_str()),
         flag("crucible.mcp.is_notification", op.is_notification),
         flag("crucible.mcp.is_batch", op.is_batch),
-        flag("crucible.mcp.content.captured", false),
+        flag("crucible.mcp.content.captured", op.content.is_some()),
     ];
+    // Captured content under the keys the SDKs send (contract 9.10).
+    if let Some(content) = &op.content {
+        out.push(double(
+            "crucible.mcp.content.sample_rate",
+            content.sample_rate.get(),
+        ));
+        out.push(text(
+            "crucible.mcp.content.truncation",
+            if content.truncated {
+                Truncation::CapExceeded
+            } else {
+                Truncation::None
+            }
+            .as_str(),
+        ));
+        for (key, field) in [
+            ("gen_ai.tool.call.arguments", &content.args),
+            ("gen_ai.tool.call.result", &content.result),
+        ] {
+            if let Some(field) = field {
+                out.push(text(key, field.clone()));
+            }
+        }
+    }
     let mut push_text = |key: &str, text_value: &str| {
         if !text_value.is_empty() {
             out.push(text(key, text_value));
