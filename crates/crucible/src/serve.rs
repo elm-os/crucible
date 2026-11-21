@@ -14,10 +14,9 @@
 //!   API and the MCP server authenticate each request and answer `telemetry_store_unavailable`.
 //! - **With ClickHouse**: the `telemetry-store` task brings the store up ([`store::bring_up`]: migrations when
 //!   asked for, else with Postgres a ledger that records every step, then startup detection and the self-tests of
-//!   contract 5.8), retrying until it succeeds. Until then
-//!   ingest answers 503 and `/readyz` says why. Then it builds the recent-span index, mounts the API and the MCP
-//!   server over the store, opens ingest, and runs the shipper, whose replay of the retained WAL prefix
-//!   rebuilds the index.
+//!   contract 5.8), retrying until it succeeds. Until then ingest answers 503 and `/readyz` says why. Then it
+//!   builds the recent-span index, mounts the API and the MCP server over the store, opens ingest, and runs the
+//!   shipper, whose replay of the retained WAL prefix rebuilds the index.
 //!
 //! Shutdown is one signal to every task. The listeners stop accepting and wait for their open requests, whose
 //! appends resolve because the WAL committer outlives every handle to the log. The shipper stops at its next
