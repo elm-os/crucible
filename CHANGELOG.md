@@ -20,6 +20,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
   a pair of characters every match of it holds (a hexadecimal digit before a `:` for the ipv6 rule), so capturing
   500 records or 64 KiB of hexadecimal text costs about half as much.
+- The Rust SDK's `flush` waits at most the export timeout in all, for the spans and the queued scores together; it
+  waited as long again for the scores.
 - The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
   manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
   all four variants.

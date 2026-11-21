@@ -287,10 +287,11 @@ impl Sender {
             .is_ok()
     }
 
-    /// Waits until every score queued before the call is handled, at most the export timeout. Returns why the
-    /// last score that was not sent since the previous flush was dropped or failed, or that the wait ran out.
-    pub(crate) async fn flush(&self) -> Result<(), String> {
-        let handled = self.request(Message::Flush, self.timeout).await;
+    /// Waits until every score queued before the call is handled, at most `budget`: what is left of the export
+    /// timeout. Returns why the last score that was not sent since the previous flush was dropped or failed, or that
+    /// the wait ran out.
+    pub(crate) async fn flush(&self, budget: Duration) -> Result<(), String> {
+        let handled = self.request(Message::Flush, budget).await;
         if let Some(reason) = self.counters.take_failure() {
             return Err(reason);
         }
@@ -298,7 +299,8 @@ impl Sender {
             Ok(())
         } else {
             Err(format!(
-                "the queued scores were not all sent within {:?}; raise Options::export_timeout if the server is slow",
+                "the queued scores were not all sent within the export timeout ({:?}); raise Options::export_timeout \
+                 if the server is slow",
                 self.timeout
             ))
         }
