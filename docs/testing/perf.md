@@ -537,23 +537,21 @@ significant digits.
 5. **The caches.** The lanes measure a store that no write has changed for a while, as ClickHouse then holds
    it, so each lane attempt starts by settling and warming it:
    - **Column statistics.** ClickHouse 26.8 keeps automatic statistics on every column (`auto_statistics_types
-     = 'basic, uniq_v2'`) and uses them to plan each read. Until its statistics cache refreshes, every
-     `refresh_statistics_interval` (300 s), a read loads every part's statistics from their files. In a 300 s
-     trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and the second 40.8
-     ms, with no page-cache drop: each `span_core` read spent 74 to 79 ms loading statistics
-     (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the first refresh, about
-     300 s after the rig started in each of four runs, and 0 to about 1.5 ms afterwards, when its median fell
-     from about 92 ms to 15 ms. Reads whose conditions stay inside the primary key load none (trace by id's
-     bounds read on `trace_stats` measured 7 to 12 ms throughout). So each attempt first waits, up to 360 s,
-     until a read of `span_core` and one of `trace_heads`, shaped as trace by id's span read, load at most 5 ms
-     of statistics each. A lane that never settles is marked invalid.
-
-     **Not measured: a store under live ingest.** On a 41-part test table, one insert after a refresh sent
-     reads back to loading most parts' statistics (1.5 ms and 172 files cold, nothing and 6 files after the
-     refresh, 1.0 ms and 130 files after the insert). If Crucible's tables behave alike, every read under
-     ingest pays about the 75 ms measured above before the first refresh, and these lanes leave that out. The
-     test: settle, ingest one trace, then read `LoadedStatisticsMicroseconds` of a span read; about 75 ms means
-     every part reloads, about 1 ms only the new one.
+     = 'basic, uniq_v2'`). It holds one snapshot of a table's statistics, refreshed every
+     `refresh_statistics_interval` (300 s), and reuses it only for a read whose parts are exactly the parts the
+     snapshot saw. Any other read that plans with statistics loads them from the files of every part. So until the
+     first refresh after the server starts, and after each insert or merge until the next refresh, every such read
+     pays for every part of the table, and under live ingest always: trace by id's span read and its bounds, and
+     the trace list's stats ([measured below](#column-statistics-under-ingest)). Crucible's reads send
+     `use_statistics = 0` and load none. Before they did, a 300 s trace-by-id lane started right after the load measured 136.6 ms p95
+     in its first half and 40.8 ms in its second, with no page-cache drop: each `span_core` read spent 74 to 79
+     ms loading statistics (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the
+     first refresh, about 300 s after the rig started in each of four runs. Each attempt still first waits, up to
+     360 s, until a read of `span_core` and one of `trace_heads`, shaped as trace by id's span read and sent
+     without Crucible's settings, load at most 5 ms of statistics each, so that a build that plans with
+     statistics is measured once its snapshot is fresh. A lane that never settles is marked invalid. Every lane
+     records what Crucible's own reads loaded (`statistics_loaded`), and with `--after-insert` each attempt then
+     ingests one trace, as live ingest leaves the store.
    - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
      parts: in the first minute after the load, each `span_core` read missed the mark cache (91 misses at
      first). Each attempt runs `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
@@ -607,15 +605,19 @@ tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-sp
 | `--seconds` | 60 | Seconds of each lane |
 | `--probes` | 100 | Traces of each ack-to-API probe |
 | `--lanes` | every lane | Only these lanes, comma-separated |
+| `--after-insert` | off | Each lane attempt ingests one trace of two spans after the settle and the warm-up and waits until the store holds it, so that the lane reads the store as live ingest leaves it: with a new part in every table a trace writes |
 
 The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
 `crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span and whether the lanes read it
 into the page cache (`warmed`), both probes with their lists per probe and list round trips, and every lane with
 its attempts and, from the last attempt, its percentiles and its halves' percentiles, store reads per request,
 mean barrier wait, connections opened, ClickHouse merges at its start, its wait for the column statistics to
-settle and the statistics a read still loaded, what else the Docker host did during it (busy cores on the rig's
-CPUs and on the others, the load average, the busiest disk's busy share, the page-cache drops and the other
-containers, as the gate records per arm) and why it is invalid), `summary.md`, the generator's reports under
+settle and the statistics a read still loaded, the statistics that Crucible's own reads loaded during it
+(`statistics_loaded`: per set of tables, the reads and their `LoadedStatisticsMicroseconds` from
+`system.query_log`, filtered to the users `crucible_read_ui` and `crucible_read_agent`), what else the Docker host
+did during it (busy cores on the rig's CPUs and on the others, the load average, the busiest disk's busy share, the
+page-cache drops and the other containers, as the gate records per arm) and why it is invalid; and whether the
+lanes ran after an insert (`after_insert`)), `summary.md`, the generator's reports under
 `runs/` (one per lane attempt, `<lane>-<attempt>.json`) and `dataset/`, and Crucible's metrics before and after
 each lane attempt under `metrics/`.
 
@@ -627,7 +629,9 @@ The read services record two histograms per request class (one class per read se
 `session`, `user_list`, `user`, `user_sessions`, `export_page`):
 
 - `crucible_api_store_reads{class}`: the store reads each request issued. Its count is the requests and its sum
-  the reads.
+  the reads. Reads that do not depend on each other go to the store together, so the count is not the number of
+  round trips: trace by id's six reads take two, the first while it waits for the read barrier, and a page of the
+  trace list's five take three.
 - `crucible_api_barrier_wait_microseconds{class}`: how long each request that waits for the recent index's read
   barrier waited (trace by id and the fact target bounds), timed by the read service with the `Env` clock, since
   the metrics recorder never reads a clock (contract 2.12).
@@ -794,9 +798,9 @@ p50 / p95 / p99, attempts in brackets:
   while:** trace by id meets 100 ms p95 with and without a hint (34.6 to 71.1 ms), and the 30-day trace list stays
   far below 500 ms p95 (61.0 and 66.5 ms); the billion-span figure needs the full rig and the larger dataset. The
   first pair's 137 to 155 ms for trace by id came from its lane running first after the load, while ClickHouse
-  still loaded every part's statistics for each read. Whether a store under live ingest stays in that state is
-  not measured (the caches, above); if it does, these figures leave out about 75 ms per `span_core` read on
-  this store.
+  still loaded every part's statistics for each read. A store under live ingest stays in that state on builds that
+  plan reads with statistics, so these figures leave out about 60 to 75 ms per `span_core` read there; reads
+  leave statistics out now ([column statistics under ingest](#column-statistics-under-ingest)).
 - **Two runs agree within 10% at p95 in 7 of 13 lanes**, against 3 of 13 before: not all of them. The settle, the
   warm-up and the reruns removed the cache states that moved whole lanes. What still moves is the machine and the
   rig between runs: run 1's first six lanes ran with 2.1 to 3.2 other CPUs busy and run 2's with 0.1 to 0.2 (the
@@ -833,6 +837,127 @@ on the small rig, two runs per build, a dataset of 30,000 spans; latency in ms, 
 - With the probe's earlier window, 10 minutes on each side, the n-th list also named the n - 1 traces sent before
   it: 100 probes measured 57.7 and 53.3 ms p50 on `7abc007` and 10 probes 35.1 ms, and on the loaded store of
   2.25 million spans 108.6 and 99.7 ms, since its window also held the dataset's newest traces.
+
+### Column statistics under ingest
+
+Measured on 2026-11-20, on a laptop, not reference hardware: the read bench on the small rig (ClickHouse 26.8.41.14
+on 2 CPUs and 1.5 GB), each run loading 2,250,000 spans of 1 KiB over 30 days. The builds are `aece1ff` (main),
+`8fbe827` (main with `use_statistics = 0`) and `c2c9a0d` (`8fbe827` with the reads of a request sent together,
+[below](#reads-sent-together)). Latency in ms, p50 / p95 / p99; statistics in ms per read, from
+`statistics_loaded`.
+
+**A store under live ingest reloads the statistics of every part.** Under `--after-insert`, each lane attempt
+waited until the statistics had settled, ingested one trace of two spans, waited until the store held it, and then
+sent its 120 reads. On main, trace by id's `span_core` reads then loaded 61.5 ms of statistics each on average,
+close to the 74 to 79 ms that a load of every part cost before the first refresh in #86, although each read
+selects the one day its trace lies in; the trace list's `trace_stats` reads loaded 5.2 ms each:
+
+| Build | Trace by id | Its statistics: `span_core`, `trace_stats` | 30-day trace list | Its statistics: `trace_stats` |
+|---|---|---|---|---|
+| `aece1ff` | 124.3 / 167.4 / 208.3 | 61.5, 2.4 | 50.8 / 58.2 / 84.6 | 5.2 |
+| `8fbe827` | 34.9 / 50.6 / 56.1 | none | 41.7 / 49.3 / 64.2 | none |
+| `c2c9a0d` | 27.8 / 37.0 / 46.0 | none | 40.9 / 47.9 / 54.7 | none |
+
+- A store without new writes pays the same once background merges replace parts. In main's settled run the
+  first lane started 12 s after the bench's probe had settled, and its `span_core` reads still loaded 38.5 ms each
+  on average until a refresh during the lane: trace by id measured 95.0 / 133.1 / 192.8 ms, 170.9 ms p95 in its
+  first half, against 33.6 / 41.4 / 47.3 ms for the next lane, which loaded none.
+- **Why.** ClickHouse 26.8 keeps one snapshot of a table's statistics and reuses it only while the parts a read
+  selects are exactly the parts the snapshot saw (`ConditionSelectivityEstimator::isStale` compares the two lists).
+  Otherwise a read that plans with statistics, to order its conditions, loads them for every part of the table, as
+  the one-day reads above show; in these runs the reads of `span_core` and `trace_stats` did, and the trace list's
+  scan of `trace_heads` loaded none. A bare 26.8 server shows the same: on a 21-part table with merges
+  stopped and `refresh_statistics_interval = 5`, a read with two conditions loaded nothing once settled, 597 µs and
+  43 files after a 10-row insert, 602 µs on the next read, and nothing after the next refresh.
+- **The fix.** Every read class sends `use_statistics = 0`; with it the bare server's read loaded nothing, while
+  `allow_statistics_optimize = 0`, one of the two settings named in #86, still loaded 587 µs. The conformance row
+  "Reads leave column statistics unused" checks on every server version that a typed read right after three
+  inserts loads none; on 26.8 the same conditions without the adapter's settings loaded 447 to 486 µs on a fresh
+  server, and the typed read itself loaded 7,106 µs before the setting.
+- **Versions.** ClickHouse 26.3 knows the setting and creates no automatic statistics (`auto_statistics_types` is
+  empty by default). ClickHouse 26.10 caches statistics per part instead of per table. Neither is measured here.
+  A 26.8 server still builds the statistics on insert and merge, which no read of Crucible's then uses; setting
+  `auto_statistics_types = ''` on the telemetry tables is the schema step that stops it.
+
+The settled runs of the three builds, every lane once, show what `use_statistics = 0` does to a store whose
+statistics are fresh, where main's reads plan with them and load nothing. Other tracks' builds shared the machine
+during `aece1ff`'s run (2.1 to 6.3 other CPUs busy), less during `8fbe827`'s (0.0 to 3.9) and not during
+`c2c9a0d`'s (0.0 to 0.1):
+
+| Lane | `aece1ff` | `8fbe827` | `c2c9a0d` |
+|---|---|---|---|
+| `trace_by_id` | 95.0 / 133.1 / 192.8 (loaded 38.5 per `span_core` read) | 37.5 / 56.6 / 62.8 | 28.2 / 52.6 / 66.1 |
+| `trace_by_id_hinted` | 33.6 / 41.4 / 47.3 | 37.5 / 65.4 / 72.5 | 26.2 / 35.9 / 48.4 |
+| `trace_list_30d` | 44.7 / 53.1 / 58.9 | 42.9 / 50.4 / 58.3 | 38.3 / 44.6 / 51.7 |
+| `span_list_30d` | 276.2 / 415.5 / 558.1 | 272.6 / 446.5 / 537.1 | 258.2 / 361.2 / 538.6 |
+| `session_list_30d` | 3.9 / 5.0 / 5.8 | 3.6 / 4.5 / 5.2 | 3.8 / 6.3 / 7.2 |
+| `user_list_30d` | 3.8 / 4.4 / 5.8 | 3.5 / 4.1 / 4.3 (page-cache drops in all 3 attempts) | 3.5 / 5.8 / 6.1 |
+| `span_children` | 37.7 / 50.8 / 70.5 | 32.9 / 41.5 / 51.0 | 33.2 / 38.8 / 46.4 |
+| `payload` | 7.7 / 10.1 / 12.4 | 7.2 / 8.6 / 9.3 | 8.3 / 11.5 / 12.7 |
+| `facts` | 19.0 / 23.1 / 27.0 | 13.9 / 16.8 / 20.3 | 10.7 / 13.0 / 17.1 |
+| `filter_values_30d` | 6.8 / 8.8 / 15.7 | 6.0 / 7.4 / 11.0 | 5.7 / 6.4 / 8.8 |
+| `data_bounds` | 7.8 / 9.5 / 16.3 | 6.9 / 8.0 / 10.4 | 6.7 / 7.6 / 9.0 |
+| `search_30d` | 22.1 / 25.5 / 31.8 | 21.4 / 26.3 / 31.6 | 20.8 / 23.8 / 31.7 |
+| `metrics_30d` | 7.0 / 8.2 / 8.7 | 6.3 / 7.5 / 8.3 | 6.1 / 6.9 / 7.8 |
+
+Without statistics, ClickHouse plans trace by id's span read the same way. On a settled store of the same dataset
+(70 `span_core` parts, a fresh snapshot), the span read of 20 traces ran 40 times with each value of
+`use_statistics`, interleaved: with either value the plan had the same PREWHERE (every condition, in one order) and
+read 1.1 granules, 17,149 rows and 1.34 MB per read on average, and measured 15 ms at p50 (19 and 26 ms at p95,
+while the lane ran beside it). The lanes' differences between builds are therefore run-to-run spread: trace by id
+measured 28.6 / 33.5 ms on `aece1ff` with a fresh snapshot in its second run, 37.5 / 56.6 ms on `8fbe827`, and
+28.2 / 52.6 and 32.2 / 57.6 ms on `c2c9a0d`. The service ignores `hint_time`, so its lane repeats trace by id: 33.6
+/ 41.4, 37.5 / 65.4 and 26.2 / 35.9 ms on the three builds, a lane whose p95 moved by 75.0% between two runs of one
+build in #86.
+
+### Reads sent together
+
+The same runs and builds. Trace by id sends its six reads in two waves, the bounds and then the spans with the four
+fact tables, and a page of the trace list sends its five in three, the heads, their stats and then the three fact
+tables. The store reads per request stay what they were (6 and 5, from `crucible_api_store_reads`); a request
+waits for fewer round trips. The two lanes and the ack-to-API probe of every run (100 probes, from the
+acknowledgement to the first list that names the trace, the second list of each probe making the five reads):
+
+| Build, run | Trace by id | 30-day trace list | Ack to API, empty store | Ack to API, loaded store |
+|---|---|---|---|---|
+| `aece1ff`, every lane | 95.0 / 133.1 / 192.8 (loading statistics) | 44.7 / 53.1 / 58.9 | 24.3 / 30.6 / 45.1 | 38.9 / 58.8 / 62.6 |
+| `aece1ff`, two lanes | 28.6 / 33.5 / 37.1 | 41.0 / 47.6 / 54.8 | 21.1 / 24.4 / 36.8 | 32.4 / 43.3 / 49.7 |
+| `aece1ff`, after an insert | 124.3 / 167.4 / 208.3 (loading statistics) | 50.8 / 58.2 / 84.6 | 20.8 / 24.7 / 30.4 | 34.9 / 51.5 / 56.0 |
+| `8fbe827`, every lane | 37.5 / 56.6 / 62.8 | 42.9 / 50.4 / 58.3 | 21.8 / 25.2 / 34.1 | 30.1 / 40.7 / 52.5 |
+| `8fbe827`, after an insert | 34.9 / 50.6 / 56.1 | 41.7 / 49.3 / 64.2 | 20.8 / 24.1 / 43.8 | 27.9 / 40.1 / 45.2 |
+| `c2c9a0d`, every lane | 28.2 / 52.6 / 66.1 | 38.3 / 44.6 / 51.7 | 18.9 / 22.9 / 35.3 | 24.9 / 29.2 / 40.2 |
+| `c2c9a0d`, two lanes | 32.2 / 57.6 / 61.6 | 38.1 / 42.7 / 48.0 | 19.3 / 22.3 / 31.3 | 24.4 / 34.6 / 37.9 |
+| `c2c9a0d`, after an insert | 27.8 / 37.0 / 46.0 | 40.9 / 47.9 / 54.7 | 18.3 / 21.8 / 38.3 | 27.1 / 35.0 / 48.3 |
+
+- **The trace list's decoration.** #86 measured the ack-to-API probe at 26 ms p50 with the fact decoration and 16
+  ms without it. With the decoration's three reads sent together, the empty store's probe measured 18.3 to 19.3 ms
+  p50 in the three runs of `c2c9a0d`, against 20.8 to 24.3 ms in those of `aece1ff` and 20.8 and 21.8 ms in those of
+  `8fbe827`, and the 30-day list 38.1 to 40.9 ms p50 against 41.0 to 50.8 ms on the builds that send its reads one
+  after another.
+- **The facts lane** sends the four fact tables of `GET /facts` together: 10.7 / 13.0 / 17.1 ms on `c2c9a0d`,
+  against 13.9 / 16.8 / 20.3 on `8fbe827` and 19.0 / 23.1 / 27.0 on `aece1ff`.
+- **Reads of API keys and the MCP server** run as one ClickHouse user, capped at 16 statements at once. Sending
+  reads together, a request holds up to five of them, so the adapter makes each such read wait for one of 16
+  slots, within its deadline, instead of sending it to be refused; the conformance row "Agent reads wait for a
+  statement slot" holds the 16 with running statements and checks that a typed read waits for one (1,480 ms on
+  26.8) and succeeds, where the server answered `TOO_MANY_SIMULTANEOUS_QUERIES` before.
+
+### Ingest with the read-path changes
+
+The gate on the small rig, 5 pairs, lane `1kb`, A `aece1ff` (main) and B `c2c9a0d` (both read-path changes),
+measured on 2026-11-20, on a laptop, not reference hardware, with the WAL volume probed `honest` in each session.
+The changes touch only reads, and ingest moved within noise in both directions:
+
+| Path | Metric | A median | B median | Change | One-sided p | Verdict |
+|---|---|---|---|---|---|---|
+| `ack` | Acknowledged spans/s | 582,867 | 569,566 | -2.3% | 0.59 | pass |
+| `ack` | Durable-ack p99 | 4.96 ms | 5.16 ms | +4.0% | 0.50 | pass |
+| `e2e` | Shipped spans/s | 62,138 | 60,014 | -3.4% | 0.41 | pass |
+| `e2e` | Freshness p95 | 573.6 ms | 569.5 ms | -0.7% | 1.00 | pass |
+
+Every arm answered every request with 200 and was valid, and every end-to-end arm drained with no lost or duplicated
+span. The per-pair differences changed sign from pair to pair: throughput +13,686, -26,249, +15,858, -18,519 and
++27,151 spans/s, and shipped spans/s +573, -3,027, -2,475, +8,671 and -939.
 
 ### Pre-ack copies
 

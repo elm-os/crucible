@@ -11,9 +11,9 @@ use crucible_recent::RecentSpan;
 use crucible_records::{SpanId, TableId, TraceId};
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
-use crate::facts::{TraceFacts, trace_extent};
+use crate::facts::{FactTarget, TraceFacts, ingest_tags, resolve_rows, trace_extent, trace_window};
 use crate::service::{QueryService, Read};
-use crate::spans::{SPAN_TABLES, StoredTrace, TraceSpan, ids, merge, recent, stored};
+use crate::spans::{SPAN_TABLES, TraceSpan, ids, merge, recent, stored};
 
 /// The tables trace by id depends on, for the quarantine rule: its spans, its stats and its facts.
 const DETAIL_TABLES: [TableId; 6] = [
@@ -47,7 +47,8 @@ pub struct TraceDetail {
 
 impl QueryService {
     /// Trace by id (contract 8.7): the recent index behind the read barrier, the time bounds from
-    /// `trace_stats`, then the spans from `span_core` inside them, merged and de-duplicated by `span_id`.
+    /// `trace_stats`, then, together, the spans from `span_core` inside them, merged and de-duplicated by
+    /// `span_id`, and the trace's facts.
     ///
     /// The index is read when the barrier resolves, never after a store read has returned, so an entry cannot
     /// be evicted between the two: a span this node acknowledged is in the response, or the response says why
@@ -83,25 +84,41 @@ impl QueryService {
             .count() as u64;
         let stored_count = trace.as_ref().map_or(0, |trace| trace.span_count);
         let inline_limit = u64::from(TRACE_INLINE_SPAN_LIMIT);
+        let bounds = trace.as_ref().map(|trace| trace.bounds);
+        // The second wave, inside the bounds that the first wave and the index snapshot give: the spans and the
+        // trace's facts, sent together. The store's count alone decides whether to read the whole trace: adding
+        // the unconfirmed entries would count a span twice while it is in the store and its checkpoint is still
+        // to come. The de-duplicated merge then gives the exact count.
+        let span_plan = match bounds {
+            Some(bounds) if stored_count <= inline_limit => trace_spans(
+                scope,
+                bounds.min_start,
+                bounds.max_end,
+                &read.clamp,
+                caller,
+                trace_id,
+            ),
+            _ => Ok(None),
+        };
+        let fact_window = trace_extent(bounds, &entries)
+            .map(|(start, end)| trace_window(start, end))
+            .transpose()?;
+        let mut plans = vec![span_plan];
+        if let Some(window) = fact_window {
+            plans.extend(read.fact_plans(&FactTarget::Trace(trace_id), window));
+        }
+        let mut answers = read.rows_together(plans).await?.into_iter();
+        let span_rows = answers.next().unwrap_or_default();
+        let facts = fact_window
+            .map(|_| resolve_rows(answers.collect()))
+            .transpose()?;
         let mut inline = None;
-        // The store's count alone decides whether to try the whole trace: adding the unconfirmed entries would
-        // count a span twice while it is in the store and its checkpoint is still to come. The de-duplicated
-        // merge then gives the exact count.
         if stored_count <= inline_limit {
-            let rows = match &trace {
-                Some(StoredTrace { bounds, .. }) => {
-                    let (from, to) = (bounds.min_start, bounds.max_end);
-                    let plan = trace_spans(scope, from, to, &read.clamp, caller, trace_id);
-                    read.rows(plan).await?
-                }
-                None => Vec::new(),
-            };
-            let spans = merge(stored(rows)?, entries.iter().map(recent));
+            let spans = merge(stored(span_rows)?, entries.iter().map(recent));
             if spans.len() as u64 <= inline_limit {
                 inline = Some(spans);
             }
         }
-        let bounds = trace.as_ref().map(|trace| trace.bounds);
         let (spans, span_count, paged) = match inline {
             Some(spans) => {
                 let count = spans.len() as u64;
@@ -114,8 +131,10 @@ impl QueryService {
                 (spans, stored_count.saturating_add(unconfirmed), true)
             }
         };
-        let extent = trace_extent(bounds, &entries);
-        let facts = read.trace_facts(trace_id, extent, &spans).await?;
+        let facts = facts.map_or_else(TraceFacts::default, |facts| TraceFacts {
+            tags: facts.effective_tags(&ingest_tags(&spans)),
+            facts,
+        });
         let meta = read.finish(
             read.now,
             consistency,

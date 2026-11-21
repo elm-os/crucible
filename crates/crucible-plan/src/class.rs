@@ -43,10 +43,16 @@ pub struct ClassLimits {
 }
 
 /// Settings every class sends explicitly, besides its limits (contract sections 8.4 and 8.5).
-pub const CLASS_FIXED_SETTINGS: [(&str, &str); 3] = [
+///
+/// `use_statistics = 0` keeps column statistics out of query planning. ClickHouse 26.8 builds statistics on every
+/// column and reuses its snapshot of them only while a table's parts are the ones its last refresh saw (every
+/// 300 s), so under ingest a read that plans with them, such as trace by id's span read, loads the statistics of
+/// every part of the table. The plans' keys and skip indexes do not need them.
+pub const CLASS_FIXED_SETTINGS: [(&str, &str); 4] = [
     ("timeout_overflow_mode", "throw"),
     ("read_overflow_mode", "throw"),
     ("cancel_http_readonly_queries_on_client_close", "1"),
+    ("use_statistics", "0"),
 ];
 
 /// The Rust-side deadline is the class time plus this many seconds.

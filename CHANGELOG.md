@@ -4,6 +4,15 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- Telemetry reads leave ClickHouse's column statistics out of their planning (`use_statistics = 0`). On ClickHouse
+  26.8, the version the Compose file ships, every insert or merge made reads that plan with statistics, such as
+  trace by id's, load the statistics of every part of the table until the next refresh, five minutes later, so
+  under live ingest they always paid for them: trace by id measured 124 ms p50 after an insert, and 35 ms without
+  them, on a laptop.
+- Trace by id reads a trace's spans and its facts together, and the trace list reads the facts of a page together,
+  so each waits for fewer ClickHouse round trips.
+- Reads by API keys and the MCP server wait for one of the 16 ClickHouse statements their identity may run at once,
+  instead of answering 503 `telemetry_store_unavailable` when more are asked for at the same time.
 - The dashboard editor sets the side, the capture source and whether caller faults count for a widget over MCP
   operations. The sheet's field for what a widget reads is called Data.
 - The retention page keeps saying that the settings changed since the page loaded after it reloads the stored values,

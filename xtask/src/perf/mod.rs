@@ -29,11 +29,13 @@ pub const USAGE: &str = "  perf gate --base <ref> [--candidate <ref>] [--path ac
                        classify the rig's WAL volume with the fsync-honesty probe and write its report
                        (default perf/results/local/fsync-probe/<time>.json)
   perf reads [--image <ref>] [--rig small|full] [--spans N] [--spread-days D] [--rate R] [--seconds S]
-          [--probes P] [--lanes a,b]
+          [--probes P] [--lanes a,b] [--after-insert]
                        the read bench of one build (default HEAD) on one rig (default small): ack-to-API on the
                        empty store, a dataset of N spans loaded through ingest over D days, then one open-loop
-                       lane per read class with the per-request store-read, connection and barrier counters;
-                       writes reads.json and summary.md under perf/results/local/reads/";
+                       lane per read class with the per-request store-read, connection and barrier counters and
+                       the column statistics Crucible's reads loaded; --after-insert ingests one trace before
+                       each lane attempt, as live ingest would; writes reads.json and summary.md under
+                       perf/results/local/reads/";
 
 /// The fewest pairs of a gate run on the full rig: with fewer, p < 0.05 is out of reach.
 pub const MIN_PAIRS: usize = 5;
