@@ -12,6 +12,12 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
   server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
   as the copy of step 0005.
+- A migration step whose content changed, such as steps 0001 to 0003 on an upgrade from 0.1.1, applies once and the
+  ledger records its new content; it no longer applies again, with a warning, at every start.
+- A start whose master key the ClickHouse service users refuse leaves a changed migration step for a start with the
+  right key, so it no longer gives the SQL workspace's probe users that key's passwords.
+- With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the migrations ledger
+  records every step of its version, and says to run `crucible migrate` or to start one server with `--migrate`.
 - Settings has an Organization page for the organization's name, project access (every project, or only the projects
   someone is added to) and the allowed email domains, whose people join as viewers without an invitation once their
   sign-in provider verifies their address. Members and viewers read it; editing needs a screen at least 768 pixels

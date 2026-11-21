@@ -398,8 +398,10 @@ pub trait ProjectSaltRepo: Send + Sync {
 pub trait Migrations: Send + Sync {
     /// Every applied step, ordered by id.
     async fn applied(&self) -> Result<Vec<LedgerEntry>, TxError>;
-    /// Records a step as applied. `false` when a step with this id is already recorded; the stored row is not
-    /// changed.
+    /// Records a step as applied with the checksum of what was applied. A step recorded with another checksum
+    /// was applied again because its content changed: its row takes the new checksum and time and keeps its kind,
+    /// so the step applies once per change. `false` when the step is recorded with this checksum already; the
+    /// stored row is not changed.
     async fn apply(&self, entry: &LedgerEntry) -> Result<bool, TxError>;
 }
 

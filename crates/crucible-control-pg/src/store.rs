@@ -1701,7 +1701,8 @@ impl Migrations for Handle {
         let inserted = self
             .write(
                 "INSERT INTO schema_migrations (id, kind, applied_at, checksum) VALUES ($1, $2, $3, $4) \
-                 ON CONFLICT (id) DO NOTHING RETURNING 1",
+                 ON CONFLICT (id) DO UPDATE SET applied_at = EXCLUDED.applied_at, checksum = EXCLUDED.checksum \
+                 WHERE schema_migrations.checksum <> EXCLUDED.checksum RETURNING 1",
                 &[
                     P::Text(&entry.id),
                     P::Text(entry.kind.as_str()),

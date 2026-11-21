@@ -450,11 +450,13 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         s.project_salts().get(web.id).await.map(|s| s.is_some()),
     );
 
-    // The migrations ledger is forward-only: a recorded step is never rewritten.
-    let step = |step: &str, kind, checksum: &str| LedgerEntry {
+    // The migrations ledger records the checksum each step was applied with. A step applied again with the same
+    // checksum leaves its row as it is; one applied again because its content changed takes the new checksum and
+    // time, and keeps its kind.
+    let step = |step: &str, kind, checksum: &str, applied: i64| LedgerEntry {
         id: step.to_owned(),
         kind,
-        applied_at: at(100),
+        applied_at: at(applied),
         checksum: checksum.to_owned(),
     };
     let ledger = s.migrations();
@@ -466,6 +468,7 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
                 "0001_schema_base",
                 MigrationKind::ClickhouseSchema,
                 "aa",
+                100,
             ))
             .await,
     );
@@ -476,6 +479,7 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
                 "0002_access_service",
                 MigrationKind::ClickhouseAccess,
                 "bb",
+                100,
             ))
             .await,
     );
@@ -485,7 +489,19 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
             .apply(&step(
                 "0001_schema_base",
                 MigrationKind::ClickhouseSchema,
+                "aa",
+                200,
+            ))
+            .await,
+    );
+    t.outcome(
+        "ledger apply schema with other content",
+        ledger
+            .apply(&step(
+                "0001_schema_base",
+                MigrationKind::ClickhouseAccess,
                 "cc",
+                300,
             ))
             .await,
     );

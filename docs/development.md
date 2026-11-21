@@ -166,8 +166,12 @@ password_file = "/run/secrets/postgres"
 server keeps sign-in, the organization, projects, members and API keys there and needs the master key, and
 `crucible migrate` (or `serve --migrate`) applies the Postgres migrations of `crates/crucible-control-pg/migrations`
 and then the ClickHouse steps, and records each in the ledger table `schema_migrations` (contract 6.6). A step that
-the ledger holds with the same checksum is skipped. The checksum leaves out the password digests that the access
-steps carry, because they come from the master key: a start with another key applies nothing again. The ClickHouse
+the ledger holds with the same checksum is skipped. A step it holds with another checksum, because the step changed
+since, is applied again and its row takes the new checksum, so it applies once per change. The checksum leaves out
+the password digests that the access steps carry, because they come from the master key: a start with another key
+applies nothing again, and while the service users refuse the node's key a changed step waits, with a warning, for
+a start with the right one. A server started without `--migrate` keeps ingest closed until the ledger records every
+step of its version (`crucible_schema::LEDGER_ORDER`), and says to run `crucible migrate`. The ClickHouse
 steps run under the `migrations` lease, and each is recorded in a transaction fenced by the lease's token (contract
 11.7), so two nodes that migrate at once do not interleave. After the steps, the SQL workspace's two probe
 identities are provisioned again with the passwords of the current master key, unless the service users refuse that
@@ -178,9 +182,10 @@ Startup, in order:
 1. The WAL is opened and recovered, and the listeners start. Ingest answers 503 and `/readyz` answers 503 with the
    reason until step 4 has finished.
 2. With `--migrate`, the ClickHouse schema and access steps (`0001_schema_base`, `0002_access_service`,
-   `0003_access_workspace`, `0004_span_usage_aggregate`) are applied as the admin user. Each is idempotent, so the
-   flag can stay on. Without Postgres nothing records which steps ran and all are applied each time; with Postgres
-   the ledger decides (see above). Crucible migrates a single-node ClickHouse server.
+   `0003_access_workspace`, `0004_span_usage_aggregate`, `0005_mcp_tool_rollup_hourly`) are applied as the admin
+   user. Each is idempotent, so the flag can stay on. Without Postgres nothing records which steps ran and all are
+   applied each time; with Postgres the ledger decides (see above), and without `--migrate` it must record every
+   step. Crucible migrates a single-node ClickHouse server.
 3. Startup detection and the self-tests run (ClickHouse 26.3 or newer, every setting and function Crucible uses,
    one block inserted twice with one token leaves one row, every service identity sees a known row). A failure is
    logged and retried with a pause that grows from 1 s to 15 s, so Crucible can start before ClickHouse does.
