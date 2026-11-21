@@ -12,6 +12,13 @@
 //!
 //! A `requestState` is never kept: with a [`StateKey`], the scanner feeds its decoded bytes to a keyed hash as
 //! they stream past and keeps only the hash (contract 9.6).
+//!
+//! Content capture (contract 9.10) records two kinds of value as canonical JSON text, each at most its rule's
+//! window: `params.arguments` of a `tools/call` request that a rule captures, and `content`, `structuredContent`
+//! and `isError` of a result while some captured call waits for one. A request's capture is decided when its tool
+//! name is read, so arguments that follow the name are recorded only for a sampled call. Arguments that come before
+//! the name are recorded provisionally, at most the largest window of any rule, and dropped at the end of the
+//! message unless the call turns out to be captured.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -19,6 +26,8 @@ use std::fmt;
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::Sha256;
 
+use crate::canonical::{Canonical, Fed, Recorded};
+use crate::capture::ContentCapture;
 use crate::core::MAX_ERROR_MESSAGE;
 use crate::scrub;
 
@@ -132,6 +141,32 @@ pub struct Message {
     pub is_batch: bool,
     /// The size of the message in bytes, from its opening brace to its closing brace.
     pub bytes: u64,
+    /// The index of the capture rule that captures this `tools/call` request, when the call is sampled.
+    pub capture_rule: Option<usize>,
+    /// `params.arguments` as canonical JSON text, when the call is captured and its rule takes arguments.
+    pub arguments: Option<Recorded>,
+    /// The result's members that capture takes, recorded while a captured call waits for its result.
+    pub result_members: ResultMembers,
+}
+
+/// The members of a tool result that content capture takes, each as canonical JSON text.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ResultMembers {
+    /// `result.content`.
+    pub content: Option<Recorded>,
+    /// `result.structuredContent`.
+    pub structured_content: Option<Recorded>,
+    /// `result.isError`.
+    pub is_error: Option<Recorded>,
+}
+
+/// Where a recorded value goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Slot {
+    Arguments,
+    Content,
+    StructuredContent,
+    IsError,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -163,6 +198,8 @@ enum Key {
     Text,
     ErrorMessage,
     RequestState,
+    Arguments,
+    StructuredContent,
 }
 
 fn key_of(text: &[u8]) -> Key {
@@ -192,6 +229,8 @@ fn key_of(text: &[u8]) -> Key {
         b"text" => Key::Text,
         b"message" => Key::ErrorMessage,
         b"requestState" => Key::RequestState,
+        b"arguments" => Key::Arguments,
+        b"structuredContent" => Key::StructuredContent,
         _ => Key::Other,
     }
 }
@@ -328,6 +367,14 @@ pub struct Scanner {
     state_mac: Option<Hmac<Sha256>>,
     /// The `result.content` block being read.
     block: Block,
+    /// The capture rules, on a scanner of requests.
+    content: Option<ContentCapture>,
+    /// The window of a recorded result member while results are recorded, else 0.
+    result_window: usize,
+    /// The capture decision of the message being read, once its tool name was read.
+    decision: Option<Option<usize>>,
+    /// The value being recorded, and where it goes.
+    recording: Option<(Slot, Canonical)>,
 }
 
 impl Scanner {
@@ -362,6 +409,10 @@ impl Scanner {
             state_key: None,
             state_mac: None,
             block: Block::default(),
+            content: None,
+            result_window: 0,
+            decision: None,
+            recording: None,
         }
     }
 
@@ -369,6 +420,19 @@ impl Scanner {
     pub fn keyed(mut self, key: Option<StateKey>) -> Self {
         self.state_key = key;
         self
+    }
+
+    /// The scanner of requests, recording the arguments of the calls that `capture` captures (contract 9.10);
+    /// without rules no argument is read.
+    pub fn capturing(mut self, capture: Option<ContentCapture>) -> Self {
+        self.content = capture;
+        self
+    }
+
+    /// Records the result members of the responses that start from now on, each at most `window` bytes; 0 stops
+    /// recording. The core sets it while some captured call waits for its result.
+    pub fn record_results(&mut self, window: usize) {
+        self.result_window = window;
     }
 
     /// Lines or documents dropped because they were not JSON-RPC, or were cut short.
@@ -413,6 +477,8 @@ impl Scanner {
         self.message = Message::default();
         self.state_mac = None;
         self.block = Block::default();
+        self.decision = None;
+        self.recording = None;
     }
 
     fn fail(&mut self) {
@@ -441,15 +507,129 @@ impl Scanner {
                 // Skip to the next byte that can end the string, or the line.
                 let Some(at) = memchr::memchr3(b'"', b'\\', b'\n', bytes) else {
                     self.count(bytes.len());
+                    self.record_run(bytes);
                     return;
                 };
                 self.count(at);
+                self.record_run(&bytes[..at]);
                 bytes = &bytes[at..];
             }
             let byte = bytes[0];
             bytes = &bytes[1..];
             self.count(1);
+            // A value that starts at this byte starts its recording here, so the byte is recorded after.
             self.byte(byte);
+            self.record_byte(byte);
+        }
+    }
+
+    /// Feeds a run of string bytes, which holds no quote or backslash, to the recording.
+    fn record_run(&mut self, run: &[u8]) {
+        if let Some((_, writer)) = &mut self.recording {
+            writer.feed_run(run);
+        }
+    }
+
+    /// Feeds one byte to the recording, and stores the recorded value when it ends.
+    fn record_byte(&mut self, byte: u8) {
+        let Some((slot, writer)) = &mut self.recording else {
+            return;
+        };
+        if writer.feed(byte) == Fed::More {
+            return;
+        }
+        let slot = *slot;
+        let Some((_, writer)) = self.recording.take() else {
+            return;
+        };
+        let recorded = writer.finish();
+        let members = &mut self.message.result_members;
+        match slot {
+            Slot::Arguments => self.message.arguments = Some(recorded),
+            Slot::Content => members.content = Some(recorded),
+            Slot::StructuredContent => members.structured_content = Some(recorded),
+            Slot::IsError => members.is_error = Some(recorded),
+        }
+    }
+
+    /// Starts recording the value that starts here when capture takes it: `params.arguments` of a call that may
+    /// be captured, or a result member while results are recorded.
+    fn start_recording(&mut self) {
+        if self.recording.is_some() || self.level() != Some(1) {
+            return;
+        }
+        let (slot, limit) = match (self.levels[0].key, self.levels[1].key) {
+            (Key::Params, Key::Arguments) => (Slot::Arguments, self.arguments_window()),
+            (Key::Result, Key::Content) => (Slot::Content, self.result_window),
+            (Key::Result, Key::StructuredContent) => (Slot::StructuredContent, self.result_window),
+            (Key::Result, Key::IsError) => (Slot::IsError, self.result_window),
+            _ => return,
+        };
+        if limit > 0 {
+            self.recording = Some((slot, Canonical::new(limit)));
+        }
+    }
+
+    /// How much of `params.arguments` to record: the window of the rule that captures the call, or provisionally
+    /// the largest window of a rule that takes arguments while the tool is not known yet; 0 for none.
+    fn arguments_window(&self) -> usize {
+        let Some(capture) = &self.content else {
+            return 0;
+        };
+        if self
+            .message
+            .method
+            .as_deref()
+            .is_some_and(|method| method != "tools/call")
+        {
+            return 0;
+        }
+        match self.decision {
+            Some(Some(rule)) => capture
+                .rule(rule)
+                .filter(|rule| rule.args)
+                .map_or(0, |rule| rule.window()),
+            Some(None) => 0,
+            None => capture.args_window(),
+        }
+    }
+
+    /// Decides the capture of the message once its tool name is read: at most one draw per message.
+    fn decide(&mut self) {
+        let Some(capture) = &self.content else {
+            return;
+        };
+        if self.decision.is_some() {
+            return;
+        }
+        let call = self
+            .message
+            .method
+            .as_deref()
+            .is_none_or(|method| method == "tools/call");
+        self.decision = Some(match &self.message.name {
+            Some(name) if call => capture.decide(name),
+            _ => None,
+        });
+    }
+
+    /// The message ended: the arguments stay only for a captured call, cut to its rule's window.
+    fn finish_capture(&mut self) {
+        let Some(capture) = &self.content else {
+            return;
+        };
+        let call = self.message.method.as_deref() == Some("tools/call");
+        let rule = self
+            .decision
+            .flatten()
+            .filter(|_| call)
+            .and_then(|index| Some((index, capture.rule(index)?)));
+        let arguments = self.message.arguments.take();
+        if let Some((index, rule)) = rule {
+            self.message.capture_rule = Some(index);
+            if rule.args {
+                self.message.arguments = arguments.map(|recorded| recorded.within(rule.window()));
+            }
         }
     }
 
@@ -475,7 +655,8 @@ impl Scanner {
         field_of(&path[..=index])
     }
 
-    /// A value starts at the current position: note a top-level `result` or `error`.
+    /// A value starts at the current position: note a top-level `result` or `error`, and start recording a value
+    /// that capture takes.
     fn value_starts(&mut self) {
         if self.level() == Some(0) {
             match self.levels[0].key {
@@ -484,6 +665,7 @@ impl Scanner {
                 _ => {}
             }
         }
+        self.start_recording();
     }
 
     fn byte(&mut self, byte: u8) {
@@ -587,6 +769,8 @@ impl Scanner {
                     bytes: 1,
                     ..Message::default()
                 };
+                self.decision = None;
+                self.recording = None;
                 self.levels[0] = Level {
                     object: true,
                     expect_key: true,
@@ -630,6 +814,7 @@ impl Scanner {
         self.depth -= 1;
         if self.message_depth > 0 && self.depth < self.message_depth {
             self.message_depth = 0;
+            self.finish_capture();
             self.out.push(std::mem::take(&mut self.message));
         } else if self.depth == 0 {
             self.in_batch = false;
@@ -795,7 +980,10 @@ impl Scanner {
         match field {
             Field::Id => message.id = Some(JsonId::String(text)),
             Field::Method => message.method = Some(text),
-            Field::Name => message.name = Some(text),
+            Field::Name => {
+                message.name = Some(text);
+                self.decide();
+            }
             Field::RequestId => message.request_id = Some(JsonId::String(text)),
             Field::ProgressToken => message.progress_token = Some(JsonId::String(text)),
             Field::MetaProgressToken => message.meta_progress_token = Some(JsonId::String(text)),
