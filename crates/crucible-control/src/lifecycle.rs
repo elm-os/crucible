@@ -77,6 +77,8 @@ pub enum DeletionSelector {
     },
     /// Everything of one session.
     Session(String),
+    /// Everything of the project: the purge that deleting the project starts (contract 13.4).
+    Project,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,12 +101,19 @@ impl DeletionSelector {
             Self::Traces(_) => DeletionKind::Trace,
             Self::User { .. } => DeletionKind::User,
             Self::Session(_) => DeletionKind::Session,
+            Self::Project => DeletionKind::Project,
         }
     }
 
     /// The stored JSON document.
     pub fn to_text(&self) -> String {
         let doc = match self {
+            Self::Project => SelectorDoc {
+                trace_ids: Vec::new(),
+                user_id: None,
+                issuer: None,
+                session_id: None,
+            },
             Self::Traces(ids) => SelectorDoc {
                 trace_ids: ids.iter().map(ToString::to_string).collect(),
                 user_id: None,
@@ -152,7 +161,18 @@ impl DeletionSelector {
             DeletionKind::Session => Ok(Self::Session(
                 doc.session_id.ok_or_else(|| invalid("no session_id"))?,
             )),
-            DeletionKind::Project => Err(invalid("project deletion has no selector")),
+            DeletionKind::Project => {
+                let names = !doc.trace_ids.is_empty()
+                    || doc.user_id.is_some()
+                    || doc.issuer.is_some()
+                    || doc.session_id.is_some();
+                if names {
+                    return Err(invalid(
+                        "a project deletion names nothing inside the project",
+                    ));
+                }
+                Ok(Self::Project)
+            }
         }
     }
 }
@@ -187,6 +207,58 @@ pub struct DeletionRequest {
     pub error: Option<String>,
     /// When the row last changed.
     pub updated_at: Timestamp,
+}
+
+impl DeletionRequest {
+    /// The project deletion that deleting a project makes, in the same transaction (contract 13.4): pending, at
+    /// the instant the project was marked deleted.
+    pub fn project(
+        id: DeletionRequestId,
+        project_id: ProjectId,
+        requested_at: Timestamp,
+        requested_by: String,
+    ) -> Self {
+        Self {
+            id,
+            project_id,
+            selector: DeletionSelector::Project,
+            state: DeletionState::Pending,
+            requested_at,
+            deletion_seq: 0,
+            requested_by,
+            idempotency_key: None,
+            request_hash: String::new(),
+            places: "{}".to_owned(),
+            attempts: 0,
+            error: None,
+            updated_at: requested_at,
+        }
+    }
+}
+
+/// How many rows of each table [`LifecycleRepo::purge_project`] removed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PurgedRows {
+    /// `project_memberships`.
+    pub memberships: u64,
+    /// `alert_rules`; their `alert_state` and `alert_events` rows go with them.
+    pub alert_rules: u64,
+    /// `channels`.
+    pub channels: u64,
+    /// `secrets`: the sealed secrets of the project's channels.
+    pub secrets: u64,
+    /// `saved_queries`.
+    pub saved_queries: u64,
+    /// `sql_runs`.
+    pub sql_runs: u64,
+    /// `export_jobs`.
+    pub export_jobs: u64,
+    /// `api_keys`, every one revoked when the project was deleted.
+    pub api_keys: u64,
+    /// `retention_floors`.
+    pub retention_floors: u64,
+    /// `project_salts`.
+    pub salts: u64,
 }
 
 /// One node's acknowledgement of a deletion request (contract 13.3, steps 2 and 4).
@@ -305,6 +377,13 @@ pub trait LifecycleRepo: Send + Sync {
     /// Writes the request's state, places, attempts, error and update time. `false` when there is no such
     /// request.
     async fn update_request(&self, request: &DeletionRequest) -> Result<bool, TxError>;
+    /// Deletes, in one statement, the control-plane rows of a deleted project once its telemetry is purged
+    /// (contract 13.4): its memberships, alert rules (with their state and events), channels and their sealed
+    /// secrets (every `channel` secret scoped to the project), saved queries, SQL runs, export jobs, API keys,
+    /// retention floor and salt. The project's row, its deletion requests and their acknowledgements and
+    /// actions stay: a node that returns reads those requests before it ships. A project whose row is not marked
+    /// deleted keeps everything, and the counts are zero.
+    async fn purge_project(&self, project_id: ProjectId) -> Result<PurgedRows, TxError>;
 
     /// Records a node's tombstone. `false` when the node had already recorded one for the request; the stored
     /// row is not changed.
@@ -365,7 +444,10 @@ mod tests {
             issuer: Some("https://issuer.example".to_owned()),
         };
         let session = DeletionSelector::Session("s-1".to_owned());
-        for selector in [&traces, &user, &session] {
+        let project = DeletionSelector::Project;
+        assert_eq!(project.kind(), DeletionKind::Project);
+        assert_eq!(project.to_text(), "{}");
+        for selector in [&traces, &user, &session, &project] {
             assert_eq!(
                 DeletionSelector::parse(selector.kind(), &selector.to_text()).as_ref(),
                 Ok(selector)
@@ -374,7 +456,11 @@ mod tests {
         assert!(DeletionSelector::parse(DeletionKind::Trace, &user.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::User, &session.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Session, &traces.to_text()).is_err());
-        assert!(DeletionSelector::parse(DeletionKind::Project, "{}").is_err());
+        // A whole project names nothing inside it.
+        for named in [&traces, &user, &session] {
+            assert!(DeletionSelector::parse(DeletionKind::Project, &named.to_text()).is_err());
+        }
+        assert!(DeletionSelector::parse(DeletionKind::Trace, &project.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Trace, r#"{"trace_ids":["zz"]}"#).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Session, r#"{"other":1}"#).is_err());
     }

@@ -32,6 +32,13 @@
 //! `user_id` or only as the hash of the user's subject under one of two issuers. A deletion by user must reach
 //! the MCP rows by their own identity, also where no span of the trace names the user, and when it names an
 //! issuer it must keep the rows hashed under the other one.
+//!
+//! A third project is deleted during the run, in the transaction the API's project deletion runs: its row is
+//! marked deleted and its project deletion request made. Its frames are still taken for up to 5 s after that,
+//! as nodes whose key snapshot has not caught up take them. At the end, I9 also requires that no table of the
+//! reach list holds a row of the deleted project, the minute rollups, the hourly tier, the deploys and the
+//! inventory included, whatever the row's arrival, that its control-plane rows are gone, and that the other
+//! projects lost no row of a partition that the deletion dropped or deleted from.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -43,8 +50,11 @@ use async_trait::async_trait;
 use crucible_auth::test_support::scope;
 use crucible_chfmt::EncodedBlock;
 use crucible_control::{
-    ActionKind, ActionState, ControlStore, DeletionRequest, DeletionSelector, JsonDoc, LEASE_TTL,
-    LeaseName, Project, Repos,
+    ActionKind, ActionState, AlertRule, ApiKey, Channel, ChannelKind, ControlStore,
+    DeletionRequest, DeletionSelector, Email, ExportFormat, JsonDoc, KeyScope, LEASE_TTL,
+    LeaseName, NewExport, Project, ProjectMembership, ProjectRole, Repos, RetentionFloor,
+    SavedQuery, SealedProjectSalt, Secret, SqlActor, SqlRun, SqlRunKind, SqlVisibility, TxError,
+    User, UserStatus, transaction,
 };
 use crucible_env::{
     Clock, ClockExt, Env, InsertError, InsertSettings, Instant, MutationId, MutationStatus,
@@ -58,7 +68,8 @@ use crucible_lifecycle::{
 use crucible_normalize::ProjectSalt;
 use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, TraceSelector, Value, deletion_traces};
 use crucible_records::{
-    BatchToken, DeletionState, Lsn, PartitionId, ProjectId, TableId, Timestamp, TraceId, Uuid,
+    AlertRuleId, ApiKeyId, BatchToken, ChannelId, DeletionRequestId, DeletionState, ExportJobId,
+    Lsn, PartitionId, ProjectId, SavedQueryId, SqlRunId, TableId, Timestamp, TraceId, UserId, Uuid,
     WalEpoch,
 };
 use crucible_schema::{
@@ -90,6 +101,17 @@ const TRACE_TABLES: [TableId; 7] = [
     TableId::TraceStats,
 ];
 const ROLLUPS: [TableId; 2] = [TableId::SessionRollup, TableId::UserRollup];
+/// The tables without a user, session or trace dimension, which only retention and a project deletion reach.
+const COUNTS: [TableId; 5] = [
+    TableId::SpanMetrics,
+    TableId::McpToolRollup,
+    TableId::McpToolRollupHourly,
+    TableId::McpDeploys,
+    TableId::McpToolInventory,
+];
+/// How long after a project's deletion its frames are still taken: a node takes them until its key snapshot
+/// has the revocation, which the key feed brings within 5 s.
+const REVOCATION_WINDOW_MILLIS: u64 = 5_000;
 
 /// A seeded defect of the lifecycle that the oracle must catch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -102,6 +124,8 @@ pub enum Mutant {
     DeleteWithoutFencing,
     /// A deletion by user reaches the MCP rows only through the traces its spans resolve to.
     McpByTraceOnly,
+    /// A project deletion drops the partitions it reaches whatever other projects hold rows there.
+    DropSharedPartitions,
 }
 
 /// What one run does.
@@ -201,6 +225,12 @@ pub struct Stats {
     pub mcp_kept_by_issuer: u64,
     /// Reads of the project salts that failed.
     pub salt_failures: u64,
+    /// Projects deleted, each with its project deletion request.
+    pub by_project: u64,
+    /// Frames of a deleted project taken after its deletion, as nodes whose key snapshot was behind take them.
+    pub late_frames: u64,
+    /// Control-plane rows of the projects checked at the end: gone for the deleted project, there for another.
+    pub control_rows_checked: u64,
 }
 
 impl Stats {
@@ -232,6 +262,9 @@ impl Stats {
         self.mcp_drops += other.mcp_drops;
         self.mcp_kept_by_issuer += other.mcp_kept_by_issuer;
         self.salt_failures += other.salt_failures;
+        self.by_project += other.by_project;
+        self.late_frames += other.late_frames;
+        self.control_rows_checked += other.control_rows_checked;
     }
 }
 
@@ -301,7 +334,16 @@ impl Spans {
                     self.identity.spans && *user_id == self.user
                 }
                 DeletionSelector::Session(session_id) => *session_id == self.session,
+                DeletionSelector::Project => true,
             }
+    }
+
+    /// Whether a completed project deletion removed every row of the frame, whatever its arrival: the deletion
+    /// reaches every row of its project (contract 13.4).
+    fn purged_by(&self, request: &DeletionRequest) -> bool {
+        request.project_id == self.project
+            && request.selector == DeletionSelector::Project
+            && request.state == DeletionState::Completed
     }
 
     /// Whether a deletion by user selects the frame's MCP rows by their own `user_id`, or by their subject hash
@@ -563,6 +605,13 @@ struct Up {
     ready: Arc<AtomicBool>,
 }
 
+/// The deletion of the third project, once it is made.
+#[derive(Clone, Copy, Debug)]
+struct Deleted {
+    /// Until when, on the database host's monotonic clock in nanoseconds, nodes still take the project's frames.
+    taken_until: u64,
+}
+
 /// What every node and the harness share.
 #[derive(Clone)]
 struct World {
@@ -573,7 +622,10 @@ struct World {
     ledger: Arc<Mutex<Ledger>>,
     logs: Arc<Vec<Arc<SimLog>>>,
     up: Arc<Mutex<Vec<Option<Up>>>>,
-    projects: [ProjectId; 2],
+    /// The project whose retention is shortened, a project that keeps everything, and the project that is
+    /// deleted.
+    projects: [ProjectId; 3],
+    deleted: Arc<Mutex<Option<Deleted>>>,
     config: LifecycleConfig,
     options: Options,
     ids: Arc<AtomicU64>,
@@ -620,6 +672,11 @@ fn rows_of(
         if has(name) {
             rows = rows.all(name, Value::Time(start.floor_minute()));
         }
+    }
+    if has("hour") {
+        let micros = start.micros();
+        let hour = Timestamp::from_micros(micros - micros.rem_euclid(3_600_000_000));
+        rows = rows.all("hour", Value::Time(hour));
     }
     for name in ["target_day", "day", "row_day"] {
         if has(name) {
@@ -687,7 +744,11 @@ fn rows_of(
 }
 
 fn frame_tables() -> impl Iterator<Item = TableId> {
-    SPAN_TABLES.into_iter().chain(TRACE_TABLES).chain(ROLLUPS)
+    SPAN_TABLES
+        .into_iter()
+        .chain(TRACE_TABLES)
+        .chain(ROLLUPS)
+        .chain(COUNTS)
 }
 
 impl World {
@@ -840,6 +901,11 @@ impl World {
             .filter_map(|(n, up)| up.clone().map(|up| (n, up)))
             .filter(|(_, up)| up.ready.load(Ordering::SeqCst))
             .collect()
+    }
+
+    /// The deletion of the third project, once it is made.
+    fn deleted(&self) -> Option<Deleted> {
+        *lock(&self.deleted)
     }
 }
 
@@ -1030,8 +1096,18 @@ async fn ingest(world: World, rng: Arc<dyn Rng>, today: u32, until: u64) {
             continue;
         }
         let (n, up) = &ready[below(rng.as_ref(), ready.len() as u64) as usize];
-        let which = below(rng.as_ref(), 2) as usize;
+        let which = below(rng.as_ref(), 3) as usize;
         let project = world.projects[which];
+        // A deleted project's frames are taken only while a node's key snapshot may lack the revocation.
+        let late = match world.deleted() {
+            Some(deleted) if which == 2 => {
+                if clock.now().nanos() >= deleted.taken_until {
+                    continue;
+                }
+                true
+            }
+            _ => false,
+        };
         let shortened = which == 0 && lock(&world.ledger).retention_set;
         let reuse: Vec<&Made> = traces
             .iter()
@@ -1045,11 +1121,13 @@ async fn ingest(world: World, rng: Arc<dyn Rng>, today: u32, until: u64) {
         } else {
             let id = world.ids.fetch_add(1, Ordering::SeqCst);
             // Fresh days are today and yesterday. The first project's old days reach back nine days, the
-            // second's only the two oldest, so some old partitions hold one project and some both.
+            // second's only the two oldest, so some old partitions hold one project and some both. The deleted
+            // project's reach back eleven days, so two old partitions hold its rows alone.
             let back = match (below(rng.as_ref(), 2), which, shortened) {
                 (0, _, _) | (_, 0, true) => below(rng.as_ref(), 2),
                 (_, 0, false) => 6 + below(rng.as_ref(), 4),
-                _ => 8 + below(rng.as_ref(), 2),
+                (_, 1, _) => 8 + below(rng.as_ref(), 2),
+                _ => 7 + below(rng.as_ref(), 5),
             };
             let back = u32::try_from(back).unwrap_or(0);
             let minute = i64::try_from(below(rng.as_ref(), 600)).unwrap_or(0);
@@ -1080,10 +1158,78 @@ async fn ingest(world: World, rng: Arc<dyn Rng>, today: u32, until: u64) {
         };
         let mut ledger = lock(&world.ledger);
         ledger.stats.frames += 1;
+        ledger.stats.late_frames += u64::from(late);
         ledger.spans.push((spans.clone(), Fate::Unshipped));
         drop(ledger);
         world.logs[*n].append(Frame::Spans(spans));
     }
+}
+
+/// Deletes the third project at `at`, as `DELETE projects/{id}` does: in one transaction its row is marked deleted
+/// and its project deletion request made (contract 13.4). A call that fails is sent again; one whose commit has an
+/// unknown outcome is decided by what is stored.
+async fn delete_project(world: World, rng: Arc<dyn Rng>, at: u64) {
+    let clock = &world.database.clock;
+    clock.sleep_until(Instant::from_nanos(at)).await;
+    let id = world.projects[2];
+    for _ in 0..60 {
+        let ready = world.ready();
+        let Some((_, up)) = ready.get(below(rng.as_ref(), ready.len() as u64) as usize) else {
+            clock.sleep(Duration::from_secs(1)).await;
+            continue;
+        };
+        let now = up.clock.wall_now();
+        let request = DeletionRequest::project(
+            DeletionRequestId::from_uuid(Uuid::from_v7_parts(
+                u64::try_from(now.micros() / 1_000).unwrap_or(0),
+                u128::from(world.ids.fetch_add(1, Ordering::SeqCst)),
+            )),
+            id,
+            now,
+            "user:sim".to_owned(),
+        );
+        let row = request;
+        // Whatever the answer, what is stored decides below: a commit with an unknown outcome may have applied.
+        let _answer = transaction(&world.pg, move |tx| {
+            Box::pin(async move {
+                let Some(project) = tx.projects().get(id).await? else {
+                    return Ok(false);
+                };
+                if project.deleted_at.is_some() {
+                    return Ok(false);
+                }
+                let deleted = Project {
+                    deleted_at: Some(row.requested_at),
+                    version: project.version + 1,
+                    ..project.clone()
+                };
+                if !tx
+                    .projects()
+                    .update_if_version(&deleted, project.version)
+                    .await?
+                {
+                    return Err(TxError::SerializationFailure);
+                }
+                tx.lifecycle().insert_request(&row).await?;
+                Ok(true)
+            })
+        })
+        .await;
+        let stored =
+            world.pg.deletion_requests().iter().any(|stored| {
+                stored.project_id == id && stored.selector == DeletionSelector::Project
+            });
+        if stored {
+            let window = Duration::from_millis(below(rng.as_ref(), REVOCATION_WINDOW_MILLIS + 1));
+            *lock(&world.deleted) = Some(Deleted {
+                taken_until: clock.now().saturating_add(window).nanos(),
+            });
+            lock(&world.ledger).stats.by_project += 1;
+            return;
+        }
+        clock.sleep(Duration::from_millis(700)).await;
+    }
+    world.violation("the third project could not be deleted".to_owned());
 }
 
 /// L2: the accepting node hides the request's rows at once.
@@ -1109,6 +1255,8 @@ fn check_hidden(world: &World, up: &Up, request: &DeletionRequest) {
         DeletionSelector::Traces(ids) => TraceSelector::Traces(ids),
         DeletionSelector::User { user_id, .. } => TraceSelector::User(user_id),
         DeletionSelector::Session(session_id) => TraceSelector::Session(session_id),
+        // A deleted project's reads are refused before a plan is built.
+        DeletionSelector::Project => return,
     };
     // Exactly the spans the request selects, read as a typed read would read them.
     let Ok(plan) = deletion_traces(scope, selector, request.requested_at, None, 1_000) else {
@@ -1184,7 +1332,12 @@ async fn requests(world: World, rng: Arc<dyn Rng>, until: u64) {
             continue;
         }
         asked += 1;
-        let project = world.projects[below(rng.as_ref(), 2) as usize];
+        let which = below(rng.as_ref(), 3) as usize;
+        // A deleted project is not visible to the API any more, so no request names it.
+        if which == 2 && world.deleted().is_some() {
+            continue;
+        }
+        let project = world.projects[which];
         let made: Vec<Spans> = lock(&world.ledger)
             .spans
             .iter()
@@ -1230,6 +1383,8 @@ async fn requests(world: World, rng: Arc<dyn Rng>, until: u64) {
                             ledger.stats.by_user_issuer += u64::from(issuer.is_some());
                         }
                         DeletionSelector::Session(_) => ledger.stats.by_session += 1,
+                        // The service refuses a project selector: deleting the project makes that request.
+                        DeletionSelector::Project => {}
                     }
                     if attempt > 0 {
                         ledger.stats.request_retries += 1;
@@ -1306,13 +1461,18 @@ impl Held<'_> {
     }
 }
 
-/// Whether a completed request must have removed the row (contract 13.4).
+/// Whether a completed request must have removed the row, a row of the request's project (contract 13.4).
 fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) -> bool {
+    // A project deletion removes every row of its project, whatever its arrival: the project takes no new data.
+    if request.selector == DeletionSelector::Project {
+        return true;
+    }
     // The spans name a user only when the trace shows its user on its spans.
     let theirs = |spans: &Spans| match &request.selector {
         DeletionSelector::Traces(ids) => ids.contains(&spans.trace),
         DeletionSelector::User { user_id, .. } => spans.identity.spans && *user_id == spans.user,
         DeletionSelector::Session(session_id) => *session_id == spans.session,
+        DeletionSelector::Project => true,
     };
     let of_project =
         |spans: &&(Spans, Fate)| spans.0.project == request.project_id && theirs(&spans.0);
@@ -1367,6 +1527,7 @@ fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) 
             (own && row.text("session_id") == Some(session_id.as_str()))
                 || (TRACE_TABLES.contains(&row.table_id) && resolved())
         }
+        DeletionSelector::Project => true,
     }
 }
 
@@ -1478,14 +1639,17 @@ fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
             }
         }
     }
-    // Nothing else went: a span that no request selects and that retention keeps is still there.
+    // Nothing else went: a span that no request selects and that retention keeps is still there. Stage B drops
+    // only what a request selects at its point in time; a completed project deletion also removed what its
+    // project received after it.
     for (spans, fate) in &ledger.spans {
-        let wanted = requests.iter().any(|request| spans.selected_by(request));
+        let selected = requests.iter().any(|request| spans.selected_by(request));
+        let wanted = selected || requests.iter().any(|request| spans.purged_by(request));
         let expired = ledger.retention_set
             && spans.project == world.projects[0]
             && spans.start < expired_before;
         match fate {
-            Fate::Dropped if !wanted => ledger.violations.push(format!(
+            Fate::Dropped if !selected => ledger.violations.push(format!(
                 "the model's stage B dropped spans of trace {} that no request selects",
                 spans.trace
             )),
@@ -1528,7 +1692,12 @@ fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
                 continue;
             };
             let of_project = || requests.iter().filter(|r| r.project_id == project);
-            let wanted = of_project().any(|request| selected(request, &row, &ledger.spans));
+            // A project deletion that has not completed is an L3 violation of its own.
+            let wanted = of_project().any(|request| {
+                (request.selector != DeletionSelector::Project
+                    || request.state == DeletionState::Completed)
+                    && selected(request, &row, &ledger.spans)
+            });
             // Rows that a deletion would select if it named no issuer.
             let by_issuer = !wanted
                 && of_project()
@@ -1543,6 +1712,242 @@ fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
                 ledger.violations.push(format!(
                     "I9: an mcp_ops row of trace {} that no request selects and retention keeps is gone",
                     row.trace().map_or_else(String::new, |trace| trace.to_string())
+                ));
+            }
+        }
+    }
+}
+
+/// The user who is a member of the projects whose control-plane rows the run seeds.
+const MEMBER: UserId = UserId::from_bytes([0x0a; 16]);
+
+/// One row of each control-plane table that holds rows of a project and that a project deletion removes
+/// (contract 13.4): a membership, a revoked API key, a channel with its sealed secret, an alert rule with the
+/// state of a series, a saved query, a SQL run, an export, a retention floor and the salt. The floor is at the
+/// epoch, so it hides nothing.
+async fn seed_control(
+    pg: &PgModel,
+    project: ProjectId,
+    n: u8,
+    now: Timestamp,
+) -> Result<(), TxError> {
+    let id = |k: u8| Uuid::from_v7_parts(1_800_000_001_000, (u128::from(n) << 8) | u128::from(k));
+    pg.memberships()
+        .put_project(ProjectMembership {
+            project_id: project,
+            user_id: MEMBER,
+            role: ProjectRole::Member,
+        })
+        .await?;
+    pg.api_keys()
+        .insert(&ApiKey {
+            id: ApiKeyId::from_uuid(id(1)),
+            project_id: project,
+            public_key: format!("cpk_sim{n}"),
+            secret_salt: [n; 16],
+            secret_hash: [n; 32],
+            lookup_tag: [n; 8],
+            scopes: vec![KeyScope::Ingest],
+            import: false,
+            note: String::new(),
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+            version: 1,
+        })
+        .await?;
+    let secret = Secret {
+        id: id(2),
+        scope: project.to_string(),
+        kind: "channel".to_owned(),
+        key_id: "master-0".to_owned(),
+        nonce: vec![n; 24],
+        ciphertext: vec![n; 32],
+    };
+    pg.secrets().insert(&secret).await?;
+    pg.channels()
+        .insert(&Channel {
+            id: ChannelId::from_uuid(id(3)),
+            project_id: project,
+            name: "On call".to_owned(),
+            kind: ChannelKind::Webhook,
+            config: JsonDoc::empty(),
+            secret_id: Some(secret.id),
+            enabled: true,
+            disabled_reason: None,
+            failures: 0,
+            last_test: None,
+            version: 1,
+        })
+        .await?;
+    let rule = AlertRuleId::from_uuid(id(4));
+    pg.alert_rules()
+        .insert(&AlertRule {
+            id: rule,
+            project_id: project,
+            name: "errors".to_owned(),
+            enabled: false,
+            spec: JsonDoc::empty(),
+            interval_secs: 60,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+            last_eval_seq: None,
+            eval_failures: 0,
+            skipped_ticks: 0,
+        })
+        .await?;
+    pg.alert_state()
+        .put(&crucible_control::AlertSeriesState {
+            rule_id: rule,
+            series_key: String::new(),
+            status: crucible_control::AlertStatus::Firing,
+            since: now,
+            last_rows_at: now,
+            last_notified_at: None,
+            value: Some(9),
+        })
+        .await?;
+    pg.saved_queries()
+        .insert(&SavedQuery {
+            id: SavedQueryId::from_uuid(id(5)),
+            project_id: project,
+            owner: SqlActor::User(MEMBER),
+            name: "errors".to_owned(),
+            description: String::new(),
+            visibility: SqlVisibility::Project,
+            sql: "SELECT 1".to_owned(),
+            parameters: Vec::new(),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        })
+        .await?;
+    pg.sql_runs()
+        .insert(&SqlRun {
+            id: SqlRunId::from_uuid(id(6)),
+            project_id: project,
+            actor: SqlActor::User(MEMBER),
+            query_id: id(7),
+            kind: SqlRunKind::AdHoc,
+            saved_query_id: None,
+            sql: "SELECT 1".to_owned(),
+            started_at: now,
+            end: None,
+        })
+        .await?;
+    pg.export_jobs()
+        .insert(&NewExport {
+            id: ExportJobId::from_uuid(id(8)),
+            project_id: project,
+            format: ExportFormat::CrucibleJsonl,
+            selector: String::new(),
+            options: String::new(),
+            dedup_key: format!("sim-export-{n}"),
+            created_by: "user:sim".to_owned(),
+            created_at: now,
+            as_of: now,
+        })
+        .await?;
+    pg.lifecycle()
+        .raise_floor(
+            project,
+            RetentionFloor {
+                retention: Some(Timestamp::EPOCH),
+                payload: None,
+                mcp_content: None,
+            },
+        )
+        .await?;
+    pg.project_salts()
+        .insert_if_absent(&SealedProjectSalt {
+            project_id: project,
+            key_id: "master-0".to_owned(),
+            nonce: vec![n; 24],
+            ciphertext: vec![n; 48],
+        })
+        .await?;
+    Ok(())
+}
+
+/// How many control-plane rows of each table a project holds: memberships, API keys, channels, channel
+/// secrets, alert rules, series states, saved queries, SQL runs, exports, retention floors and salts.
+async fn control_rows(
+    pg: &PgModel,
+    project: ProjectId,
+) -> Result<[(&'static str, usize); 11], TxError> {
+    let channels = pg.channels().list(project).await?;
+    let mut secrets = 0;
+    for channel in &channels {
+        if let Some(secret) = channel.secret_id
+            && pg.secrets().get(secret).await?.is_some()
+        {
+            secrets += 1;
+        }
+    }
+    let rules = pg.alert_rules().list(project).await?;
+    let mut states = 0;
+    for rule in &rules {
+        states += pg.alert_state().list(rule.id).await?.len();
+    }
+    let floors = pg.lifecycle().floors().await?;
+    Ok([
+        (
+            "memberships",
+            pg.memberships().list_project(project).await?.len(),
+        ),
+        ("api_keys", pg.api_keys().list(project).await?.len()),
+        ("channels", channels.len()),
+        ("secrets", secrets),
+        ("alert_rules", rules.len()),
+        ("alert_state", states),
+        (
+            "saved_queries",
+            pg.saved_queries().list(project).await?.len(),
+        ),
+        (
+            "sql_runs",
+            pg.sql_runs().list(project, None, 100).await?.len(),
+        ),
+        (
+            "export_jobs",
+            pg.export_jobs().list(project, 100).await?.len(),
+        ),
+        (
+            "retention_floors",
+            floors.iter().filter(|(id, _)| *id == project).count(),
+        ),
+        (
+            "project_salts",
+            usize::from(pg.project_salts().get(project).await?.is_some()),
+        ),
+    ])
+}
+
+/// I9 for the control plane: a completed project deletion left none of its project's rows (contract 13.4), and
+/// the project that keeps everything still holds every one of its rows.
+async fn audit_control(world: &World, ledger: &mut Ledger) {
+    let completed = world.pg.deletion_requests().iter().any(|request| {
+        request.project_id == world.projects[2]
+            && request.selector == DeletionSelector::Project
+            && request.state == DeletionState::Completed
+    });
+    for (project, gone) in [(world.projects[1], false), (world.projects[2], completed)] {
+        let rows = match control_rows(&world.pg, project).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                ledger
+                    .violations
+                    .push(format!("the control-plane rows could not be read: {error}"));
+                continue;
+            }
+        };
+        for (table_name, count) in rows {
+            ledger.stats.control_rows_checked += 1;
+            let wanted = usize::from(!gone);
+            if count != wanted {
+                ledger.violations.push(format!(
+                    "I9: project {project} holds {count} rows of {table_name} at the end, {wanted} expected"
                 ));
             }
         }
@@ -1582,6 +1987,9 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
         Some(Mutant::McpByTraceOnly) => {
             config.with_mutant(crucible_lifecycle::Mutant::McpByTraceOnly)
         }
+        Some(Mutant::DropSharedPartitions) => {
+            config.with_mutant(crucible_lifecycle::Mutant::DropSharedPartitions)
+        }
     }
 }
 
@@ -1599,15 +2007,35 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         Granularity::Day,
         Duration::from_secs(3_600),
     );
-    let projects = [1_u64, 2]
+    let projects = [1_u64, 2, 3]
         .map(|n| ProjectId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000 + n, u128::from(n))));
     let ledger: Arc<Mutex<Ledger>> = Arc::default();
-    for (id, slug) in projects.iter().zip(["shortened", "kept"]) {
+    for (id, slug) in projects.iter().zip(["shortened", "kept", "deleted"]) {
         if let Err(error) = pg.projects().insert(&project(*id, slug)).await {
             lock(&ledger)
                 .violations
                 .push(format!("the fixture project could not be stored: {error}"));
         }
+    }
+    let member = Email::new("member@example.com").map(|email| User {
+        id: MEMBER,
+        email,
+        name: "Member".to_owned(),
+        status: UserStatus::Active,
+        email_verified_at: None,
+    });
+    let seeded = async {
+        if let Some(member) = &member {
+            pg.users().insert(member).await?;
+        }
+        let now = clock.wall_now();
+        seed_control(&pg, projects[1], 1, now).await?;
+        seed_control(&pg, projects[2], 2, now).await
+    };
+    if let Err(error) = seeded.await {
+        lock(&ledger).violations.push(format!(
+            "the control-plane rows could not be seeded: {error}"
+        ));
     }
     let logs = (0..options.nodes)
         .map(|n| {
@@ -1628,6 +2056,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         logs: Arc::new(logs),
         up: Arc::new(Mutex::new(vec![None; options.nodes])),
         projects,
+        deleted: Arc::default(),
         config: config(options.mutant),
         options,
         ids: Arc::default(),
@@ -1639,6 +2068,16 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
     let today = day_of(clock.wall_now().micros()).unwrap_or(0);
     let faulty_until = clock.now().saturating_add(options.faulty_for).nanos();
     let end = faulty_until + nanos(options.tail);
+    // The third project is deleted in the faulty phase, after its frames and requests have had time to land.
+    let delete_rng = sim.rng("lifecycle-sim/delete");
+    let latest = u64::try_from(options.faulty_for.as_millis())
+        .unwrap_or(0)
+        .saturating_sub(120_000)
+        .max(180_000);
+    let delete_at = clock
+        .now()
+        .saturating_add(millis(delete_rng.as_ref(), 180_000, latest))
+        .nanos();
     let nodes: Vec<_> = (0..options.nodes)
         .map(|n| node(&sim, world.clone(), n, faulty_until, end))
         .collect();
@@ -1663,10 +2102,12 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
             sim.rng("lifecycle-sim/requests"),
             faulty_until
         ),
+        delete_project(world.clone(), delete_rng, delete_at),
         calm,
     );
     let mut ledger = std::mem::take(&mut *lock(&ledger));
     audit(&world, &mut ledger, clock.wall_now());
+    audit_control(&world, &mut ledger).await;
     database.stop().await;
     Outcome {
         seed: sim.seed(),

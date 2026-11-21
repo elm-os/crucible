@@ -252,6 +252,140 @@ fn a_tombstone_is_a_durable_frame_that_the_checkpoint_passes_on_an_idle_node() {
     });
 }
 
+/// Contract 13.4: deleting a project makes its project deletion request in the transaction that marks it deleted.
+/// The node logs a project tombstone for it, and the executor removes every row of the project from every table
+/// that holds them, the rollups the shipper wrote included and a frame taken after the deletion too, then its
+/// objects and its control-plane rows, and the request completes.
+#[test]
+fn a_project_deletion_empties_every_table_and_completes_over_the_real_wal_and_shipper() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..3).await;
+        node.ingest(2, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        assert_eq!((node.held(1), node.held(2)), (3, 2));
+        // An object under the project's key prefix, as an export file or a media object leaves one.
+        let key = format!("media/{project}/exports/x/1/crucible-export-x.jsonl");
+        let now = node.host.env.clock.wall_now();
+        node.objects
+            .plant(&key, bytes::Bytes::from_static(b"{}\n"), now);
+        node.pg
+            .project_salts()
+            .insert_if_absent(&crucible_control::SealedProjectSalt {
+                project_id: project,
+                key_id: "master-0".to_owned(),
+                nonce: vec![1; 24],
+                ciphertext: vec![1; 48],
+            })
+            .await
+            .unwrap();
+
+        // What `DELETE projects/{id}` runs: the project is marked deleted and its request made, together.
+        let request = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([0x0d; 16]),
+            project,
+            node.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        let row = request.clone();
+        crucible_control::transaction(&node.pg, move |tx| {
+            Box::pin(async move {
+                let stored = tx.projects().get(project).await?.unwrap();
+                let deleted = Project {
+                    deleted_at: Some(row.requested_at),
+                    version: stored.version + 1,
+                    ..stored.clone()
+                };
+                assert!(
+                    tx.projects()
+                        .update_if_version(&deleted, stored.version)
+                        .await?
+                );
+                tx.lifecycle().insert_request(&row).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+        // A node whose key snapshot has not caught up still takes a frame of the project.
+        node.ingest(3, 0..1).await;
+
+        // The node timer logs the project's tombstone.
+        node.sleep(Duration::from_secs(11)).await;
+        let acks = node.pg.lifecycle().acks(request.id).await.unwrap();
+        assert_eq!(acks.len(), 1, "{acks:?}");
+        let mut replay = node.wal.replay(acks[0].tombstone_lsn);
+        let frame = replay.next().await.unwrap().unwrap();
+        let payload = frame.payload().unwrap();
+        let Record::Tombstone(read) = Record::decode(RecordType::Tombstone, &payload).unwrap()
+        else {
+            panic!("a tombstone frame");
+        };
+        assert_eq!(read.selector, TombstoneSelector::Project);
+
+        // After the mask cycle every place is empty and the request is complete.
+        node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
+        let done = node.request(request.id).await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        for table_id in crucible_lifecycle::project_reach() {
+            let at = table(table_id)
+                .columns
+                .iter()
+                .position(|column| column.name == "project_id")
+                .unwrap();
+            let left = node
+                .ch
+                .held_rows(table_id)
+                .iter()
+                .filter(|(_, _, cells)| cells[at] == Value::Uuid(project.uuid()))
+                .count();
+            assert_eq!(
+                left,
+                0,
+                "{} still holds rows of the project",
+                table_id.name()
+            );
+        }
+        // The shipper had written the trace and minute rollups too, and they went with the spans.
+        for written in [
+            TableId::SpanCore,
+            TableId::TraceHeads,
+            TableId::TraceStats,
+            TableId::SpanMetrics,
+        ] {
+            assert!(
+                !node.ch.parts(written).is_empty(),
+                "the shipper wrote no {}",
+                written.name()
+            );
+        }
+        assert!(
+            !node
+                .objects
+                .objects()
+                .keys()
+                .any(|key| key.starts_with(&format!("media/{project}/"))),
+            "objects of the project are left"
+        );
+        assert!(
+            node.pg
+                .project_salts()
+                .get(project)
+                .await
+                .unwrap()
+                .is_none(),
+            "the salt is left"
+        );
+        assert!(
+            done.places.contains("\"control_plane\":\"done\""),
+            "{}",
+            done.places
+        );
+        let open = node.pg.lifecycle().open_actions().await.unwrap();
+        assert!(open.is_empty(), "{open:?}");
+    });
+}
+
 #[test]
 fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
     directed(|node| async move {

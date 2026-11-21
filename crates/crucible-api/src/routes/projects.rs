@@ -221,7 +221,9 @@ pub(crate) async fn patch_project(
 ///
 /// The project disappears from every list and its keys stop working. Its dashboards with their widgets and its
 /// media go with it: the media rows at once and, when object storage is configured, every object under the
-/// project's key prefix.
+/// project's key prefix. The rest of its data goes in the background, through a deletion request of kind
+/// `project` made with the deletion: its telemetry, then its members, alert rules, channels, saved queries,
+/// SQL runs, exports and keys. Org owners and admins follow it with `GET projects/{project_id}/deletion-requests`.
 #[utoipa::path(
     delete,
     path = "/api/v1/projects/{project_id}",
@@ -250,7 +252,7 @@ pub(crate) async fn delete_project(
     let expected = if_match(&headers, rid)?;
     let deleted = org
         .identity
-        .delete_project(id, expected)
+        .delete_project(id, expected, org.principal.user.id)
         .await
         .map_err(auth(rid))?;
     // The rows went with the project, so whatever this leaves in the store has no row, and the media

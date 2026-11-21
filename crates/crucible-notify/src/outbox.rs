@@ -7,6 +7,7 @@
 //! - After [`DISABLE_AFTER`] failures in a row the channel is turned off with the reason, in one statement.
 //!   Rows for a channel that is off, or gone, complete without a send: the project's admins see the reason on
 //!   the channel and turn it on again once the receiver is fixed.
+//! - Rows for a channel of a deleted project complete without a send (contract 13.4).
 //!
 //! A row is delivered at least once. Every attempt of a row carries the row's id as its delivery id, so a
 //! receiver can drop a repeat.
@@ -125,6 +126,20 @@ impl Notifier {
             tracing::debug!(
                 id = %ctx.claim.id, %channel_id,
                 "the channel of a notification is turned off; the notification is not sent"
+            );
+            return Ok(());
+        }
+        // A deleted project sends nothing from the moment it is deleted; its channels go with its purge.
+        let live = ctx
+            .store
+            .projects()
+            .get(channel.project_id)
+            .await?
+            .is_some_and(|project| project.deleted_at.is_none());
+        if !live {
+            tracing::debug!(
+                id = %ctx.claim.id, %channel_id,
+                "the project of a notification's channel is deleted; the notification is not sent"
             );
             return Ok(());
         }

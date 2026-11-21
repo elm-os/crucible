@@ -1,6 +1,6 @@
 //! The lifecycle simulation suite (contract 13, invariant I9): the retention executor, the mask scheduler, the
 //! deletion executor and the node timer of `crucible-lifecycle` over `ChModel` and `PgModel` under crashes,
-//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the four seeded
+//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the five seeded
 //! defects it must catch (docs/testing/lifecycle-simulation.md).
 //!
 //! Replay one seed:
@@ -55,7 +55,15 @@ fn assert_exercised(total: &Stats) {
         "{total:?}"
     );
     assert!(
-        total.completed > 0 && total.completed == total.by_trace + total.by_user + total.by_session,
+        total.completed > 0
+            && total.completed
+                == total.by_trace + total.by_user + total.by_session + total.by_project,
+        "{total:?}"
+    );
+    // A project was deleted in every run, frames of it were taken after its deletion, and its control-plane
+    // rows were checked.
+    assert!(
+        total.by_project > 0 && total.late_frames > 0 && total.control_rows_checked > 0,
         "{total:?}"
     );
     assert!(
@@ -171,6 +179,22 @@ fn reaching_mcp_rows_only_by_trace_is_caught() {
     };
     let caught = catching(6_000..6_006, options, "I9:");
     println!("MCP rows by trace only: caught in seeds {caught:?}");
+    assert!(!caught.is_empty());
+    for seed in caught.into_iter().take(2) {
+        assert_holds(&run_lifecycle_sim(seed, Options::CALM));
+    }
+}
+
+/// The mutant "drop shared partitions": a project deletion drops the old partitions it reaches although a project
+/// that is not deleted holds rows there, and those rows go with it.
+#[test]
+fn dropping_partitions_that_a_live_project_shares_is_caught() {
+    let options = Options {
+        mutant: Some(Mutant::DropSharedPartitions),
+        ..Options::CALM
+    };
+    let caught = catching(7_000..7_006, options, "I9:");
+    println!("drop shared partitions: caught in seeds {caught:?}");
     assert!(!caught.is_empty());
     for seed in caught.into_iter().take(2) {
         assert_holds(&run_lifecycle_sim(seed, Options::CALM));

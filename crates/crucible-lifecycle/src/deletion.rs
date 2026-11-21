@@ -9,8 +9,13 @@
 //!   the MCP tables by `user_id` and `user_subject_hash`, in the partitions where its MCP rows are found: an
 //!   operation can carry the user, or only the hash of the user's subject, when no span of its trace names
 //!   the user. While the project's salt cannot be read, such a request waits and says why;
+//! - a logged project deletion is planned a table at a time instead: every table of the project, each
+//!   partition that holds the project's rows dropped when every project in it is deleted and it ended before
+//!   the request by more than the clock margin, otherwise deleted from, whatever the rows' arrival (the
+//!   project takes no new data once deleted);
 //! - it is `applied` when every delete has finished, `verified` when every delete is verified after the mask
-//!   cycle, and `completed` once the places outside ClickHouse are accounted for;
+//!   cycle, and `completed` once the places outside ClickHouse are accounted for: for a project deletion, once
+//!   its remaining objects and its control-plane rows are removed too;
 //! - it is `failed` when one of its actions was given up.
 //!
 //! Every write is fenced, and what a request has planned so far is in its `places` document, so a new leader
@@ -22,22 +27,26 @@ use std::sync::Arc;
 use crucible_auth::stored_project_scope;
 use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
-    TxError,
+    TxError, duration_micros,
 };
 use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
     DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_issuers,
-    deletion_traces, lifecycle_column,
+    deletion_traces, lifecycle_column, lifecycle_days,
 };
-use crucible_records::{DeletionState, ProjectScope, Timestamp, TraceId, WalEpoch};
+use crucible_records::{
+    DeletionState, PartitionId, ProjectId, ProjectScope, TableId, Timestamp, TraceId, WalEpoch,
+};
+use crucible_schema::PartitionExpr;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{Place, Shared, advance, planned};
 use crate::detail::{Detail, subject_hash, subject_hex};
-use crate::partitions::{days_spanned, partitions_of_days};
+use crate::partitions::{day_of, days_spanned, partition_window, partitions_of_days};
 use crate::reach::{
-    EXPORT_FILES, MEDIA, OTHER_PLACES, Reach, final_reach, identity_reach, page_reach,
+    CONTROL_PLANE, EXPORT_FILES, MEDIA, OTHER_PLACES, Reach, final_reach, identity_reach,
+    page_reach, project_reach,
 };
 
 /// The most pages of traces one run resolves for one request.
@@ -85,6 +94,10 @@ pub struct Progress {
     /// The UTC days in which those MCP rows start.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_days: Vec<u32>,
+    /// For a project deletion: the tables whose partitions are planned, by name, in the order of
+    /// [`project_reach`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub purged: Vec<String>,
     /// Whether every action of the request is planned.
     #[serde(default)]
     pub planned: bool,
@@ -111,7 +124,8 @@ impl Progress {
     fn count(&mut self, actions: &[LifecycleAction]) {
         self.tables.clear();
         for action in actions {
-            if action.kind != ActionKind::Delete {
+            // A project deletion also drops partitions; a drop is verified when it returns.
+            if !matches!(action.kind, ActionKind::Delete | ActionKind::Drop) {
                 continue;
             }
             let place = self
@@ -202,7 +216,7 @@ impl Executor<'_> {
         let (user_id, session_id) = match &request.selector {
             DeletionSelector::User { user_id, .. } => (Some(user_id.clone()), None),
             DeletionSelector::Session(session_id) => (None, Some(session_id.clone())),
-            DeletionSelector::Traces(_) => (None, None),
+            DeletionSelector::Traces(_) | DeletionSelector::Project => (None, None),
         };
         let now = self.ctx.env.clock.wall_now();
         let mut actions = Vec::new();
@@ -494,7 +508,9 @@ impl Executor<'_> {
                 ids.sort_unstable();
                 Some(ids)
             }
-            DeletionSelector::User { .. } | DeletionSelector::Session(_) => None,
+            DeletionSelector::User { .. }
+            | DeletionSelector::Session(_)
+            | DeletionSelector::Project => None,
         };
         while *pages > 0 {
             *pages -= 1;
@@ -516,6 +532,8 @@ impl Executor<'_> {
                     (TraceSelector::Session(session_id), after)
                 }
                 (DeletionSelector::Traces(ids), None) => (TraceSelector::Traces(ids), after),
+                // A project deletion resolves no traces: it is planned by table (`plan_project`).
+                (DeletionSelector::Project, None) => return Ok(()),
             };
             let page = if chunk.is_some_and(<[TraceId]>::is_empty) {
                 Vec::new()
@@ -607,6 +625,195 @@ impl Executor<'_> {
         Ok(())
     }
 
+    /// Plans a project deletion (contract 13.4), a table of [`project_reach`] at a time: the partitions that
+    /// hold the project's rows are read from the table, and each gets a drop or a delete
+    /// ([`Executor::purge_action`]). The tables planned so far are kept in the request's progress, so a later
+    /// run or another leader goes on from the next one.
+    async fn plan_project(
+        &self,
+        request: &mut DeletionRequest,
+        scope: ProjectScope,
+        progress: &mut Progress,
+    ) -> JobResult {
+        let mut gone = BTreeMap::new();
+        for table in project_reach() {
+            if progress.purged.iter().any(|name| name == table.name()) {
+                continue;
+            }
+            let mut actions = Vec::new();
+            for partition in self.partitions_of(scope, table).await? {
+                if let Some(action) = self
+                    .purge_action(request, table, partition, &mut gone)
+                    .await?
+                {
+                    actions.push(action);
+                }
+            }
+            progress.purged.push(table.name().to_owned());
+            self.record(request, progress, actions, &[]).await?;
+        }
+        progress.resolved = true;
+        progress.planned = true;
+        request.error = None;
+        self.record(request, progress, Vec::new(), &[]).await
+    }
+
+    /// The partitions of a table that hold rows of the project: those of the UTC days its rows fall in, or the
+    /// one partition of an unpartitioned table.
+    async fn partitions_of(
+        &self,
+        scope: ProjectScope,
+        table: TableId,
+    ) -> Result<BTreeSet<PartitionId>, JobError> {
+        if crucible_schema::table(table).partition == PartitionExpr::None {
+            return Ok(BTreeSet::from([PartitionId::UNPARTITIONED]));
+        }
+        let plan = lifecycle_days(scope, table).map_err(|error| {
+            JobError::Failed(format!("the read of a table's days was refused: {error}"))
+        })?;
+        let rows = match self.shared.telemetry.execute(plan).await {
+            Ok(stream) => stream.rows().await,
+            Err(error) => Err(error),
+        }
+        .map_err(|error| JobError::Failed(format!("the read of a table's days failed: {error}")))?;
+        let days = rows.iter().filter_map(|row| match row.values().first() {
+            Some(Value::Time(bucket)) => day_of(*bucket),
+            _ => None,
+        });
+        Ok(partitions_of_days(
+            table,
+            self.shared.config.granularity,
+            days,
+        ))
+    }
+
+    /// Whether a project is deleted, read once per run.
+    async fn is_gone(
+        &self,
+        project_id: ProjectId,
+        gone: &mut BTreeMap<ProjectId, bool>,
+    ) -> Result<bool, JobError> {
+        if let Some(known) = gone.get(&project_id) {
+            return Ok(*known);
+        }
+        let deleted = self
+            .ctx
+            .store()
+            .projects()
+            .get(project_id)
+            .await?
+            .is_some_and(|project| project.deleted_at.is_some());
+        gone.insert(project_id, deleted);
+        Ok(deleted)
+    }
+
+    /// What removes the project's rows from one partition. A partition is dropped when every project with
+    /// rows in it is deleted and it ended before the request by more than the clock margin, so that no live
+    /// project can still be writing its first rows there (contract 13.2, as retention drops a partition);
+    /// otherwise the project's rows are deleted from it. Nothing is planned for a partition that a read finds
+    /// without a visible row of the project.
+    async fn purge_action(
+        &self,
+        request: &DeletionRequest,
+        table: TableId,
+        partition: PartitionId,
+        gone: &mut BTreeMap<ProjectId, bool>,
+    ) -> Result<Option<LifecycleAction>, JobError> {
+        let config = &self.shared.config;
+        let margin = duration_micros(config.clock_margin);
+        let settled =
+            partition_window(table, config.granularity, partition).is_some_and(|window| {
+                window.to() <= request.requested_at.saturating_add_micros(-margin)
+            });
+        let mut kind = ActionKind::Delete;
+        if settled || partition.is_unpartitioned() {
+            let listed = self
+                .shared
+                .telemetry
+                .partition_projects(table, partition)
+                .await
+                .map_err(|error| {
+                    JobError::Failed(format!(
+                        "the read of a partition's projects failed: {error}"
+                    ))
+                })?;
+            if !listed.contains(&request.project_id) {
+                return Ok(None);
+            }
+            if settled {
+                kind = ActionKind::Drop;
+                for project in listed {
+                    if config.drops_shared_partitions() {
+                        break;
+                    }
+                    if project != request.project_id && !self.is_gone(project, gone).await? {
+                        kind = ActionKind::Delete;
+                        break;
+                    }
+                }
+            }
+        }
+        let detail = match kind {
+            ActionKind::Drop => Detail::Drop,
+            _ => Detail::Purge,
+        };
+        Ok(Some(planned(
+            self.ctx.env.new_id(),
+            self.ctx.env.clock.wall_now(),
+            format!("deletion:{}:purge:{}:{partition}", request.id, table.name()),
+            kind,
+            Place {
+                table,
+                partition,
+                project_id: Some(request.project_id),
+                request_id: Some(request.id),
+            },
+            &detail,
+        )))
+    }
+
+    /// The control-plane side of a project deletion, once every place of its telemetry is verified (contract
+    /// 13.4): every object left under the project's key prefix, then the project's rows, its salt among them,
+    /// in one fenced statement. An object store that does not answer holds the request at `verified`, and the
+    /// next run tries again, because a deleted project's objects are swept by nothing else.
+    async fn purge_project(&self, request: &DeletionRequest) -> JobResult {
+        if let Some(objects) = &self.shared.exports {
+            let removed = objects
+                .remove_project(request.project_id)
+                .await
+                .map_err(|error| {
+                    JobError::Failed(format!(
+                        "removing the deleted project's objects failed: {error}"
+                    ))
+                })?;
+            if removed > 0 {
+                tracing::info!(request = %request.id, project = %request.project_id, removed, "removed the objects of a deleted project");
+            }
+        }
+        let project_id = request.project_id;
+        let purged = self
+            .ctx
+            .fenced(move |tx| {
+                Box::pin(async move { tx.lifecycle().purge_project(project_id).await })
+            })
+            .await?;
+        tracing::info!(
+            request = %request.id,
+            project = %project_id,
+            memberships = purged.memberships,
+            alert_rules = purged.alert_rules,
+            channels = purged.channels,
+            secrets = purged.secrets,
+            saved_queries = purged.saved_queries,
+            sql_runs = purged.sql_runs,
+            export_jobs = purged.export_jobs,
+            api_keys = purged.api_keys,
+            salts = purged.salts,
+            "removed the control-plane rows of a deleted project"
+        );
+        Ok(())
+    }
+
     async fn step(&self, mut request: DeletionRequest) -> JobResult {
         let repo = self.ctx.store().lifecycle();
         if request.state == DeletionState::Pending {
@@ -636,7 +843,17 @@ impl Executor<'_> {
                     .fail(&mut request, "the project is gone".to_owned())
                     .await;
             };
-            self.plan(&mut request, scope, &mut progress).await?;
+            if request.selector == DeletionSelector::Project {
+                // Only deleting the project makes this request, so a live project is never purged.
+                if project.deleted_at.is_none() {
+                    let why = "a project deletion names a project that is not deleted".to_owned();
+                    return self.fail(&mut request, why).await;
+                }
+                self.plan_project(&mut request, scope, &mut progress)
+                    .await?;
+            } else {
+                self.plan(&mut request, scope, &mut progress).await?;
+            }
             if !progress.planned {
                 return Ok(());
             }
@@ -672,8 +889,16 @@ impl Executor<'_> {
             // Step 8. Export files made before the request are expired and removed. The media uses of the
             // request's traces went with each page, and their objects go with the media collector's next run;
             // without an object store there is no media. Comments have no store yet. A place that is not there
-            // is reported as not present, so that the request's status says what was and was not reached.
+            // is reported as not present, so that the request's status says what was and was not reached. A
+            // project deletion then removes the project's objects and control-plane rows.
             self.purge_exports(&request).await?;
+            let project = request.selector == DeletionSelector::Project;
+            if project {
+                self.purge_project(&request).await?;
+                progress
+                    .other
+                    .insert(CONTROL_PLANE.to_owned(), "done".to_owned());
+            }
             for place in OTHER_PLACES {
                 let reached = place == EXPORT_FILES || (place == MEDIA && self.shared.config.media);
                 let status = if reached { "done" } else { "not_present" };

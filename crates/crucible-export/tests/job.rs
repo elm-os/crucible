@@ -522,6 +522,64 @@ fn a_deletion_expires_the_exports_it_predates_and_removes_their_files() {
     });
 }
 
+/// Contract 13.4: from the moment a project is deleted its exports stop. One waiting to run ends with
+/// `project_deleted` and writes no file.
+#[test]
+fn an_export_of_a_deleted_project_ends_without_a_file() {
+    crucible_sim::run(61, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        model.projects().insert(&project()).await.unwrap();
+        let now = database.clock.wall_now();
+        let base = now.saturating_add_micros(-600_000_000);
+        let id = ExportJobId::from_bytes([0x0d; 16]);
+        let selector = Selector {
+            window: TimeWindow::new(base, now).unwrap(),
+            trace_ids: Vec::new(),
+            user_id: None,
+            session_id: None,
+        };
+        model
+            .export_jobs()
+            .insert(&NewExport {
+                id,
+                project_id: PROJECT,
+                format: ExportFormat::CrucibleJsonl,
+                selector: selector.to_text(),
+                options: Options::default().to_text(),
+                dedup_key: id.to_string(),
+                created_by: "user:test".to_owned(),
+                created_at: now,
+                as_of: now,
+            })
+            .await
+            .unwrap();
+        let deleted = Project {
+            deleted_at: Some(now),
+            version: 2,
+            ..project()
+        };
+        assert!(
+            model
+                .projects()
+                .update_if_version(&deleted, 1)
+                .await
+                .unwrap()
+        );
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let _running = start(&host, &model, base, None);
+        database.clock.sleep(Duration::from_secs(120)).await;
+        let job = row(&model, id).await;
+        assert_eq!(job.error.as_deref(), Some("project_deleted"));
+        assert_eq!(job.file, None);
+        assert!(files(&host.env).await.is_empty());
+    });
+}
+
 /// Runs one export to completion on a node, then `then` with the model, the node's env, the export id and now.
 fn crash_and_resume_then<F, Fut>(then: F)
 where

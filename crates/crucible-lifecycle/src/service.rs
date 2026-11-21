@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use crucible_auth::stored_project_scope;
 use crucible_control::{
     ControlStore, DeletionRequest, DeletionSelector, MAX_DELETION_TRACES, Project, RetentionFloor,
     TxError, transaction,
@@ -181,6 +182,11 @@ pub fn check_selector(selector: DeletionSelector) -> Result<DeletionSelector, Se
             text("session_id", &session_id)?;
             Ok(DeletionSelector::Session(session_id))
         }
+        DeletionSelector::Project => Err(invalid(
+            "kind",
+            "a whole project is deleted with the project: an org owner or admin sends DELETE \
+             /api/v1/projects/{project_id}, which also removes its data",
+        )),
     }
 }
 
@@ -418,6 +424,22 @@ impl Service {
         })
     }
 
+    /// The scope of a deleted project, under which its deletion requests stay readable: among them the purge
+    /// that deleting the project started (contract 13.4). `None` for a project that exists and is not deleted,
+    /// or that does not exist.
+    pub async fn deleted_scope(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Option<ProjectScope>, ServiceError> {
+        Ok(self
+            .control
+            .projects()
+            .get(project_id)
+            .await?
+            .filter(|project| project.deleted_at.is_some())
+            .and_then(|project| stored_project_scope(&project).ok()))
+    }
+
     /// One deletion request of a project.
     pub async fn deletion(
         &self,
@@ -529,6 +551,17 @@ mod tests {
         assert!(check_selector(user("ada", Some(""))).is_err());
         assert!(check_selector(DeletionSelector::Session("x".repeat(513))).is_err());
         assert!(check_selector(DeletionSelector::Session("s-1".to_owned())).is_ok());
+        // A whole project is deleted with the project, and the refusal says so.
+        let Err(ServiceError::Invalid { field, reason }) =
+            check_selector(DeletionSelector::Project)
+        else {
+            panic!("a project deletion request was accepted");
+        };
+        assert_eq!(field, "kind");
+        assert!(
+            reason.contains("DELETE /api/v1/projects/{project_id}"),
+            "{reason}"
+        );
     }
 
     #[test]

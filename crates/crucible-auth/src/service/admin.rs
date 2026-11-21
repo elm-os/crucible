@@ -3,11 +3,11 @@
 //! are the ones a permission cannot express (an admin cannot touch owners, the owner changes only by transfer).
 
 use crucible_control::{
-    ApiKey, AuthProvider, Invitation, JsonDoc, KeyChangeKind, KeyScope, OneTimeToken, Org,
-    OrgMembership, OrgRole, Project, ProjectAccess, ProjectMembership, ProjectRole, ProviderKind,
-    Secret, TokenKind, User, transaction,
+    ApiKey, AuthProvider, DeletionRequest, Invitation, JsonDoc, KeyChangeKind, KeyScope,
+    OneTimeToken, Org, OrgMembership, OrgRole, Project, ProjectAccess, ProjectMembership,
+    ProjectRole, ProviderKind, Secret, TokenKind, User, transaction,
 };
-use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
+use crucible_records::{ApiKeyId, DeletionRequestId, ProjectId, Timestamp, UserId, Uuid};
 
 use super::account::{display_name, email, invitation_expiry};
 use super::sessions::SessionPrincipal;
@@ -631,17 +631,29 @@ impl Identity {
         Ok(project)
     }
 
-    /// Deletes a project (a soft delete); `expected` is the `If-Match` version. Its keys are revoked in the same
-    /// transaction, so they stop working here at once and on every node through the key feed, and its
-    /// dashboards with their widgets and its media rows are deleted with it (contract 13.4). Returns the deleted
-    /// project's row; the media objects under its key prefix are the caller's to remove.
-    pub async fn delete_project(&self, id: ProjectId, expected: u64) -> Result<Project, AuthError> {
+    /// Deletes a project (a soft delete) for the user `by`; `expected` is the `If-Match` version. Its keys are
+    /// revoked in the same transaction, so they stop working here at once and on every node through the key feed,
+    /// its dashboards with their widgets and its media rows are deleted with it, and the deletion request that
+    /// purges the rest of its data, in the telemetry store and the control plane, is made with it (contract 13.4).
+    /// Returns the deleted project's row; the media objects under its key prefix are the caller's to remove.
+    pub async fn delete_project(
+        &self,
+        id: ProjectId,
+        expected: u64,
+        by: UserId,
+    ) -> Result<Project, AuthError> {
         let mut project = self.live_project(id).await?;
         let version = check_version(project.version, Some(expected))?;
         let now = self.now();
         project.deleted_at = Some(now);
         project.version += 1;
         let deleted_row = project.clone();
+        let purge = DeletionRequest::project(
+            DeletionRequestId::from_uuid(self.env.new_id()),
+            id,
+            now,
+            format!("user:{by}"),
+        );
         let revoked: Vec<ApiKey> = self
             .store
             .api_keys()
@@ -683,6 +695,8 @@ impl Identity {
                         }
                         other => other,
                     })?;
+                // With the project's row, so that a deleted project always has the request that purges it.
+                tx.lifecycle().insert_request(&purge).await?;
                 Ok(true)
             })
         })

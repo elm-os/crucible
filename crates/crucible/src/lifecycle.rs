@@ -175,6 +175,7 @@ fn known(request: &DeletionRequest) -> KnownDeletion {
                 DeletionSelector::Session(session_id) => {
                     TombstoneSelector::Session(session_id.as_str().into())
                 }
+                DeletionSelector::Project => TombstoneSelector::Project,
             },
         },
         state: request.state,
@@ -361,6 +362,7 @@ mod tests {
                     DeletionSelector::Session("s-1".to_owned()),
                     DeletionState::Failed,
                 ),
+                (4, DeletionSelector::Project, DeletionState::Logged),
             ] {
                 repo.insert_request(&request(n, selector, state))
                     .await
@@ -383,7 +385,8 @@ mod tests {
                 [
                     DeletionState::Completed,
                     DeletionState::Pending,
-                    DeletionState::Failed
+                    DeletionState::Failed,
+                    DeletionState::Logged
                 ]
             );
             assert_eq!(
@@ -393,6 +396,8 @@ mod tests {
                     issuer: Some("https://issuer.example".into()),
                 }
             );
+            // Deleting a project selects every frame of it received before, as its tombstone does.
+            assert_eq!(all[3].tombstone.selector, TombstoneSelector::Project);
             // The node registered before it read, so the executor waits for it from here on.
             let live = repo.live_nodes(Duration::from_secs(60)).await.unwrap();
             assert_eq!(live.len(), 1);

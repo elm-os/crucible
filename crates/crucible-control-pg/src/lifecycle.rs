@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo,
-    Node, NodeAck, RetentionFloor, TxError, duration_micros,
+    Node, NodeAck, PurgedRows, RetentionFloor, TxError, duration_micros,
 };
 use crucible_records::{
     DeletionKind, DeletionRequestId, DeletionState, Lsn, PartitionId, ProjectId, TableId,
@@ -253,6 +253,51 @@ impl LifecycleRepo for Handle {
             )
             .await?;
         Ok(changed == 1)
+    }
+
+    async fn purge_project(&self, project_id: ProjectId) -> Result<PurgedRows, TxError> {
+        // One statement, so the rows go together or not at all. Every delete names only the rows of a project
+        // whose row is marked deleted. A rule's state and events cascade from it.
+        let rows = self
+            .query_main(
+                true,
+                "WITH gone AS (SELECT id FROM projects WHERE id = $1 AND deleted_at IS NOT NULL), \
+                 m AS (DELETE FROM project_memberships WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 r AS (DELETE FROM alert_rules WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 c AS (DELETE FROM channels WHERE project_id IN (SELECT id FROM gone) RETURNING secret_id), \
+                 s AS (DELETE FROM secrets WHERE EXISTS (SELECT 1 FROM gone) \
+                       AND (id IN (SELECT secret_id FROM c) OR (kind = 'channel' AND scope = $2)) RETURNING 1), \
+                 q AS (DELETE FROM saved_queries WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 u AS (DELETE FROM sql_runs WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 e AS (DELETE FROM export_jobs WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 k AS (DELETE FROM api_keys WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 f AS (DELETE FROM retention_floors WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 t AS (DELETE FROM project_salts WHERE project_id IN (SELECT id FROM gone) RETURNING 1) \
+                 SELECT (SELECT count(*) FROM m), (SELECT count(*) FROM r), (SELECT count(*) FROM c), \
+                 (SELECT count(*) FROM s), (SELECT count(*) FROM q), (SELECT count(*) FROM u), \
+                 (SELECT count(*) FROM e), (SELECT count(*) FROM k), (SELECT count(*) FROM f), \
+                 (SELECT count(*) FROM t)",
+                &[
+                    P::Uuid(project_id.uuid()),
+                    P::Text(&project_id.to_string()),
+                ],
+            )
+            .await?;
+        first(&rows, |c| {
+            Ok(PurgedRows {
+                memberships: c.u64()?,
+                alert_rules: c.u64()?,
+                channels: c.u64()?,
+                secrets: c.u64()?,
+                saved_queries: c.u64()?,
+                sql_runs: c.u64()?,
+                export_jobs: c.u64()?,
+                api_keys: c.u64()?,
+                retention_floors: c.u64()?,
+                salts: c.u64()?,
+            })
+        })?
+        .ok_or_else(|| TxError::Invalid("the purge returned no counts".into()))
     }
 
     async fn record_ack(&self, ack: &NodeAck) -> Result<bool, TxError> {

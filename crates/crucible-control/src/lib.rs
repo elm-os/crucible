@@ -31,7 +31,7 @@ pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use lifecycle::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo,
-    MAX_DELETION_TRACES, Node, NodeAck, RetentionFloor,
+    MAX_DELETION_TRACES, Node, NodeAck, PurgedRows, RetentionFloor,
 };
 pub use media::{MediaObject, MediaRef, MediaRepo, MediaState, MediaUse};
 pub use repo::{

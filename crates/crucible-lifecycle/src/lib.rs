@@ -7,7 +7,8 @@
 //!   its finished deletes (13.2, step 6).
 //! - **Deletion executor** (`lifecycle-deletion`): every 30 s. It acts on a request only after every live
 //!   node's checkpoint has passed the request's tombstone, and then deletes across the reach list (13.3 and
-//!   13.4). It also issues, polls and verifies the actions of all three jobs.
+//!   13.4). A project deletion, which deleting a project makes, reaches every table of the project and then
+//!   its control-plane rows. It also issues, polls and verifies the actions of all three jobs.
 //! - **Node timer** ([`node_job`], `lifecycle-node`): every 5 s on every node. Heartbeat, pending-deletion
 //!   set, tombstone and acknowledgement, checkpoint report, retention snapshot (13.3, steps 2 and 4).
 //! - **[`Service`]**: what the API calls: retention settings and deletion requests.
@@ -51,7 +52,10 @@ pub use deletion::{PlaceStatus, Progress};
 pub use node::{AckError, LogError, NodeLog, NodeState, node_job};
 pub use partitions::{partition_window, partitions_between, partitions_of_days};
 pub use pending::{KEEP_AFTER_APPLIED, PendingDeletion, PendingDeletions, RetentionSnapshot};
-pub use reach::{OTHER_PLACES, Reach, final_reach, identity_reach, page_reach, retention_tables};
+pub use reach::{
+    CONTROL_PLANE, OTHER_PLACES, Reach, final_reach, identity_reach, page_reach, project_reach,
+    retention_tables,
+};
 pub use retention::{Decision, decide};
 pub use service::{
     Accepted, MAX_DELETION_PAGE, MAX_RETENTION_DAYS, MAX_SELECTOR_BYTES, NewDeletion, Retention,

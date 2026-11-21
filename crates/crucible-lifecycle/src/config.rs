@@ -24,6 +24,10 @@ pub enum Mutant {
     /// operations' own `user_id` and `user_subject_hash`.
     #[cfg(feature = "test-mutants")]
     McpByTraceOnly,
+    /// A project deletion drops every partition of the project that ended before it, whatever other projects
+    /// hold rows there.
+    #[cfg(feature = "test-mutants")]
+    DropSharedPartitions,
 }
 
 /// The settings of the lifecycle jobs.
@@ -108,6 +112,14 @@ impl LifecycleConfig {
     pub(crate) fn skips_mcp_identity(&self) -> bool {
         #[cfg(feature = "test-mutants")]
         return self.mutant == Some(Mutant::McpByTraceOnly);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether a project deletion drops partitions that other projects share (a seeded defect).
+    pub(crate) fn drops_shared_partitions(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::DropSharedPartitions);
         #[cfg(not(feature = "test-mutants"))]
         false
     }

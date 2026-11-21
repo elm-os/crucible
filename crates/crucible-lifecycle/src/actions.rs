@@ -326,6 +326,22 @@ impl Run<'_> {
         let Some(scope) = self.scopes.of(self.ctx, action.project_id).await? else {
             return self.failed(action, "the action's project is gone").await;
         };
+        // A purge is verified by the project's presence: no visible row of it is left in the partition.
+        if Detail::parse(&action.detail).is_ok_and(|detail| detail.by_presence()) {
+            return match telemetry
+                .partition_projects(action.table, action.partition)
+                .await
+            {
+                Ok(listed) if !listed.contains(&scope.project_id()) => {
+                    self.write(vec![self.next(action, ActionState::Verified)])
+                        .await?;
+                    Ok(Pair::Free)
+                }
+                Ok(_) => self.failed(action, "rows match the delete again").await,
+                // The store did not answer: the next run asks again.
+                Err(_) => Ok(Pair::Free),
+            };
+        }
         let plan = match detail::verification(action, scope, self.shared.config.granularity) {
             Ok(plan) => plan,
             Err(error) => return self.failed(action, &error.to_string()).await,

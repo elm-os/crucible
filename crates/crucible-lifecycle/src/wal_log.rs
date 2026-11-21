@@ -25,6 +25,7 @@ pub fn tombstone(request: &DeletionRequest) -> Tombstone<'_> {
             DeletionSelector::Traces(ids) => TombstoneSelector::Traces(ids.clone()),
             DeletionSelector::User { user_id, .. } => TombstoneSelector::User(user_id),
             DeletionSelector::Session(session_id) => TombstoneSelector::Session(session_id),
+            DeletionSelector::Project => TombstoneSelector::Project,
         },
     }
 }
@@ -50,5 +51,45 @@ impl NodeLog for WalLog {
         self.0
             .watermark()
             .map_or(Lsn::ZERO, |watermark| watermark.last_lsn())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_records::{DeletionKind, DeletionRequestId, DeletionState, ProjectId, Timestamp};
+
+    use super::*;
+
+    /// A project deletion's tombstone selects the whole project (contract 4.4: no selector), and reads back as
+    /// such, so stage B drops every frame of the project received before it.
+    #[test]
+    fn a_project_deletion_logs_a_project_tombstone() {
+        let request = DeletionRequest {
+            id: DeletionRequestId::from_bytes([3; 16]),
+            project_id: ProjectId::from_bytes([4; 16]),
+            selector: DeletionSelector::Project,
+            state: DeletionState::Pending,
+            requested_at: Timestamp::from_micros(1_000),
+            deletion_seq: 7,
+            requested_by: "user:x".to_owned(),
+            idempotency_key: None,
+            request_hash: String::new(),
+            places: "{}".to_owned(),
+            attempts: 0,
+            error: None,
+            updated_at: Timestamp::from_micros(1_000),
+        };
+        let record = Record::Tombstone(tombstone(&request));
+        let payload = record.encode().unwrap();
+        let Record::Tombstone(read) = Record::decode(record.record_type(), &payload).unwrap()
+        else {
+            panic!("not a tombstone");
+        };
+        assert_eq!(read.selector, TombstoneSelector::Project);
+        assert_eq!(read.selector.kind(), DeletionKind::Project);
+        assert_eq!(
+            (read.project_id, read.requested_at, read.deletion_seq),
+            (request.project_id, request.requested_at, 7)
+        );
     }
 }

@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crucible_control::{
-    MediaObject, MediaRef, MediaState, OrgRole, ProjectRole, ProviderKind, Repos as _,
+    DeletionSelector, MediaObject, MediaRef, MediaState, OrgRole, ProjectRole, ProviderKind,
+    Repos as _,
 };
 use crucible_env::Env;
-use crucible_records::{MediaObjectId, ProjectId, Timestamp, TraceId};
+use crucible_records::{DeletionState, MediaObjectId, ProjectId, Timestamp, TraceId};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 
 use super::*;
@@ -362,7 +363,7 @@ fn invitations_members_and_ownership() {
 fn keys_work_at_once_and_stop_at_once() {
     sim(5, async |env, model| {
         let identity = identity(&env, &model, OUTAGE_GRACE);
-        owner(&identity).await;
+        let by = owner(&identity).await.principal.user.id;
         let project = identity.create_project("Agents", "agents").await.unwrap();
         let created = identity
             .create_key(project.id, None, Some("ci".to_owned()), None, false)
@@ -402,7 +403,7 @@ fn keys_work_at_once_and_stop_at_once() {
             KeyVerdict::Valid(_)
         ));
         identity
-            .delete_project(project.id, project.version)
+            .delete_project(project.id, project.version, by)
             .await
             .unwrap();
         assert_eq!(
@@ -430,7 +431,7 @@ fn keys_work_at_once_and_stop_at_once() {
 fn the_command_line_finds_projects_and_marks_import_keys() {
     sim(12, async |env, model| {
         let identity = identity(&env, &model, OUTAGE_GRACE);
-        owner(&identity).await;
+        let by = owner(&identity).await.principal.user.id;
         let project = identity.create_project("Agents", "agents").await.unwrap();
         let by_slug = identity.project_by_reference("agents").await.unwrap();
         let by_id = identity
@@ -457,7 +458,7 @@ fn the_command_line_finds_projects_and_marks_import_keys() {
             .unwrap();
         assert!(!plain.key.import);
         identity
-            .delete_project(project.id, project.version)
+            .delete_project(project.id, project.version, by)
             .await
             .unwrap();
         assert_eq!(
@@ -474,7 +475,7 @@ fn the_command_line_finds_projects_and_marks_import_keys() {
 fn a_media_use_that_races_the_deletion_of_its_project_makes_the_caller_retry() {
     sim(13, async |env, model| {
         let identity = identity(&env, &model, OUTAGE_GRACE);
-        owner(&identity).await;
+        let by = owner(&identity).await.principal.user.id;
         let project = identity.create_project("Agents", "agents").await.unwrap();
         let at = Timestamp::from_micros(1_800_000_000_000_000);
         let object = MediaObject {
@@ -509,7 +510,7 @@ fn a_media_use_that_races_the_deletion_of_its_project_makes_the_caller_retry() {
             model.media().add_ref(&reference).await
         };
         let (deleted, used) = futures::join!(
-            identity.delete_project(project.id, project.version),
+            identity.delete_project(project.id, project.version, by),
             late_use
         );
         assert_eq!(used, Ok(true));
@@ -519,13 +520,51 @@ fn a_media_use_that_races_the_deletion_of_its_project_makes_the_caller_retry() {
         assert_eq!(uses.len(), 1);
         assert!(identity.project_by_reference("agents").await.is_ok());
         identity
-            .delete_project(project.id, project.version)
+            .delete_project(project.id, project.version, by)
             .await
             .unwrap();
         let uses = model.media().uses(project.id, trace, None).await.unwrap();
         assert!(uses.is_empty());
         let row = model.media().object(project.id, object.id).await.unwrap();
         assert!(row.is_none());
+    });
+}
+
+/// Contract 13.4: deleting a project makes, in the same transaction, the deletion request that purges its data:
+/// pending, of kind project, at the instant the project was marked deleted, by the user who deleted it. A deletion
+/// refused for a stale version makes none.
+#[test]
+fn deleting_a_project_starts_the_purge_of_its_data() {
+    sim(41, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        let by = owner(&identity).await.principal.user.id;
+        let project = identity.create_project("Agents", "agents").await.unwrap();
+        assert_eq!(
+            identity
+                .delete_project(project.id, project.version + 1, by)
+                .await
+                .unwrap_err(),
+            AuthError::PreconditionFailed
+        );
+        let requests = |model: PgModel| async move {
+            model
+                .lifecycle()
+                .list_requests(project.id, None, 10)
+                .await
+                .unwrap()
+        };
+        assert!(requests(model.clone()).await.is_empty());
+        let deleted = identity
+            .delete_project(project.id, project.version, by)
+            .await
+            .unwrap();
+        let made = requests(model.clone()).await;
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].selector, DeletionSelector::Project);
+        assert_eq!(made[0].state, DeletionState::Pending);
+        assert_eq!(Some(made[0].requested_at), deleted.deleted_at);
+        assert_eq!(made[0].requested_by, format!("user:{by}"));
+        assert!(made[0].deletion_seq > 0);
     });
 }
 

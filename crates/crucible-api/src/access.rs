@@ -385,6 +385,69 @@ impl<P: Permission> Scoped<P> {
     }
 }
 
+/// A read of a project's deletion requests: [`Scoped`] with [`Read`], and also, for an org owner or admin, a
+/// deleted project, whose requests hold the purge that deleting it started (contract 13.4). Anyone else is
+/// answered for a deleted project as for a project they cannot see.
+#[derive(Debug)]
+pub(crate) struct DeletionReads {
+    pub(crate) request_id: RequestId,
+    pub(crate) scope: ProjectScope,
+    /// The path parameters, `project_id` included.
+    pub(crate) path: BTreeMap<String, String>,
+}
+
+impl FromRequestParts<ApiState> for DeletionReads {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
+        let request_id = request_id(&parts.extensions, &state.env);
+        let principal = resolve(parts, state, request_id).await?;
+        let refused =
+            match Scoped::<Read>::authorize(parts, state, request_id, principal.clone()).await {
+                Ok(scoped) => {
+                    return Ok(Self {
+                        request_id,
+                        scope: scoped.scope,
+                        path: scoped.path,
+                    });
+                }
+                Err(refused) => refused,
+            };
+        // An org owner or admin sees every live project, so what they cannot see is deleted or does not exist.
+        let (Principal::Session(session), Some(lifecycle)) = (&principal, &state.lifecycle) else {
+            return Err(refused);
+        };
+        if !OrgPermission::Projects.allowed_for(session.org_role) {
+            return Err(refused);
+        }
+        let Ok(Path(path)) =
+            Path::<BTreeMap<String, String>>::from_request_parts(parts, state).await
+        else {
+            return Err(refused);
+        };
+        let Some(project_id) = path
+            .get("project_id")
+            .and_then(|id| ProjectId::parse(id).ok())
+        else {
+            return Err(refused);
+        };
+        match lifecycle.deleted_scope(project_id).await {
+            Ok(Some(scope)) => Ok(Self {
+                request_id,
+                scope,
+                path,
+            }),
+            Ok(None) => Err(refused),
+            Err(_) => Err(ApiError::new(
+                request_id,
+                ProblemCode::ControlPlaneUnavailable,
+                "the control plane (Postgres) is unavailable; try again shortly",
+            )
+            .with_retry_after(1)),
+        }
+    }
+}
+
 /// The path parameters of a request, by name. Handlers read their parameters by name, never by position, so
 /// the API answers the same when a router mounts it under a route with parameters of its own (the server's
 /// `/api/v1/{*rest}`), whose values the request carries too. A parameter that is not UTF-8 names no resource.

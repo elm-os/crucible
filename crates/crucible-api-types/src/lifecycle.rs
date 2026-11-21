@@ -61,6 +61,9 @@ pub enum DeletionKind {
     User,
     /// Everything of one session.
     Session,
+    /// Everything of the project: the purge that deleting the project starts. Deleting the project makes this
+    /// request; `POST deletion-requests` refuses it.
+    Project,
 }
 
 /// Where a deletion request stands.
@@ -113,12 +116,14 @@ pub struct DeletionRequestCreate {
 /// Where one place of the reach list stands for a deletion request.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct DeletionPlace {
-    /// The place: a telemetry table, or `comments`, `media`, `export_files`.
+    /// The place: a telemetry table, or `comments`, `media`, `export_files`, and for a project deletion
+    /// `control_plane` (its members, alert rules, channels, saved queries and the rest of its rows).
     pub place: String,
     /// `pending`, `deleted` (hidden from every read), `verified` (physically removed), `failed`, `done`, or
     /// `not_present` for a place this deployment does not have.
     pub status: String,
-    /// Deletes planned for the place, one per partition and page of traces.
+    /// Deletes planned for the place, one per partition and page of traces; for a project deletion, one per
+    /// partition, a partition dropped whole among them.
     pub deletes: u32,
     /// Deletes that have run.
     pub deletes_done: u32,
