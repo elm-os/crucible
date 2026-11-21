@@ -13,8 +13,9 @@ pub(crate) fn mint(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> 
 }
 
 /// The scope of a project row read from the control store, for the background jobs that act on every stored
-/// project without a request (the retention and deletion executors, contract 13). The row is the witness: a
-/// job cannot scope itself to a project the control plane does not hold.
+/// project without a request (the retention and deletion executors, contract 13), and for removing what a
+/// project's deletion leaves outside the control plane (its media objects, contract 13.4). The row is the
+/// witness: a job cannot scope itself to a project the control plane does not hold.
 pub fn stored_project_scope(project: &Project) -> Result<ProjectScope, NilProjectId> {
     mint(project.id)
 }

@@ -3,4 +3,4 @@
 /**
  * How a time series draws its values.
  */
-export type ChartForm = "line" | "bar";
+export type ChartForm = "line" | "bar" | "area";

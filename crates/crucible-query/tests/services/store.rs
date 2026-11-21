@@ -38,6 +38,29 @@ struct State {
     /// Reads in flight now, and the most that were in flight at once.
     in_flight: usize,
     most_in_flight: usize,
+    /// Whether reads wait to answer until the store lets them go, and the reads that wait.
+    held: bool,
+    waiting: Vec<std::task::Waker>,
+}
+
+/// Pending while the store holds its reads.
+struct Held<'a>(&'a FakeStore);
+
+impl std::future::Future for Held<'_> {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let mut state = self.0.state();
+        if state.held {
+            state.waiting.push(cx.waker().clone());
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    }
 }
 
 /// Returns `Pending` once and wakes itself, so that the futures polled together with it run in between.
@@ -368,6 +391,28 @@ impl FakeStore {
     /// The most reads that were in flight at once.
     pub fn most_in_flight(&self) -> usize {
         self.state().most_in_flight
+    }
+
+    /// The reads in flight now.
+    pub fn in_flight(&self) -> usize {
+        self.state().in_flight
+    }
+
+    /// Makes reads wait to answer until [`FakeStore::release_reads`].
+    pub fn hold_reads(&self) {
+        self.state().held = true;
+    }
+
+    /// Lets the held reads answer.
+    pub fn release_reads(&self) {
+        let waiting = {
+            let mut state = self.state();
+            state.held = false;
+            std::mem::take(&mut state.waiting)
+        };
+        for waker in waiting {
+            waker.wake();
+        }
     }
 
     /// Makes the reads of `table` find the store unavailable, while reads of the other tables answer.
@@ -925,6 +970,7 @@ impl TelemetryStore for FakeStore {
         if slow {
             YieldOnce::default().await;
         }
+        Held(self).await;
         let answer = self.answer(plan);
         self.state().in_flight -= 1;
         answer

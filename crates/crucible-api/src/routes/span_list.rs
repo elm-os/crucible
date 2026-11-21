@@ -16,7 +16,7 @@ use super::cursor_invalid;
 use crate::access::{ApiState, Project};
 use crate::convert::{meta, micros_between};
 use crate::cursor::Cursors;
-use crate::filters::list_filter;
+use crate::filters::{FilterList, list_filter};
 use crate::params::{Params, check_window};
 use crate::problem::ApiError;
 
@@ -61,7 +61,7 @@ pub(crate) async fn list_spans(
     let window = params.window();
     let limit = params.limit(SPAN_LIST_MAX_LIMIT);
     let page = params.optional("cursor");
-    let filter = list_filter(&mut params);
+    let filter = list_filter(&mut params, FilterList::Spans);
     params.finish()?;
     let Some(window) = window else {
         return Err(ApiError::validation(rid, Vec::new()));

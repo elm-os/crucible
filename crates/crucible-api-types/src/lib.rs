@@ -19,6 +19,7 @@ mod data_bounds;
 mod enums;
 mod exports;
 mod facts;
+mod filters;
 mod identity;
 mod lifecycle;
 mod mcp;
@@ -58,6 +59,7 @@ pub use facts::{
     Correction, CorrectionRequest, FactRef, FactWritten, Facts, FactsParams, FeedbackRequest,
     FlagName, FlagRequest, FlagValue, Score, ScoreValue, TagEdit, TagRequest, TraceFacts,
 };
+pub use filters::ListFilter;
 pub use identity::{
     Account, AccountPatch, ApiKey, ApiKeyCreate, ApiKeyCreated, ApiKeyList, ApiKeyPatch,
     AuthMethod, AuthProvider, AuthProviderCreate, AuthProviderList, AuthProviderPatch,

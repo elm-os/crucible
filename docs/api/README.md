@@ -588,7 +588,9 @@ different parameters must all hold; each takes at most 100 values.
 On the trace list, `observation_type` and `metadata` keep the traces that have a matching span, and every other
 filter tests the trace's head span: `level=error` finds traces whose head span is an error, and
 `observation_type=tool` finds traces with a tool span anywhere. The trace list refuses `observation_type` together
-with `metadata` (422 `validation_failed`, code `conflict`); the span list takes both.
+with `metadata` (422 `validation_failed`, code `conflict`); the span list takes both. A refused filter names its
+member with the same code wherever it is given: `/level` as a query parameter, `/filters/level` in a search
+request, `/filter/level` in the arguments of an MCP tool.
 
 ```sh
 curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
@@ -668,12 +670,14 @@ The answer is cut to its first hit; the second is the agent span, whose output h
 | `query` | Required; at most 1,024 bytes and 64 tokens. For `input` and `output` it splits into tokens at ASCII punctuation, spaces and controls, compared without regard to ASCII case. For `metadata` each whitespace-separated term is a whole `key=value` entry, compared as written |
 | `mode` | `all` (default): every token occurs. `any`: at least one does. `phrase`: the tokens occur in order and adjacent |
 | `fields` | Any of `input`, `output` and `metadata`, each once; default `input` and `output` |
+| `filters` | Optional: the filters of the span list as one object, each testing the hit's span: `environment`, `release`, `version`, `level`, `observation_type`, `user_id`, `session_id`, `tags` and `metadata` (`key=value`) take lists of values, at most 100 each, and `name` the text a span's name contains, without regard to ASCII case. Each member must hold; a list holds when any value matches. The MCP server's `list_traces` and `list_spans` take the same object as `filter` |
 | `from`, `to` | Required: the window over the spans' start times |
 | `limit` | 1 to 200, default 50 |
-| `cursor` | The `next_cursor` of the previous page, with the same query, mode, fields and window |
+| `cursor` | The `next_cursor` of the previous page, with the same query, mode, fields, filters and window |
 
 Search reads ClickHouse only, so a span acknowledged a moment ago may be missing; the page then says
-`consistency: lagging`.
+`consistency: lagging`. A filter, like a phrase, can leave a page with fewer hits than `limit`, even none, while
+`has_more` is true: send `next_cursor` to read on.
 
 ## Payloads
 
@@ -1030,6 +1034,7 @@ never changes. OTLP ingest does not read `Idempotency-Key`; how it handles a ret
 | SQL runs | 1 at a time per person, 4 per project, 30 per minute per person, and the hourly statement quota | 429 `sql_quota_exceeded` |
 | MCP tool calls | 50 per second per key, bursts of 200 | A tool error with `rate_limited` |
 | Telemetry reads by API keys and the MCP server | 16 ClickHouse statements at once on each Crucible server, shared by every key and project it serves; a read waits for a free one. Servers do not share this count, so with several servers their reads together can still reach the 16 that ClickHouse runs at once for these reads | 504 `query_timeout` when none frees up within the read's time limit; when one frees up too late for ClickHouse to answer in that time, the answer is partial, or 503 `telemetry_store_unavailable`. A read that ClickHouse refuses because several servers together reached its cap gets a partial answer or 503 `telemetry_store_unavailable` |
+| `POST metrics/query`, which each dashboard widget sends | 4 at once per project on a server (`metrics.queries_per_project`); the others wait their turn, oldest first | 504 `query_timeout` when no turn comes within the query's deadline, its time limit plus 2 seconds |
 | Password checks | At most 4 run at once; sign-in answers when all are busy | 429 `rate_limited` |
 
 Ingest is not rate limited: when the server cannot take more, it answers 429 or 503 with `Retry-After`, as

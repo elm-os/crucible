@@ -55,3 +55,13 @@ a transaction reads the pending object: true
 a use is recorded outside: true
 the transaction then deletes it as stale: error ForeignKeyViolation("media_refs_media_id_fkey")
 the pending object stays with its use: 1
+delete the project's media: 1
+its object after: false
+its uses after: 0
+the other project's objects stay: ["01a3185c-5009-7000-8000-000000000009", "01a3185c-500a-7000-8000-00000000000a"]
+the other project's uses stay: 1
+delete the project's media again: 0
+a transaction reads an object of the project: true
+a use is recorded outside: true
+the transaction then deletes the project's media: error ForeignKeyViolation("media_refs_media_id_fkey")
+the project's object stays with its uses: 1

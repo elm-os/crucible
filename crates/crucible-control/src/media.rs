@@ -149,4 +149,7 @@ pub trait MediaRepo: Send + Sync {
     async fn delete_unreferenced(&self, id: MediaObjectId) -> Result<bool, TxError>;
     /// Which of these ids have an object row, in any project, ascending.
     async fn existing(&self, ids: &[MediaObjectId]) -> Result<Vec<MediaObjectId>, TxError>;
+    /// Deletes every use and every object row of the project in one statement, for the project's deletion
+    /// (contract 13.4); returns how many object rows. The stored objects are left to the caller.
+    async fn delete_project(&self, project_id: ProjectId) -> Result<u64, TxError>;
 }

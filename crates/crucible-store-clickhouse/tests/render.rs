@@ -566,6 +566,105 @@ fn m2_sessions() {
     insta::assert_snapshot!("m2_session_detail", rendered(&detail));
 }
 
+/// A search's core lookup of the most hits it names, under the largest list filter the core rows test (every
+/// member at its 100 values, padded to 128) and the most pending deletions a read carries, stays within the
+/// 1,000 values and settings of one ClickHouse request, with room for the statement's settings; so do the hits
+/// under the largest conditions the payload table applies.
+#[test]
+fn a_search_core_lookup_with_the_largest_filter_fits_one_request() {
+    let keys: Vec<(Timestamp, u32, SpanId)> = (0..crucible_plan::SEARCH_SPANS_PER_LOOKUP)
+        .map(|n| {
+            let n = u8::try_from(n).unwrap();
+            let minute = T0.saturating_add_micros(i64::from(n) * 60_000_000);
+            (minute, u32::from(n), span(n))
+        })
+        .collect();
+    let hundred = |prefix: &str| (0..100).map(|n| format!("{prefix}-{n}")).collect();
+    let rest = Filter::And(vec![
+        Filter::Text(TextField::Environment, hundred("environment")),
+        Filter::Text(TextField::Release, hundred("release")),
+        Filter::Text(TextField::Version, hundred("version")),
+        Filter::Level(Level::ALL.to_vec()),
+        Filter::ObservationType(ObservationType::ALL.to_vec()),
+        Filter::Tags(hundred("tag")),
+        Filter::Name("checkout".to_owned()),
+    ]);
+    let lookup = live(search_spans(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        &keys,
+        &rest,
+    ));
+    let trace = |n: usize| {
+        let mut bytes = [0xa5; 16];
+        bytes[8..].copy_from_slice(&(n as u64).to_be_bytes());
+        TraceId::from_bytes(bytes)
+    };
+    let mut hidden = vec![crucible_plan::Hidden {
+        selector: crucible_plan::HiddenSelector::Traces(
+            (0..crucible_plan::HIDDEN_TRACE_IDS).map(trace).collect(),
+        ),
+        requested_at: T0,
+    }];
+    hidden.extend(
+        (0..crucible_plan::HIDDEN_REQUESTS).map(|n| crucible_plan::Hidden {
+            selector: crucible_plan::HiddenSelector::User(format!("user-{n}")),
+            requested_at: T0,
+        }),
+    );
+    let statement = render::plan(&lookup.hiding(&hidden)).unwrap();
+    // The query id, the class limits and the fixed settings travel beside the values.
+    let settings = 16;
+    assert!(
+        statement.params.len() + settings <= 1_000,
+        "{} values",
+        statement.params.len()
+    );
+    // The hits, under the conditions of the filter that the payload table applies, each at its largest, with the
+    // most tokens a query holds.
+    let payload = Filter::And(vec![
+        Filter::Text(TextField::UserId, hundred("user")),
+        Filter::Text(TextField::SessionId, hundred("session")),
+        Filter::And(
+            (0..100)
+                .map(|n| Filter::Metadata {
+                    key: format!("key-{n}"),
+                    value: format!("value-{n}"),
+                })
+                .collect(),
+        ),
+    ]);
+    let request = SearchRequest {
+        tokens: (0..crucible_plan::MAX_SNIPPET_TOKENS)
+            .map(|n| format!("token{n}"))
+            .collect(),
+        mode: TokenMode::All,
+        fields: vec![SearchField::Input, SearchField::Output],
+        filter: payload,
+        limit: crucible_plan::SEARCH_MAX_LIMIT,
+        cursor: Some(keys[0]),
+        as_of: T0,
+    };
+    let hits = search(project(), window(), &clamp(), Caller::Session, &request)
+        .unwrap()
+        .unwrap();
+    let statement = render::plan(&hits.hits.hiding(&hidden)).unwrap();
+    assert!(
+        statement.params.len() + settings <= 1_000,
+        "{} values",
+        statement.params.len()
+    );
+    // One hit more than a lookup names is refused.
+    let mut more = keys.clone();
+    more.push((T0, 7, span(7)));
+    assert_eq!(
+        search_spans(project(), window(), &clamp(), Caller::Session, &more, &rest),
+        Err(PlanError::ListLength("hits"))
+    );
+}
+
 #[test]
 fn m2_lists() {
     let request = TraceListRequest {

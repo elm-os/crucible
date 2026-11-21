@@ -34,8 +34,9 @@ const bucketFormat = new Intl.DateTimeFormat(undefined, {
 });
 const tickFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 
-// Lines for time series and bars for counts per bucket, up to four series with a dash and a marker each,
-// a crosshair that follows the pointer or the bucket slider's arrow keys, and a table view of the numbers.
+// Lines for time series, bars for counts per bucket, or lines over a light fill down to zero (areas laid over
+// one another, not stacked), up to four series with a dash and a marker each, a crosshair that follows the
+// pointer or the bucket slider's arrow keys, and a table view of the numbers.
 export function TimeSeriesChart({
   title,
   series,
@@ -121,6 +122,18 @@ export function TimeSeriesChart({
                   {tickFormat.format(tick.value)}
                 </text>
               ))}
+              {model.areas.map((d, slot) => {
+                const s = shown[slot];
+                return s ? (
+                  <path
+                    key={`${s.id}-area`}
+                    data-area={s.id}
+                    d={d}
+                    fill={seriesStyle(slot, family).color}
+                    fillOpacity="var(--opacity-ramp-1)"
+                  />
+                ) : null;
+              })}
               {form === "bar"
                 ? shown.map((s, slot) =>
                     s.points.map((p) =>

@@ -124,13 +124,14 @@ in Postgres stop working under another key.
 |---|---|---|---|---|
 | `cpu.permits` | `CRUCIBLE_CPU_PERMITS` | | 8 per CPU the process may use | How many blocking jobs of ingest (inflating, transcoding, scanning and compressing requests) run at once. The CPUs counted are those of the process's affinity and its cgroup quota. A request beyond the budget waits its turn without holding a thread, and 8 more threads are kept for disk reads, name lookups and password hashing |
 
-### `[mcp]` and `[sql]`
+### `[mcp]`, `[sql]` and `[metrics]`
 
 | Key | Environment variable | Flag | Default | Meaning |
 |---|---|---|---|---|
 | `mcp.calls_per_second` | `CRUCIBLE_MCP_CALLS_PER_SECOND` | | `50` | Tool calls one API key may make to the MCP server at `/mcp` per second, sustained. `0` turns the limit off |
 | `mcp.burst` | `CRUCIBLE_MCP_BURST` | | `200` | Tool calls one key may make at once after a quiet spell |
 | `sql.statements_per_hour` | `CRUCIBLE_SQL_STATEMENTS_PER_HOUR` | | `1800` | Statements each project's SQL workspace user may send to ClickHouse per hour. A run is three statements: two checks and the query. Applied to ClickHouse at every start ([SQL workspace](sql-workspace.md)) |
+| `metrics.queries_per_project` | `CRUCIBLE_METRICS_QUERIES_PER_PROJECT` | | `4` | Metrics queries (`POST metrics/query`) one project runs at once on a server. A dashboard sends one per widget, so a dashboard of many widgets takes turns: the queries past the limit wait, oldest first, within their deadline (their time limit plus 2 seconds: 12 seconds for most widgets), and one that gets no turn by then answers 504 `query_timeout`. A query reads one ClickHouse statement at a time, so the default of 4 is a quarter of the 16 statements that reads made with API keys share on a server, and keeps one dashboard from sending ClickHouse all its queries together |
 
 ### `[clickhouse]`
 

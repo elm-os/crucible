@@ -45,6 +45,20 @@ describe("the chart model", () => {
     expect(nearestBucket(model, 260)).toBe(2);
   });
 
+  test("areas fill down to zero, break where a bucket has no value, and only the area form has them", () => {
+    const model = chartModel([spans, errors], LAYOUT, "area");
+    expect(model.areas).toHaveLength(2);
+    // Two runs of values (before and after the empty bucket), each closed along the zero line.
+    const spansArea = model.areas[0] ?? "";
+    expect(spansArea.match(/M/g)?.length).toBe(2);
+    expect(spansArea.match(/Z/g)?.length).toBe(2);
+    expect(spansArea).toContain(`,${model.y(0)}`);
+    // The line is drawn over the area, as for the line form.
+    expect(model.paths).toEqual(chartModel([spans, errors], LAYOUT, "line").paths);
+    expect(chartModel([spans], LAYOUT, "line").areas).toEqual([]);
+    expect(chartModel([spans], LAYOUT, "bar").areas).toEqual([]);
+  });
+
   test("bars end at the end of the last bucket, and an empty chart still has a scale", () => {
     const bars = chartModel([spans], LAYOUT, "bar");
     expect(bars.x(new Date(T0 + 3 * MINUTE))).toBe(400);
