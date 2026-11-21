@@ -93,7 +93,8 @@ deletion makes in the same transaction:
    tables, the session and user rollups, the minute rollups, the hourly rollup of MCP calls, the MCP deploys and the
    tool inventory. A partition that holds rows of deleted projects only, and ended more than an hour before the
    deletion, is dropped whole; the project's rows are deleted from every other one. Rows that servers took in the
-   seconds after the deletion, before their keys caught up, go too.
+   seconds after the deletion, before their keys caught up, go too, as long as they reach ClickHouse before the
+   request completes.
 3. After the next mask cycle, within 24 hours, every table is checked to hold no row of the project and no deleted
    row on disk, and the request is `verified`.
 4. Then the project's export files and every object left under its key prefix are removed, and so are its rows in
@@ -105,6 +106,12 @@ From the moment of deletion nothing runs for the project: its alert rules are no
 channels, an export waiting to run ends with `project_deleted`, and the SQL workspace drops the project's ClickHouse
 user at its next pass. The project's row and its deletion requests stay in Postgres, so that a server that was down
 reads them before it sends anything of the project it still holds.
+
+A server that cannot reach Postgres keeps accepting the keys it last loaded, under `auth.pg_outage_mode =
+"fail_open"` (the default), so it can take data of a deleted project until it reaches Postgres again. What it takes
+then and sends after the request completed stays in ClickHouse, where no page, API answer or MCP tool reads it.
+`auth.fail_open_max` bounds how long a server keeps accepting keys without Postgres, and `fail_closed` refuses
+secret keys after 5 seconds.
 
 Org owners and admins follow the purge with `GET /api/v1/projects/{project_id}/deletion-requests`, under the deleted
 project's id: the request of kind `project` lists each table with its deletes, as any deletion request does, and the

@@ -1,7 +1,7 @@
-//! From the moment a project is deleted, the jobs of alerting skip it (contract 13.4): the alert evaluator runs
-//! none of its rules and the notification outbox sends nothing to its channels. Each check runs the same work for
-//! a live project too, where the job does act, so it holds because of the deletion alone. The SQL reconciler's
-//! check is in `crucible-sqlws` and the export job's in `crucible-export`.
+//! From the moment a project is deleted, the jobs of alerting skip it (contract 13.4): the scheduler writes no tick
+//! of its rules, the alert evaluator runs none of them and the notification outbox sends nothing to its channels.
+//! Each check runs the same work for a live project too, where the job does act, so it holds because of the
+//! deletion alone. The SQL reconciler's check is in `crucible-sqlws` and the export job's in `crucible-export`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -18,7 +18,7 @@ use crucible_auth::Sealer;
 use crucible_control::{
     AlertRule, Channel, ChannelKind, ControlStore, JsonDoc, Project, Queue, Repos as _,
 };
-use crucible_jobs::ClaimCtx;
+use crucible_jobs::{ClaimCtx, Registry};
 use crucible_notify::{Delivery, NoticeKind, Notification, Notifier, Transport};
 use crucible_plan::{Aggregation, MeasureId, Source};
 use crucible_records::{AlertRuleId, ChannelId, ProjectId, TimeWindow, Timestamp, Uuid};
@@ -140,6 +140,40 @@ fn notification(channel: &Channel, at: Timestamp) -> Notification {
     }
 }
 
+/// An enabled rule of `project_id` that reads the error count every minute.
+fn rule(project_id: ProjectId, n: u8, now: Timestamp) -> AlertRule {
+    let spec = RuleSpec {
+        source: Source::Spans,
+        mcp: None,
+        measure: MeasureId::ErrorCount,
+        aggregation: Aggregation::Sum,
+        dimensions: Vec::new(),
+        comparison: Comparison::Gt,
+        threshold: 5,
+        window_secs: 60,
+        interval_secs: 60,
+        for_secs: 0,
+        no_data: NoDataPolicy::Keep,
+        no_data_for_secs: 180,
+        renotify_secs: 300,
+        channels: Vec::new(),
+    };
+    AlertRule {
+        id: AlertRuleId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000, u128::from(n))),
+        project_id,
+        name: format!("errors {n}"),
+        enabled: true,
+        spec: spec.to_doc(),
+        interval_secs: 60,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+        last_eval_seq: None,
+        eval_failures: 0,
+        skipped_ticks: 0,
+    }
+}
+
 /// Claims every due row of `queue` and hands each to `handle`.
 async fn claim_all<F, Fut>(model: &PgModel, env: &crucible_env::Env, queue: Queue, handle: F)
 where
@@ -202,6 +236,45 @@ fn the_outbox_sends_nothing_to_the_channels_of_a_deleted_project() {
 }
 
 #[test]
+fn the_scheduler_writes_no_tick_for_the_rules_of_a_deleted_project() {
+    crucible_sim::run(73, |sim| async move {
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let model = PgModel::new(
+            host.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        let now = model.db_now().await.unwrap();
+        projects(&model, now).await;
+        let (live, deleted) = (rule(LIVE, 1, now), rule(DELETED, 2, now));
+        for rule in [&live, &deleted] {
+            model.alert_rules().insert(rule).await.unwrap();
+        }
+        let [scheduler, _consumer] = crucible_alerts::jobs(Evaluator::new(
+            Arc::new(Seen::default()) as Arc<dyn SeriesSource>,
+        ));
+        let mut registry = Registry::new();
+        registry.register(scheduler);
+        let store: Arc<dyn ControlStore> = Arc::new(model.clone());
+        let _running = registry.start(&host.env, Some(store), "node");
+        host.env.clock.sleep(Duration::from_secs(15)).await;
+        let ticks = model
+            .claims()
+            .claim(Queue::AlertEvaluations, 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let of = |rule: &AlertRule| {
+            ticks
+                .iter()
+                .filter(|tick| tick.payload.contains(&rule.id.to_string()))
+                .count()
+        };
+        // Two scans can each write the tick due at their moment.
+        assert!(of(&live) > 0 && of(&deleted) == 0, "{ticks:?}");
+    });
+}
+
+#[test]
 fn the_evaluator_runs_none_of_the_rules_of_a_deleted_project() {
     crucible_sim::run(72, |sim| async move {
         let host = sim.host("node", &sim.disk("node"), 0);
@@ -212,38 +285,9 @@ fn the_evaluator_runs_none_of_the_rules_of_a_deleted_project() {
         );
         let now = model.db_now().await.unwrap();
         projects(&model, now).await;
-        let spec = RuleSpec {
-            source: Source::Spans,
-            mcp: None,
-            measure: MeasureId::ErrorCount,
-            aggregation: Aggregation::Sum,
-            dimensions: Vec::new(),
-            comparison: Comparison::Gt,
-            threshold: 5,
-            window_secs: 60,
-            interval_secs: 60,
-            for_secs: 0,
-            no_data: NoDataPolicy::Keep,
-            no_data_for_secs: 180,
-            renotify_secs: 300,
-            channels: Vec::new(),
-        };
         let mut rules = Vec::new();
         for (n, project_id) in [(1u8, LIVE), (2, DELETED)] {
-            let rule = AlertRule {
-                id: AlertRuleId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000, u128::from(n))),
-                project_id,
-                name: format!("errors {n}"),
-                enabled: true,
-                spec: spec.to_doc(),
-                interval_secs: 60,
-                version: 1,
-                created_at: now,
-                updated_at: now,
-                last_eval_seq: None,
-                eval_failures: 0,
-                skipped_ticks: 0,
-            };
+            let rule = rule(project_id, n, now);
             model.alert_rules().insert(&rule).await.unwrap();
             // The tick due now, so that only the project's deletion can keep the evaluator from it.
             let seq = current_seq(rule.id, 60, now).unwrap();

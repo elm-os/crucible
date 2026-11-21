@@ -6,15 +6,16 @@
 //! - Ticks are told by the database clock, so nodes whose wall clocks differ schedule the same ticks.
 //! - Only the latest due tick is written. After downtime the ticks in between are never evaluated; the tick
 //!   that is counts them as skipped.
+//! - A rule of a deleted project gets no tick (contract 13.4).
 //! - Each pass also deletes the done rows of both queues that nothing can repeat any more.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crucible_control::{Queue, TxError};
 use crucible_jobs::{Cadence, Job, JobResult, NodeCtx};
-use crucible_records::AlertRuleId;
+use crucible_records::{AlertRuleId, ProjectId};
 
 use crate::evaluate::evaluation_job;
 use crate::schedule::current_seq;
@@ -35,8 +36,19 @@ async fn scan(ctx: NodeCtx, written: Written) -> JobResult {
     };
     let now = store.db_now().await?;
     let rules = store.alert_rules().list_enabled().await?;
+    // A deleted project's rules get no tick from the moment of deletion; its purge removes them later.
+    let projects: BTreeSet<ProjectId> = store
+        .projects()
+        .list()
+        .await?
+        .into_iter()
+        .map(|project| project.id)
+        .collect();
     let mut live = BTreeMap::new();
-    for rule in &rules {
+    for rule in rules
+        .iter()
+        .filter(|rule| projects.contains(&rule.project_id))
+    {
         let Some(seq) = current_seq(rule.id, rule.interval_secs, now) else {
             continue;
         };
