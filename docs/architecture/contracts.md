@@ -369,7 +369,7 @@ Repository-shaped access to Postgres. One repository per aggregate in section 11
 | `leases().acquire(name, holder, ttl) -> Option<Lease { fencing_token, expires_at }>`, `renew(lease)`, `release(lease)` | Section 11.7. Expiry uses the database clock |
 | `claims().claim(queue, limit, lease_for) -> Vec<Claim>`, `complete(claim)`, `fail(claim, retry_at)` | Row claims with skip-locked semantics, a `lease_until` and an attempt counter |
 | `db_now() -> Timestamp` | Database clock |
-| `migrations().{applied, apply}` | Forward-only ledger for Postgres and for ClickHouse schema and access steps |
+| `migrations().{applied, apply}` | Forward-only ledger for Postgres and for ClickHouse schema and access steps. `apply` records the checksum of what was applied: a step recorded with another checksum takes the new checksum and time and keeps its kind, and one recorded with the same checksum is left as it is (`false`) (#164) |
 
 Rules: ids and timestamps are produced in Rust from `Clock` and `Rng`, never by column defaults (lease expiry is
 the one exception). Nothing may depend on session state (no LISTEN dependency, no session advisory locks), so
@@ -1295,7 +1295,12 @@ missing, or either self-test fails. All behaviour-affecting settings are sent pe
 
 Settled in code: `crucible serve` also refuses ingest on a server whose flavour is not single node, saying to point
 `clickhouse.url` at a single-node server, and on one where not every table exists, saying to start once with
-`--migrate`. `--migrate` and `crucible migrate` render the single-node variant of every step.
+`--migrate`. `--migrate` and `crucible migrate` render the single-node variant of every step. With Postgres, a
+server started without `--migrate` also refuses ingest until the migrations ledger records every step of
+`crucible_schema::LEDGER_ORDER` (section 6.6): `/readyz` and ingest answer 503 naming the missing steps, `crucible
+migrate` and `--migrate`, and the server checks again with the store's backoff (1 s doubling to 15 s), so it opens
+without a restart once the steps are recorded. Without Postgres there is no ledger, and the table check above gates
+such a server (#164).
 
 ### 5.9 Crash barriers
 
@@ -1589,21 +1594,25 @@ report(b) = lower(b) + width(b) / 2          (integer division)
   300 s. Operations that a server of an earlier version ships after the step reach `mcp_tool_rollup` only (#149).
 
 Ledger (settled in code): with Postgres configured, `crucible migrate` (and `serve --migrate`) runs every pending
-Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
-`migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
-(steps are idempotent, so a crash between apply and record only repeats the step). While a step applies, the runner
-renews the lease every 5 s (section 11.7), so a step may outlast the lease's TTL; the step ends when the lease is
-lost, because Postgres refuses the renewal or the lease's local validity runs out first. A step whose lease was lost
-is not recorded, and the run reports that it must be repeated. A server that starts meanwhile waits for the lease,
-up to 60 s per attempt, and then finds the step recorded (#149).
-A ledger row whose checksum differs from the step makes
-the step reapply, with a warning. The checksum is SHA-256 over the step's statements with every password digest left
-out (`crucible_schema::without_secrets`), because the digests come from the master key: a start with another master
-key finds every recorded step and applies nothing again. A row written before digests were left out holds the
-checksum over the whole statements and still matches under the key it was recorded with (#114). After the steps,
-every migration with Postgres provisions the SQL workspace's two probe identities again with the current key's
-passwords (section 7.5), unless the service identities refuse that key; then a warning names the key to use. Without
-Postgres, `--migrate` applies the ClickHouse steps on every start.
+Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under
+the `migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease
+token (steps are idempotent, so a crash between apply and record only repeats the step). While a step applies, the
+runner renews the lease every 5 s (section 11.7), so a step may outlast the lease's TTL; the step ends when the
+lease is lost, because Postgres refuses the renewal or the lease's local validity runs out first. A step whose lease
+was lost is not recorded, and the run reports that it must be repeated. A server that starts meanwhile waits for the
+lease, up to 60 s per attempt, and then finds the step recorded (#149). The checksum is SHA-256 over the step's
+statements with every password digest left out (`crucible_schema::without_secrets`), because the digests come from
+the master key. A step whose ledger row holds another checksum, such as one whose content a new version changed,
+applies again once, with a warning, and its row takes the new checksum and time (section 2.7), so the next start
+applies nothing. It does so only while the service identities accept this node's master key, by the store's health
+check; otherwise, and whenever that check fails, the step waits, with a warning, for a start with the key the
+deployment was migrated with (#164). A start with another master key therefore applies no step that the ledger
+records, changed or not; a step the ledger does not record yet still applies. A row written before digests were left
+out holds the checksum over the whole statements and still matches under the key it was recorded with (#114). After
+the steps, every migration with Postgres provisions the SQL workspace's two probe identities again with the current
+key's passwords (section 7.5), unless the service identities refuse that key; then a warning names the key to use.
+With Postgres, a server started without `--migrate` takes no ingest until the ledger records every step of
+`LEDGER_ORDER` (section 5.8). Without Postgres, `--migrate` applies the ClickHouse steps on every start.
 
 ### 6.7 Settled in code
 
@@ -1611,7 +1620,7 @@ Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper c
 
 | Topic | Rule |
 |---|---|
-| Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy` |
+| Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy`. Released steps render from the current table list, so a step that adds a table changes `0001` to `0003` too, and they apply once more on that upgrade (section 6.6) |
 | Clustered DDL | `ON CLUSTER` statements carry `distributed_ddl_entry_format_version = 8` or higher, and every host must set `distributed_ddl_use_initial_user_and_roles = 1` (text-index preprocessors need it); startup detection (5.8) checks the server setting on the clustered variant |
 | Replication path | `'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'` |
 | Profile ceilings | Constraints use `MIN 1`, because 0 means unlimited for these settings |
@@ -2125,6 +2134,10 @@ or the text of the first text block of a result with `isError: true`, scrubbed w
 and cut at 2 KiB. When the server gave none, it says what it saw: `cancelled`, `the connection ended before the
 server answered`, or `the server answered HTTP <status>` for a status of 400 or above (#145).
 
+The proxy sends the keys of the `args`, `result` and capture-flags row for a call that a capture rule records
+(section 9.10): `crucible.mcp.content.captured = true`, `.content.sample_rate`, `.content.truncation` and the
+captured fields. Every other operation it sends carries `crucible.mcp.content.captured = false` (#162).
+
 ### 9.2 Error taxonomy
 
 The classifier is one total function in `crucible-records`, shared as data by the normalizer, simulation and the
@@ -2273,9 +2286,10 @@ Alert measures over `mcp_ops`: `mcp.calls`, `mcp.error_rate` (caller faults excl
 |---|---|
 | Defaults | MCP metadata is always captured. Arguments and results are opt-in per server or tool glob, sampled before any copy, cut at 16 KiB per field by default, and scrubbed in the sender. The Python, TypeScript and Rust SDKs scrub on the request path. The Go SDK scrubs on its export goroutine, one span at a time as it leaves the queue: a captured call keeps only the part of each field that scrubbing reads (the cap plus 1 KiB), which counts toward the queue's byte bound, and a panic in the `Scrub` option costs the span its captured content, never the exporter (#145) |
 | Scrub rules | Data in `conformance/scrub-rules.json` with test vectors, shared by the four SDKs and the proxy; patterns stay in the linear-time regular-expression subset |
-| Export | Off the request path through a queue bounded by spans and by bytes (defaults 2,048 spans and 8 MiB). The byte bound counts the batch being exported and estimates each span from the lengths of its name, attributes, events and status message; a span beyond either bound is dropped and counted, never blocks. Whether the span bound counts the in-flight batch is left to each SDK (default; revisit). Flush and shutdown keep to their deadline (a Python `timeout`, a Go context, the export timeout in TypeScript and Rust) while an export to a collector that never answers is in flight; `conformance/export-latency.json` checks it in the four SDKs with no scores queued. Queued scores share that deadline, except in a Rust flush, which waits as long again for them (#145) |
+| Export | Off the request path through a queue bounded by spans and by bytes (defaults 2,048 spans and 8 MiB). The byte bound counts the batch being exported and estimates each span from the lengths of its name, attributes, events and status message; a span beyond either bound is dropped and counted, never blocks. Whether the span bound counts the in-flight batch is left to each SDK (default; revisit). Flush and shutdown keep to their deadline (a Python `timeout`, a Go context, the export timeout in TypeScript and Rust) while an export to a collector that never answers is in flight; `conformance/export-latency.json` checks it in the four SDKs with no scores queued. Queued scores share that deadline (#145, #162) |
 | Proxy passthrough | Bytes are forwarded unchanged and immediately in both directions; analysis runs on a copy through a bounded non-blocking channel; the proxy never injects; telemetry buffer 8 MiB or 10,000 operations, drop-oldest; logs go to stderr only |
 | Proxy correlation | Pending operations are keyed by (direction, JSON-RPC id); operations pending at child exit become `transport` errors |
+| Proxy capture (#162) | `crucible proxy --capture <rule>` (repeatable) or `CRUCIBLE_PROXY_CAPTURE` (rules separated by `;`): a tool glob, then `args`, `result`, `sample_rate` and `max_bytes` (default 16 KiB, at most 8 MiB). Nothing is captured without a rule, and the first matching rule applies. A call is sampled when its tool name is read: arguments after the name are recorded only for a sampled call, and arguments before it are held provisionally, at most the largest window of any rule, and dropped unless the call is captured. Each captured value is written as canonical JSON while it streams past (whitespace dropped, strings decoded and written again with only the escapes JSON requires), then scrubbed over the cap plus 1 KiB and cut at the cap. A captured result keeps `content`, `structuredContent` and `isError`, those present, in that order. Capture runs on the analysis copy only; captured arguments that wait for their response have their own 8 MiB bound, beyond which a call keeps its operation and loses its content |
 | Shipping | OTLP HTTP protobuf to `/v1/traces` with a project key holding the `ingest` scope |
 | Feedback (#115) | Each of the four SDKs sends scores to `POST projects/{id}/feedback` with the project secret key as Bearer (`write` scope). The call only queues (at most 1,024 scores); one background sender posts them in call order, one at a time, after flushing the span queue, so a score on a trace that just ended finds the trace. Each post carries the caller's `Idempotency-Key` or a random 32-hex key; a failed connection, a timeout, 408, 429, 5xx and a `conflict` 409 are retried with the same key and body, three attempts in all, after `Retry-After` (at most 10 s) or else 1 s and 2 s; other refusals are final, and redirects are never followed. Nothing is thrown to the caller: each SDK counts sent, dropped and failed scores. The project id is an explicit option, because no route tells a key its project; the API URL defaults to the endpoint, so it must reach the 8080 listener (4318 serves ingest only) |
 | SDK targets | The MCP server wrappers target the 2.x lines of the official SDKs; servers on 1.x use the proxy |
@@ -3312,3 +3326,5 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-20 | Settled in code since #94 (#86, #88, #91, #93, #98, #99, #114, #115, #117, #119, #121, #134), and the planned-tense wording removed: a dropped span's usage flag relies on nothing (5.3); the `crucible-media` row with the edges to it and `crucible-mcp-server` to `crucible-export` (1.5); the age check's retention horizon (1.2); what `Stores` holds (2); `ObjectStore` as built (2.10); memory budgets, the CPU budget, read counters, the read deadline and the shutdown order (2.14); never-stored keys in events and links (3.5); `BatchSeal.deletion_seq` (4.4); the ingest CPU budget and its proved kernel (4.8, 4.9); `EPOCH`'s directory entry (4.10); the ledger checksum and probe identity repair (6.6, 7.5); `InSet` (8.1); capture-source selection as a presence read (8.2, 9.5); store-outage reads (8.5, 8.9); MCP metrics and the tags filter (8.8, 8.9, 12.5); SDK feedback (9.10); MCP storage fixes and MCP analytics (9.11); dialect 0 sources (10.5); salts, dashboards and deletion replay (11.1, 11.10); the cursor key (11.2); public-key feedback (11.3); job start (11.7); exports on the disk root (11.10, 12.8); the serve flags, the identity generation, cursor route 8, the search body, the media list route and `features` (12.1, 12.5, 12.6, 12.7); deletion in stage B and what the executor does and does not do (13.3, 13.6); media (14.2, 14.3, 14.5). From the earlier queue: `AssetSource` (2.14); error count and pricing (3.11); the decision order, the per-project bucket and `shipper.encoded_bytes` (4.8); OTLP ids, OTLP/JSON and the rejected bitmap (4.10); the fatal-configuration action and the quarantine layout as built (5.6); single-node serving (5.8); row order in a block (6.7); the index entry charge (8.6); `hint_time` (8.9); span-only `crucible.environment` and `crucible.release` and whole-USD costs (10.6); keys-file key ids (12.1). Rules I5 (one frame over `shipper.encoded_bytes`) and I9 (the repeat exception) in `invariants.md` |
 | v2 | 2026-11-21 | Settled in code by #142, #144, #145 and #146: agent statement slots and the deletion drop metric (2.14); the agent cap held per node (7.1); `use_statistics = 0` (8.4); reads sent together (8.7); the proxy's failure messages (9.1) and state-hash key (9.6); where each SDK scrubs captured content, and the flush and shutdown deadlines (9.10); compat auth and dialect 7's scope rules (10.1); the arrival-bounded deletion read (11.10, 13.3, 13.6); the compat media refusal and its log lines (14.5) |
 | v2 | 2026-11-21 | Settled in code by #149: the hourly tier `mcp_tool_rollup_hourly`, table 19 (3.10, 6.3, 6.4); the copy's marker rows (5.5); schema step 0005 and the runner's lease renewal (6.6); no workspace access (7.4); tiered aggregates and their rendering (8.1, 8.3); long-window MCP reads (8.7, 9.9); deletion reach (13.4) |
+| v2 | 2026-11-21 | Settled in code by #162: the proxy's content capture, with its sampling, canonical JSON and result shape (9.10); the content keys the proxy sends (9.1); flush and shutdown share one deadline in every SDK (9.10) |
+| v2 | 2026-11-21 | Settled in code by #164: `Migrations::apply` records what was applied (2.7); a server without `--migrate` waits for every step (5.8, 6.6); a changed step applies once, and only under an accepted master key, which restates the master-key rule (6.6); released steps render from the current table list (6.7) |

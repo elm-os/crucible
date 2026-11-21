@@ -56,7 +56,7 @@ pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,
     metrics_ranking, metrics_series, metrics_shape, metrics_totals,
 };
-pub use payload::{PayloadField, PayloadRangeRequest, payload_range};
+pub use payload::{PayloadField, PayloadRangeRequest, payload_range, span_bodies};
 pub use search::{
     SEARCH_MAX_LIMIT, SEARCH_SNIPPET, SearchField, SearchKey, SearchPlan, SearchRequest, search,
     search_spans,

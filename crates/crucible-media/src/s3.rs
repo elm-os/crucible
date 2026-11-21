@@ -17,14 +17,14 @@ use crucible_env::{
 };
 use crucible_records::Timestamp;
 use futures::StreamExt as _;
-use http::header::{CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED};
 use http::{HeaderName, HeaderValue, Method, StatusCode};
 use http_body_util::BodyExt as _;
-use rusty_s3::actions::{ListObjectsV2, ObjectIdentifier};
+use rusty_s3::actions::{CreateMultipartUpload, ListObjectsV2, ObjectIdentifier};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use url::Url;
 
-use crate::http::{Answer, send, unavailable};
+use crate::http::{Answer, error_code, send, unavailable};
 
 /// How long the URL of a request this node sends itself is valid.
 pub const INTERNAL_TTL: Duration = Duration::from_secs(300);
@@ -267,10 +267,114 @@ impl ObjectStore for S3Store {
         }))
     }
 
-    async fn put_small(&self, key: &str, bytes: Bytes) -> Result<(), ObjectError> {
-        let action = self.internal.put_object(Some(&self.credentials), key);
-        let answer = self.call(Method::PUT, &action, &[], bytes).await?;
+    async fn put_small(
+        &self,
+        key: &str,
+        content_type: &str,
+        bytes: Bytes,
+    ) -> Result<(), ObjectError> {
+        let mut action = self.internal.put_object(Some(&self.credentials), key);
+        action
+            .headers_mut()
+            .insert(CONTENT_TYPE.as_str(), content_type.to_owned());
+        let typed = header(CONTENT_TYPE.as_str(), content_type)?;
+        let answer = self.call(Method::PUT, &action, &[typed], bytes).await?;
         if answer.status.is_success() {
+            Ok(())
+        } else {
+            Err(answer.failure(&self.env).await)
+        }
+    }
+
+    async fn start_upload(&self, key: &str, content_type: &str) -> Result<String, ObjectError> {
+        let mut action = self
+            .internal
+            .create_multipart_upload(Some(&self.credentials), key);
+        action
+            .headers_mut()
+            .insert(CONTENT_TYPE.as_str(), content_type.to_owned());
+        let typed = header(CONTENT_TYPE.as_str(), content_type)?;
+        let answer = self
+            .call(Method::POST, &action, &[typed], Bytes::new())
+            .await?;
+        if !answer.status.is_success() {
+            return Err(answer.failure(&self.env).await);
+        }
+        let body = answer.bytes(&self.env).await?;
+        let started = CreateMultipartUpload::parse_response(&String::from_utf8_lossy(&body))
+            .map_err(|error| {
+                unavailable(format!("unreadable answer to an upload start: {error}"))
+            })?;
+        Ok(started.upload_id().to_owned())
+    }
+
+    async fn upload_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        number: u16,
+        bytes: Bytes,
+    ) -> Result<String, ObjectError> {
+        let action = self
+            .internal
+            .upload_part(Some(&self.credentials), key, number, upload_id);
+        let answer = self.call(Method::PUT, &action, &[], bytes).await?;
+        if !answer.status.is_success() {
+            return Err(answer.failure(&self.env).await);
+        }
+        answer
+            .headers
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| unavailable("the answer to an uploaded part has no ETag"))
+    }
+
+    async fn finish_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        etags: &[String],
+    ) -> Result<(), ObjectError> {
+        let action = self.internal.complete_multipart_upload(
+            Some(&self.credentials),
+            key,
+            upload_id,
+            etags.iter().map(String::as_str),
+        );
+        let url = action.sign_with_time(INTERNAL_TTL, &signing_time(self.now()));
+        let body = action.body();
+        let headers = [header("content-type", "application/xml")?];
+        let answer = send(
+            &self.env,
+            &self.roots,
+            Method::POST,
+            &url,
+            &headers,
+            Bytes::from(body),
+        )
+        .await?;
+        if !answer.status.is_success() {
+            return Err(answer.failure(&self.env).await);
+        }
+        // The store may answer 200 and still fail, with an error document as the body.
+        let body = answer.bytes(&self.env).await?;
+        match error_code(&body) {
+            Some(code) => Err(unavailable(format!(
+                "the store did not finish the upload: {code}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    async fn abort_upload(&self, key: &str, upload_id: &str) -> Result<(), ObjectError> {
+        let action = self
+            .internal
+            .abort_multipart_upload(Some(&self.credentials), key, upload_id);
+        let answer = self
+            .call(Method::DELETE, &action, &[], Bytes::new())
+            .await?;
+        if answer.status.is_success() || answer.status == StatusCode::NOT_FOUND {
             Ok(())
         } else {
             Err(answer.failure(&self.env).await)

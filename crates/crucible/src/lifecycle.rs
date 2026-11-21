@@ -15,6 +15,7 @@ use std::sync::{Arc, OnceLock};
 use crucible_api::{ProjectSettings, ProjectSettingsSource};
 use crucible_control::{ControlStore, DeletionRequest, DeletionSelector, Node, TxError};
 use crucible_env::{Env, TelemetryStore};
+use crucible_export::ExportObjects;
 use crucible_ingest::EventHorizon;
 use crucible_jobs::Job;
 use crucible_lifecycle::{
@@ -44,22 +45,28 @@ pub(crate) struct Lifecycle {
     /// The telemetry store and the project salts, once the store is up. The leader jobs do nothing before
     /// that.
     stores: Arc<OnceLock<LeaderStores>>,
-    /// Whether the deployment stores media, which a completed deletion request then reports on.
-    media: bool,
+    /// The object store and its key prefix, when the deployment has one: it holds media, which a completed
+    /// deletion request then reports on, and the export files that a deletion removes.
+    objects: Option<ExportObjects>,
     /// What the shipper reads the deletion requests through.
     deletions: Arc<ControlDeletions>,
 }
 
 impl Lifecycle {
-    /// The lifecycle of the node whose WAL is `wal`, over the control store. `media` says whether the deployment
-    /// stores media.
-    pub(crate) fn new(env: &Env, control: Arc<dyn ControlStore>, wal: Wal, media: bool) -> Self {
+    /// The lifecycle of the node whose WAL is `wal`, over the control store. `objects` is the deployment's
+    /// object store, when it has one, which stores media and export files.
+    pub(crate) fn new(
+        env: &Env,
+        control: Arc<dyn ControlStore>,
+        wal: Wal,
+        objects: Option<ExportObjects>,
+    ) -> Self {
         let node = Arc::new(NodeState::new(Arc::new(WalLog(wal.clone())), VERSION, ""));
         Self {
             service: Service::new(env, Arc::clone(&control), Arc::clone(&node)),
             node,
             stores: Arc::default(),
-            media,
+            objects,
             deletions: Arc::new(ControlDeletions { control, wal }),
         }
     }
@@ -72,7 +79,7 @@ impl Lifecycle {
     /// The node timer and the three leader jobs of the `lifecycle` lease.
     pub(crate) fn jobs(&self) -> Vec<Job> {
         let mut config = LifecycleConfig::default();
-        config.media = self.media;
+        config.media = self.objects.is_some();
         let stores = Arc::clone(&self.stores);
         let source: LeaderSource = Arc::new(move || stores.get().cloned());
         let mut jobs = vec![node_job(Arc::clone(&self.node), &config)];
@@ -90,6 +97,7 @@ impl Lifecycle {
         let _ = self.stores.set(LeaderStores {
             telemetry,
             subjects,
+            exports: self.objects.clone(),
         });
     }
 }

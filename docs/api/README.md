@@ -266,6 +266,7 @@ Only with an object store and Postgres ([media](../self-hosting/media.md)); othe
 | `POST projects/{project_id}/media` | Ask to upload media | key `ingest` only |
 | `GET projects/{project_id}/media/{media_id}` | Get media with a download link | `read`; key `read` |
 | `PATCH projects/{project_id}/media/{media_id}` | Confirm an upload | key `ingest` only |
+| `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` | List the media a span references | `read`; key `read` |
 
 ### Retention and deletion
 
@@ -839,14 +840,19 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   [alerts](../guides/alerts.md).
 - **Exports**: `POST exports` starts a job that writes a project's spans of a window as `crucible-jsonl` or
   `otlp-json`, optionally gzip-compressed; poll `GET exports/{export_id}` until `state` is `ready`, then download it
-  from `download_path`. Files are kept 7 days, and a project may start 5 exports an hour.
+  from `download_path`. With object storage the download answers `303` with a link to the file on the object store,
+  valid for 5 minutes, which any server hands out. Files are kept 7 days, and a project may start 5 exports an
+  hour.
 - **Retention and deletion**: `GET` and `PUT retention`, and deletion requests for traces, a user or a session; see
   [retention and deletion](../self-hosting/retention-and-deletion.md).
 - **Media**: `POST media` with the content type, length, SHA-256 and the trace that uses them answers a presigned
   upload link valid for 1 hour, whose content type, length and checksum headers must be sent exactly as given, or
   no link when the project already stores the same bytes. `PATCH media/{media_id}` confirms the upload once the
   object store holds it; `GET media/{media_id}` answers a download link valid for 5 minutes; `GET media` lists the
-  uses in a trace or a span. An object is at most `media.max_bytes`, 64 MiB by default; see
+  uses in a trace or a span. `GET spans/{trace_id}/{span_id}/media?start_time=<the span's start>` lists the media
+  one span references, at most 64: those its input, output and metadata name, each with its field, the JSON pointer
+  of the string that names it and the media when the project holds it, then the media uploaded for the span that its
+  payload doesn't name. An object is at most `media.max_bytes`, 64 MiB by default; see
   [media](../self-hosting/media.md).
 - **Identity**: sign-in, sessions, password reset, invitations, the organization, its members and sign-in providers,
   projects, project members and API keys, as listed under [routes](#routes). A change that would leave no way to

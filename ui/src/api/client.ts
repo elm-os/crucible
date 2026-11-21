@@ -57,8 +57,6 @@ import type { McpUserList } from "./generated/McpUserList";
 import type { McpView } from "./generated/McpView";
 import type { SourceParam } from "./generated/SourceParam";
 import type { Media } from "./generated/Media";
-import type { MediaList } from "./generated/MediaList";
-import type { MediaListParams } from "./generated/MediaListParams";
 import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
 import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { MetricsSchema } from "./generated/MetricsSchema";
@@ -87,6 +85,8 @@ import type { SetupRequest } from "./generated/SetupRequest";
 import type { SignInOptions } from "./generated/SignInOptions";
 import type { SpanListPage } from "./generated/SpanListPage";
 import type { SpanListParams } from "./generated/SpanListParams";
+import type { SpanMediaList } from "./generated/SpanMediaList";
+import type { SpanMediaParams } from "./generated/SpanMediaParams";
 import type { SpanPage } from "./generated/SpanPage";
 import type { SpanPageParams } from "./generated/SpanPageParams";
 import type { TraceDetail } from "./generated/TraceDetail";
@@ -592,17 +592,19 @@ export async function getPayloadRange(
   return { bytes, total };
 }
 
-// Where media appear in one span: one entry per use, each with its media's metadata.
-export async function listMedia(
+// The media one span references, read by the server out of its input, output and metadata, then the media
+// uploaded for the span that its payload doesn't name.
+export async function listSpanMedia(
   project: string,
-  traceId: string,
-  spanId: string,
+  span: PayloadSpan,
   signal?: AbortSignal,
-): Promise<MediaList> {
-  const query: MediaListParams = { trace_id: traceId, span_id: spanId };
-  return read<MediaList>(
-    await call(projectPath(project, "/media"), "telemetry", { query, signal }),
+): Promise<SpanMediaList> {
+  const query: SpanMediaParams = { start_time: span.startTime };
+  const path = projectPath(
+    project,
+    `/spans/${encodeURIComponent(span.traceId)}/${encodeURIComponent(span.spanId)}/media`,
   );
+  return read<SpanMediaList>(await call(path, "telemetry", { query, signal }));
 }
 
 // One media object, with a presigned download that lives 5 minutes once it is uploaded.

@@ -1,16 +1,17 @@
 //! The export service of the API and the MCP server (contracts 11.9, 12.5, 12.6 and 12.8): creating an export
 //! under the project's rate limit and the request's `Idempotency-Key`, reading exports, and opening a committed
-//! file for download.
+//! file for download: from this node's disk, or as a presigned link to the object store.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible_control::{ControlStore, ExportFormat, ExportJob, NewExport, TxError};
-use crucible_env::{DiskError, DiskPath, Env, File, OpenMode, Root};
+use crucible_env::{DiskError, DiskPath, Env, File, ObjectError, OpenMode, Presigned, Root};
 use crucible_records::{ExportJobId, ProjectScope, Timestamp};
 
 use crate::files::extension;
 use crate::job::ExportState;
+use crate::objects::{ExportObjects, object_of};
 use crate::spec::{Options, Selector};
 
 /// The exports a project may create per hour (contract 11.9).
@@ -58,9 +59,19 @@ pub enum CreateError {
     Store(#[from] TxError),
 }
 
-/// A committed file opened for download.
+/// A committed file, ready for download.
 #[derive(Debug)]
-pub struct Download {
+pub enum Download {
+    /// The file is on this node's exports root: read it and send it.
+    File(ExportFile),
+    /// The file is on the object store: a presigned GET of it, which lives
+    /// [`DOWNLOAD_TTL`](crate::DOWNLOAD_TTL) and saves the file as an attachment.
+    Link(Presigned),
+}
+
+/// A committed file on this node's disk, opened.
+#[derive(Debug)]
+pub struct ExportFile {
     handle: File,
     /// The name a browser saves it under.
     pub file_name: String,
@@ -87,6 +98,16 @@ pub enum DownloadError {
     /// The file is not on this node's disk.
     #[error("the export file is not on this node")]
     Missing,
+    /// The file is on the object store, which this server is not configured with.
+    #[error(
+        "the export file is on the object store, and this server has none; set object_store.endpoint, \
+         object_store.bucket, object_store.access_key and object_store.secret_key (or their \
+         CRUCIBLE_OBJECT_STORE_* variables) as on the server that wrote it"
+    )]
+    NoObjectStore,
+    /// The link to the object could not be made.
+    #[error("the link to the export file could not be made: {0}")]
+    Objects(#[from] ObjectError),
     /// The control store failed.
     #[error(transparent)]
     Store(#[from] TxError),
@@ -95,11 +116,13 @@ pub enum DownloadError {
     Disk(#[from] DiskError),
 }
 
-/// The export service over the control store and this node's exports root.
+/// The export service over the control store, this node's exports root and, when the deployment has one, the
+/// object store.
 #[derive(Clone)]
 pub struct Exports {
     env: Env,
     store: Arc<dyn ControlStore>,
+    objects: Option<ExportObjects>,
 }
 
 impl std::fmt::Debug for Exports {
@@ -111,7 +134,18 @@ impl std::fmt::Debug for Exports {
 impl Exports {
     /// The service.
     pub fn new(env: Env, store: Arc<dyn ControlStore>) -> Self {
-        Self { env, store }
+        Self {
+            env,
+            store,
+            objects: None,
+        }
+    }
+
+    /// The same service with the deployment's object store, which holds the files of the exports written since.
+    #[must_use]
+    pub fn with_objects(mut self, objects: ExportObjects) -> Self {
+        self.objects = Some(objects);
+        self
     }
 
     /// The wall clock now: what states and expiries are read against.
@@ -217,7 +251,8 @@ impl Exports {
             .await
     }
 
-    /// The committed file of an export, ready to be read.
+    /// The committed file of an export: opened on this node's disk, or a presigned link to its object, which any
+    /// node hands out.
     pub async fn open(
         &self,
         scope: ProjectScope,
@@ -230,23 +265,27 @@ impl Exports {
             (ExportState::Ready, Some(file)) => file.clone(),
             (state, _) => return Err(DownloadError::NotReady(state.as_str())),
         };
+        if let Some(key) = object_of(&file) {
+            let objects = self.objects.as_ref().ok_or(DownloadError::NoObjectStore)?;
+            return Ok(Download::Link(objects.link(key)?));
+        }
         let path = DiskPath::new(Root::Exports, &file)?;
         let handle = match self.env.disk.open(&path, OpenMode::Read).await {
             Err(DiskError::NotFound) => return Err(DownloadError::Missing),
             opened => opened?,
         };
         let gzip = file.ends_with(".gz");
-        Ok(Download {
+        Ok(Download::File(ExportFile {
             handle,
             file_name: format!("crucible-export-{id}.{}", extension(job.new.format, gzip)),
             len: job.bytes,
             checksum: job.checksum.unwrap_or_default(),
             gzip,
-        })
+        }))
     }
 }
 
-impl Download {
+impl ExportFile {
     /// Up to `len` bytes of the file from `offset`; fewer only at its end.
     pub async fn read(&self, offset: u64, len: usize) -> Result<Bytes, DiskError> {
         self.handle.read_at(offset, len).await

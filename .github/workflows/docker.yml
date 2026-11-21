@@ -2,7 +2,7 @@ name: docker
 
 # The container image (deploy/docker/Dockerfile).
 # - Pull requests that can change it: build it for linux/amd64 and linux/arm64 without pushing, then run the Compose
-#   smoke test (deploy/compose/smoke-test.sh) on the amd64 build.
+#   smoke test (deploy/compose/smoke-test.sh) on the amd64 build, with the media overlay as its last step.
 # - A v* tag: build both platforms with SBOM and provenance attestations and push the multi-platform image to
 #   ghcr.io/elm-os/crucible. Only that job may write packages.
 
@@ -85,7 +85,7 @@ jobs:
           path: ${{ runner.temp }}
       - name: Load the image
         run: docker load --input "$RUNNER_TEMP/crucible-image.tar"
-      - name: Start Compose, send a trace with curl and read it back through the API
+      - name: Start Compose, send a trace and read it back, upgrade, then upload media and export to the object store
         run: bash deploy/compose/smoke-test.sh crucible:ci
 
   # An upgrade from the newest published release (deploy/compose/upgrade-test.sh): the restarts after it apply no
