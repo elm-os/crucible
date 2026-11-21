@@ -17,10 +17,10 @@ refuses an upload.
 - **The control plane.** Crucible records each object and every use of it in Postgres, so media need `postgres.url`.
   A configuration with object storage and without Postgres is refused at startup with that message.
 - **An S3-compatible bucket** that both the server and the clients reach. The service must check the signed headers
-  of a presigned upload and return an object's checksum on request. The conformance rows of
-  `crucible-s3-conformance` run against the [Versity S3 gateway](https://github.com/versity/versitygw), which
-  `deploy/compose/compose.media.yaml` adds. The bucket must exist; Crucible does not create it, and at startup it
-  logs whether the bucket answers.
+  of a presigned upload, return an object's checksum on request, and join multipart uploads, which export files use.
+  [Tested object stores](#tested-object-stores) lists the services the conformance rows of
+  `crucible-s3-conformance` pass on. The bucket must exist; Crucible does not create it, and at startup it logs
+  whether the bucket answers.
 
 ## With Docker Compose
 
@@ -73,9 +73,22 @@ served as attachments.
 
 ## The browser and the storage
 
-The trace view loads images, audio and video from the storage's public endpoint, so that origin must be reachable
-from the browser. Crucible's pages allow media from exactly that origin and from nowhere else. A browser that cannot
-reach it shows "This media couldn't be shown." with a retry.
+The **Media** tab of the span panel lists the media a span references: those its input, output and metadata name,
+which the server reads out of the payload, and those uploaded for the span. It loads images, audio and video from
+the storage's public endpoint, so that origin must be reachable from the browser. Crucible's pages allow media from
+exactly that origin and from nowhere else. A browser that cannot reach it shows "This media couldn't be shown." with
+a retry. On a server without object storage the tab says so and links this page.
+
+## Export files
+
+With object storage, [exports](../guides/exports.md) write their files to the same bucket, under `<prefix>/<project
+id>/exports/<export id>/<attempt>/`, instead of the disk of the server that runs the export. A file appears in the
+bucket whole, once it is complete: a file under 8 MiB in one request, a larger one as a multipart upload of 8 MiB
+parts. A download answers `303` with a presigned link that works for 5 minutes and saves the file under its name, so
+every server of the deployment can answer it. Every server removes the objects of expired exports (7 days) and of
+exports that a deletion request expired, and of attempts that ended without being recorded; an upload that a stopped
+server left unfinished stays in the bucket until its lifecycle rule for incomplete multipart uploads removes it.
+Files written before object storage was configured stay on the disk of the server that wrote them until they expire.
 
 ## Deletion and retention
 
@@ -87,3 +100,17 @@ reach it shows "This media couldn't be shown." with a retry.
   names, which a server stopped between deleting a record and its object can leave behind.
 - As a backstop, give the bucket a lifecycle rule that expires incomplete multipart uploads, and objects under the
   prefix that are older than your longest retention.
+
+## Tested object stores
+
+CI runs the conformance rows of `crucible-s3-conformance` against these services, each as a container. Every one of
+them refuses an upload whose content type, length or checksum differs from the signed ones, returns the stored
+checksum, serves a download with the disposition the link names, refuses an expired link, and joins multipart
+uploads.
+
+| Service | Version tested | What to know |
+|---|---|---|
+| [Versity S3 gateway](https://github.com/versity/versitygw) | v1.10.0 | `deploy/compose/compose.media.yaml` adds it. With the `posix` backend each top-level directory is a bucket, so create the bucket's directory before the gateway starts. Signatures must name its region, `us-east-1` unless you change it, which is Crucible's default |
+| [SeaweedFS](https://github.com/seaweedfs/seaweedfs) | 4.52 | Credentials come from an identities file (`-s3.config`), and `weed mini -bucket=<name>` creates the bucket at startup; `weed mini` is its single-process setup for small deployments. It accepts signatures for any region |
+| [Garage](https://garagehq.deuxfleurs.fr/) | v2.5.0 | Set `object_store.region` to the `s3_region` of its configuration: it refuses a signature for any other region with `AuthorizationHeaderMalformed`. A new node needs a layout (`garage layout assign`, then `garage layout apply`) before it stores anything, and access keys are made or imported with `garage key`: an id of `GK` and 24 hex characters, and a secret of 64 |
+

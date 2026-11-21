@@ -345,8 +345,11 @@ impl Media {
     }
 }
 
+/// The least and the greatest SHA-256 a reference's id can stand for.
+pub type HashRange = ([u8; 32], [u8; 32]);
+
 /// A media reference found in a payload field: where it is, the content type it names, and the SHA-256 values its
-/// id can stand for, the least and the greatest.
+/// id can stand for.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PayloadRef {
     /// The JSON pointer of the string that holds it within its field; empty for the whole field.
@@ -354,7 +357,7 @@ pub struct PayloadRef {
     /// The content type the reference names.
     pub content_type: String,
     /// The least and the greatest SHA-256 its id can stand for.
-    pub hashes: ([u8; 32], [u8; 32]),
+    pub hashes: HashRange,
 }
 
 /// Reads the media references out of one payload field's bytes. The token formats belong to other products'
@@ -399,14 +402,16 @@ impl Media {
     ) -> Result<Vec<SpanReference>, MediaError> {
         let project_id = scope.project_id();
         let mut found: Vec<SpanReference> = Vec::new();
-        let mut looked_up: Vec<(([u8; 32], [u8; 32]), Option<MediaObject>)> = Vec::new();
+        let mut looked_up: Vec<(HashRange, Option<MediaObject>)> = Vec::new();
         if let Some(find) = self.find {
             'fields: for (field, body) in fields {
                 for reference in find(body) {
                     if found.len() >= MAX_SPAN_REFERENCES {
                         break 'fields;
                     }
-                    let held = looked_up.iter().find(|(hashes, _)| *hashes == reference.hashes);
+                    let held = looked_up
+                        .iter()
+                        .find(|(hashes, _)| *hashes == reference.hashes);
                     let object = match held {
                         Some((_, object)) => object.clone(),
                         None => {

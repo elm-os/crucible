@@ -402,15 +402,33 @@ fn a_span_lists_the_media_its_payload_references() {
             stored_row(
                 TableId::SpanPayload,
                 &[
-                    ("project_id", crucible_plan::Value::Uuid(entry.project_id.uuid())),
-                    ("start_minute", crucible_plan::Value::Time(s.start_time.floor_minute())),
-                    ("trace_hash", crucible_plan::Value::UInt(u64::from(s.trace_id.trace_hash()))),
-                    ("span_id", crucible_plan::Value::Bytes(s.span_id.as_bytes().to_vec())),
-                    ("trace_id", crucible_plan::Value::Bytes(s.trace_id.as_bytes().to_vec())),
+                    (
+                        "project_id",
+                        crucible_plan::Value::Uuid(entry.project_id.uuid()),
+                    ),
+                    (
+                        "start_minute",
+                        crucible_plan::Value::Time(s.start_time.floor_minute()),
+                    ),
+                    (
+                        "trace_hash",
+                        crucible_plan::Value::UInt(u64::from(s.trace_id.trace_hash())),
+                    ),
+                    (
+                        "span_id",
+                        crucible_plan::Value::Bytes(s.span_id.as_bytes().to_vec()),
+                    ),
+                    (
+                        "trace_id",
+                        crucible_plan::Value::Bytes(s.trace_id.as_bytes().to_vec()),
+                    ),
                     ("start_time", crucible_plan::Value::Time(s.start_time)),
                     ("input", text(&input)),
                     ("output", text("{\"answer\":\"a bird\"}")),
-                    ("metadata_keys", crucible_plan::Value::Array(vec![text("chart")])),
+                    (
+                        "metadata_keys",
+                        crucible_plan::Value::Array(vec![text("chart")]),
+                    ),
                     (
                         "metadata_values",
                         crucible_plan::Value::Array(vec![text(&reference(PNG, "image/png"))]),
@@ -426,11 +444,21 @@ fn a_span_lists_the_media_its_payload_references() {
 
         // The PNG is uploaded for the span's input; the WAV for its output, which does not name it.
         let mut ids = Vec::new();
-        for (bytes, content_type, field) in [(PNG, "image/png", "input"), (WAV, "audio/wav", "output")] {
+        for (bytes, content_type, field) in
+            [(PNG, "image/png", "input"), (WAV, "audio/wav", "output")]
+        {
             let mut body = create(bytes, content_type, &trace);
             body["span_id"] = Value::from(span.as_str());
             body["field"] = Value::from(field);
-            let created = call(&p.router, Method::POST, &media_path(""), &p.key, Some(body), &[]).await;
+            let created = call(
+                &p.router,
+                Method::POST,
+                &media_path(""),
+                &p.key,
+                Some(body),
+                &[],
+            )
+            .await;
             let id = created.body["media_id"].as_str().unwrap().to_owned();
             let url = created.body["upload"]["url"].as_str().unwrap();
             p.objects
@@ -478,7 +506,10 @@ fn a_span_lists_the_media_its_payload_references() {
             ]
         );
         assert_eq!(data[0]["media"]["state"], "uploaded");
-        assert!(data[0]["media"].get("url").is_none(), "links come from GET media/{{id}}");
+        assert!(
+            data[0]["media"].get("url").is_none(),
+            "links come from GET media/{{id}}"
+        );
 
         let viewer = session(&p.identity.login("vic@example.com", PASSWORD).await.unwrap());
         let as_viewer = call(&p.router, Method::GET, &route, &viewer, None, &[]).await;

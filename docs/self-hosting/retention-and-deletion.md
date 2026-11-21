@@ -53,8 +53,9 @@ A request moves through these states, which the settings page shows with the pla
 
 The places a request reaches are the span tables, the trace heads and trace statistics, the session and user
 rollups, the four fact tables (scores, tags, flags, corrections), the MCP operations and their arguments and
-results, export files made before the request, which expire, and with an object store, the uses of media by the
-traces deleted: media follow `payload_retention_days`, and an object is removed once nothing uses it
+results, export files made before the request, which expire and are removed (from the object store once the
+expiry is recorded, when export files are kept there), and with an object store, the uses of media by the traces
+deleted: media follow `payload_retention_days`, and an object is removed once nothing uses it
 ([media](media.md#deletion-and-retention)). The minute rollups that power charts and alerts hold counts with no
 user, session or content, and are kept.
 

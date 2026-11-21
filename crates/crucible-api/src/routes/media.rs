@@ -626,7 +626,10 @@ pub(crate) async fn list_span_media(
                 field: Some(reference.field).filter(|field| !field.is_empty()),
                 pointer: reference.pointer,
                 content_type: reference.content_type,
-                media: reference.object.as_ref().map(|object| media_dto(object, None)),
+                media: reference
+                    .object
+                    .as_ref()
+                    .map(|object| media_dto(object, None)),
             })
             .collect(),
     }))

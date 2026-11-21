@@ -4,6 +4,12 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with a presigned link that any server hands out; expiry and deletion requests remove the objects.
+- The span panel has a Media tab that lists the media a span's input, output and metadata reference, with where each appears, and the media uploaded for the span; without object storage it says so and links the media guide.
+- `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` lists the media a span references.
+- With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
+- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one needs.
+
 ## [0.1.1] - 2026-11-21
 
 Trace reads stay fast while data is arriving, the MCP server lists spans, sessions and users, the Go SDK scrubs

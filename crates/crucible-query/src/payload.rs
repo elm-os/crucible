@@ -207,7 +207,14 @@ impl QueryService {
         if deleted {
             return Err(QueryServiceError::NotFound);
         }
-        let plan = span_bodies(scope, &read.clamp, ctx.caller, trace_id, span_id, start_time);
+        let plan = span_bodies(
+            scope,
+            &read.clamp,
+            ctx.caller,
+            trace_id,
+            span_id,
+            start_time,
+        );
         // A span sent twice has a row per copy: the newest one is the span.
         let mut newest: Option<(u64, SpanBodies)> = None;
         for row in read.rows(plan).await? {

@@ -894,9 +894,16 @@ fn span_bodies_reads_the_fields_that_can_reference_media() {
     use crucible_plan::span_bodies;
 
     let (trace, span) = (TraceId::from_bytes([3; 16]), SpanId::from_bytes([4; 8]));
-    let plan = span_bodies(scope(), &keep(), Caller::Session, trace, span, window().from())
-        .unwrap()
-        .unwrap();
+    let plan = span_bodies(
+        scope(),
+        &keep(),
+        Caller::Session,
+        trace,
+        span,
+        window().from(),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         shape(&plan.output()),
         vec![
@@ -908,5 +915,8 @@ fn span_bodies_reads_the_fields_that_can_reference_media() {
         ]
     );
     assert_eq!(plan.class(), QueryClass::Point);
-    assert_eq!(plan.window(), TimeWindow::new(window().from(), window().from().saturating_add_micros(1)).unwrap());
+    assert_eq!(
+        plan.window(),
+        TimeWindow::new(window().from(), window().from().saturating_add_micros(1)).unwrap()
+    );
 }

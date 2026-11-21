@@ -335,6 +335,9 @@ pub fn media_answer(media: &MediaAnswer<'_>) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// The least and the greatest SHA-256 a compat media id can stand for ([`hash_range`]).
+pub type HashRange = ([u8; 32], [u8; 32]);
+
 /// A media reference that a payload carries, in the token format that the compat media endpoint's SDKs write in
 /// place of the media they upload.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -344,8 +347,8 @@ pub struct PayloadToken {
     pub pointer: String,
     /// The content type the reference names.
     pub content_type: String,
-    /// The SHA-256 values its media id can stand for, the least and the greatest ([`hash_range`]).
-    pub hashes: ([u8; 32], [u8; 32]),
+    /// The SHA-256 values its media id can stand for.
+    pub hashes: HashRange,
 }
 
 /// The most references [`payload_tokens`] reads from one body: a payload of up to 8 MiB could hold far more than
@@ -424,7 +427,10 @@ fn scan(text: &str, pointer: &str, token: &MediaToken, found: &mut Vec<PayloadTo
             return;
         };
         let inside = rest.get(at + token.prefix.len()..).unwrap_or_default();
-        let Some(end) = inside.find(token.suffix).filter(|_| !token.suffix.is_empty()) else {
+        let Some(end) = inside
+            .find(token.suffix)
+            .filter(|_| !token.suffix.is_empty())
+        else {
             return;
         };
         if let Some((content_type, hashes)) = token_fields(inside.get(..end).unwrap_or_default()) {
@@ -439,7 +445,7 @@ fn scan(text: &str, pointer: &str, token: &MediaToken, found: &mut Vec<PayloadTo
 }
 
 /// The content type and the hash range of a token's fields, `type=<content type>|id=<media id>|...`.
-fn token_fields(fields: &str) -> Option<(String, ([u8; 32], [u8; 32]))> {
+fn token_fields(fields: &str) -> Option<(String, HashRange)> {
     let (mut content_type, mut id) = (None, None);
     for field in fields.split('|') {
         match field.split_once('=') {

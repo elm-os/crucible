@@ -23,6 +23,6 @@ mod service;
 pub use http::fetch;
 pub use s3::{INTERNAL_TTL, LIST_PAGE, S3Config, S3Store};
 pub use service::{
-    Created, FindRefs, MAX_SPAN_REFERENCES, Media, MediaConfig, MediaError, NewUpload, PayloadRef,
-    SpanReference,
+    Created, FindRefs, HashRange, MAX_SPAN_REFERENCES, Media, MediaConfig, MediaError, NewUpload,
+    PayloadRef, SpanReference,
 };
