@@ -677,7 +677,9 @@ test.describe("dashboard: editor", () => {
     await expectAccessible(page, "widget filter with suggestions");
     await page.getByRole("option", { name: /^prod/ }).click();
     await filters.getByRole("button", { name: "Add filter" }).click();
-    await expect(drawer.getByRole("button", { name: "Remove filter Environment is prod" })).toBeVisible();
+    await expect(
+      drawer.getByRole("button", { name: "Remove filter Environment is prod" }),
+    ).toBeVisible();
     await expect
       .poll(() => previews.at(-1))
       .toMatchObject({ filter: { in: { field: "environment", values: ["prod"] } } });
@@ -687,7 +689,9 @@ test.describe("dashboard: editor", () => {
     await page.getByRole("option", { name: "Release" }).click();
     const release = filters.getByRole("combobox", { name: "Value" });
     await release.click();
-    await expect(page.getByText("The release values couldn't load; type one as it is written.")).toBeVisible();
+    await expect(
+      page.getByText("The release values couldn't load; type one as it is written."),
+    ).toBeVisible();
     await release.fill("v2");
     await filters.getByRole("button", { name: "Add filter" }).click();
     await expect(drawer.getByRole("button", { name: "Remove filter Release is v2" })).toBeVisible();
