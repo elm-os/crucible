@@ -2,12 +2,15 @@
 
 The first end-to-end throughput measurement of `crucible serve`: OTLP ingest to the durable acknowledgement
 (burst), and ingest through the shipper into ClickHouse (sustained). Every number on this page was **measured on a
-laptop, not reference hardware**, on one day, with other jobs sharing the machine. Use it to find bottlenecks and
-to compare builds on the same machine, never as a capacity claim. The rig, the load generator and the
-fsync-honesty probe are described in [`perf.md`](perf.md); `tools/perf/baseline.sh` repeats every run below.
+laptop, not reference hardware**: the milestone 1 runs on one day with other jobs sharing the machine, and
+[the shipper after #168](#the-shipper-after-168) on a later day without them. Use it to find bottlenecks and to
+compare builds on the same machine, never as a capacity claim. The rig, the load generator and the fsync-honesty
+probe are described in [`perf.md`](perf.md); `tools/perf/baseline.sh` repeats every run below.
 
 **Status: checkpoint, incomplete.** The work was paused on request before the sustained runs finished. What is
-missing is listed under [Incomplete: remaining runs](#incomplete-remaining-runs).
+missing is listed under [Incomplete: remaining runs](#incomplete-remaining-runs). The shipper's phase split was
+measured again on the gate's small rig with #168, which put the phase metric on `main`:
+[the shipper after #168](#the-shipper-after-168).
 
 ## Summary
 
@@ -114,18 +117,20 @@ behind its connections during server stalls (send lag p99 19 ms at 830,000 spans
 
 - CPU per container comes from each container's cgroup `cpu.stat`, read before and after the measured load with
   that container's clock, and is given in cores (CPU seconds per second).
-- Inside Crucible, the runs used three metrics from the companion branch `feat/shipper-phase-metrics`, which is not
-  part of this change:
+- Inside Crucible, the runs used three metrics of commit `7801d64`, built on `4a6e68b`:
   - `crucible_shipper_task_microseconds_total{phase}`: the shipper task's time, charged to the phase it was in:
     `read` (the next durable frame), `stage_a` (decode and normalize), `stage_b` (duplicate window, first-seen set,
     recent-index insert), `rows` (table rows into the builders), `encode` (sort, Native encoding and compression
     of a sealed batch), `wal_append` (durable `BatchSeal` and `Checkpoint` frames, garbage collection),
     `wait_inserts` (the open batch is full and the most batches are in flight) and `wait_frames` (caught up with
-    the durable log). The phases add up to the task's running time, which a directed simulation test checks;
+    the durable log). The phases add up to the task's running time, which a directed simulation test checks.
+    `main` has this counter since #168, which also charges the task's waits for the control store, its retries
+    and its frame quarantine copies to `wait_frames`;
   - `crucible_shipper_insert_duration_microseconds`: each insert, from the send to the answer;
   - `crucible_wal_append_duration_microseconds`: each commit group's append, beside the existing sync histogram.
-- `system.query_log` gives the inserts per table as ClickHouse saw them. Without the companion metrics the script
-  still runs and leaves those fields out.
+    `main` has neither histogram.
+- `system.query_log` gives the inserts per table as ClickHouse saw them. Without the two histograms the script still
+  runs and leaves those fields out.
 
 ## Results
 
@@ -298,6 +303,87 @@ keeps up by definition and shows idle time.
 - Milestone 6 keeps the rest: builders that write columns directly instead of rows of cells (`rows` and `encode`
   together are 65% of the task today), the io_uring WAL backend, and the ack path's flush tail on real disks.
 
+## The shipper after #168
+
+Measured on 2026-11-21 (UTC) on the same laptop, **measured on a laptop, not reference hardware**, with no other
+track's containers on the machine. #168 puts `crucible_shipper_task_microseconds_total{phase}` on `main`, finds
+a frame's provisional heads in one pass, and wakes the shipper when the durable LSN moves. Its build is `870828b`;
+the base is `main` at `c9e1758`. Every image is the gate's (`crucible-gate:<commit>`).
+
+### The phase split on the small rig
+
+`tools/perf/baseline.sh` at the gate's small-rig limits: Crucible CPUs 0-1 and 1 GB, ClickHouse CPUs 2-3 and
+1.5 GB, the client CPUs 5-6 and 512 MB, the recent-span index bound at 64 MiB; 1 KiB spans, 100 per request in one
+trace, 30 s of load, then the drain (`sustained-step 1k plain <spans/s> 30`).
+
+| Run | Offered spans/s | Shipped spans/s, run and drain | Drain after the run | Freshness p95 | Ack p50 / p99 ms | Shipper busy | Lost, duplicated |
+|---|---|---|---|---|---|---|---|
+| Saturated | 100,000 | about 59,600 | 20.3 s | 19.5 s: the backlog grew | 2.7 / 24.0 | 95.4% | 0, 0 |
+| Below capacity | 10,000 | 10,000 | 3.6 s | 0.57 s | 2.1 / 6.1 | 16.4% | 0, 0 |
+
+| Phase | Saturated | Below capacity |
+|---|---|---|
+| `encode` | 46.1% | 5.4% |
+| `stage_a` | 21.1% | 3.9% |
+| `rows` | 16.5% | 2.7% |
+| `stage_b` | 8.5% | 1.1% |
+| `read` | 1.9% | 2.2% |
+| `wal_append` | 1.3% | 1.0% |
+| `wait_inserts` | 0.0% | 0.0% |
+| `wait_frames` | 1.8% | 83.6% |
+
+- The shares are of the window between the metric scrapes around the load (31.4 and 31.5 s). A column adds up to
+  97 to 100%: the lap in progress at the second scrape is charged at its end.
+- **On 2 CPUs the saturated split is milestone 1's on 6** (encode 50.6%, stage A 22.0%, rows 14.3%, stage B
+  8.1%): the one shipper task is the limit, and nothing else is. ClickHouse kept up (`wait_inserts` zero; inserts
+  of 132 ms for `span_core` and 255 ms for `span_payload` on average, in blocks of 60,000 rows, against the 500 ms
+  linger), Crucible used 1.19 of its 2 CPUs and ClickHouse 0.70 of its 2.
+- Of the task's busy time, encode is 48%, stage A 22%, rows 17% and stage B 9%. On this rig, encoding off the task
+  can buy at most 1 / (1 - 0.48) = 1.9 times, and encoding with stage A 1 / (1 - 0.70) = 3.4 times, before the cost
+  of handing work between tasks and the next limit.
+
+### The deciding gates
+
+`cargo xtask perf gate --base c9e1758 --candidate 870828b --rig small --pairs 7 --lane 1kb`, once with `--path ack`
+and once with `--path e2e`, through `tools/perf/xtask.sh`. The probe classified the WAL volume `honest` in both
+sessions, no arm was invalid, and the only container outside each session was the gate's own driver. Both verdicts
+are `pass`:
+
+| Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first |
+|---|---|---|---|---|---|---|
+| ack | Throughput, acknowledged spans/s | 594,588 | 584,396 | -1.7% | 0.53 | -2.0% |
+| ack | Durable-ack p99, ms | 5.50 | 5.92 | +7.7% | 0.016 | +2.6% |
+| e2e | Sustained, shipped spans/s | 61,472 | 62,803 | +2.2% | 0.59 | -0.3% |
+| e2e | Freshness p95, ms | 570.3 | 568.4 | -0.3% | 0.96 | +0.1% |
+
+- Durable-ack p99 rose in 6 of 7 pairs, by 0.4 ms in the median, below the 10% that blocks. On the small rig this
+  metric swings by more than that from arm to arm ([A/A calibration](perf.md#aa-calibration)); it decides on the
+  full rig.
+- Freshness p95 is the 500 ms linger plus the insert; the wake's milliseconds do not show in it.
+
+### Ack to readable
+
+The wake ends the shipper's wait when a frame becomes durable, where before it looked every 5 ms. Three
+measurements, each at a low rate, of the base and the candidate:
+
+| Measurement | Base | Candidate |
+|---|---|---|
+| Read-barrier wait of a trace read by id right after its acknowledgement (100 reads, the server's `crucible_api_barrier_wait_microseconds{class="trace_by_id"}`) | mean 3.84 ms; 94 of 100 between 1 and 10 ms | mean 0.11 ms; all 100 at most 0.5 ms |
+| The read bench's ack-to-API probe on the small rig (100 probes; lists per probe and ack to list p50, empty store, then loaded) | 2 lists, 18.2 ms; 2 lists, 18.8 ms | 2 lists, 18.0 ms; 1 list, 12.5 ms |
+| `crates/crucible/tests/e2e.rs`, two runs, `ack_to_api_list` of its four traces, protobuf, JSON, gRPC, compat route (ms) | 13.6, 34.3, 43.7, 25.6; 15.2, 41.1, 44.3, 28.7 | 13.5, 33.1, 40.5, 25.1; 14.4, 34.4, 42.5, 25.0 |
+
+- The read barrier isolates the shipper's part: a read by id waits until stage B has applied the durable LSN it
+  saw. Each probe sent one trace over OTLP/JSON and read it by id in the same `curl` process on the baseline rig.
+- The list probes wait for the list's own round trip (5 to 12 ms per list) and poll every 2 ms, so they show the
+  change only as fewer lists; `e2e.rs` has four samples per run.
+
+### Provisional heads in one pass
+
+`cargo test --release -p crucible-shipper --bench heads -- --ignored --nocapture` derives the rows of a frame of
+50,000 rootless traces of one span and of a frame of one rootless trace of 50,000 spans, medians of 7 alternating
+rounds: 281.0 ms against 91.1 ms (3.09 times) before, 101.2 ms against 87.7 ms (1.15 times) after. The request shape
+of the gate's lanes, one trace per request, never exercised it.
+
 ## Incomplete: remaining runs
 
 - Sustained 1 KiB: no rate is confirmed. The next step was three 120 s runs at 57,600 spans/s, then 10% lower until
@@ -307,16 +393,11 @@ keeps up by definition and shows idle time.
   accurate at 25,600 spans/s (above), but the burst searches of that lane are still to repeat; only the 10-span
   gate runs measure Crucible in it.
 - Burst searches for 10 KiB spans with 10 spans per request: only the gate runs were done.
-- The companion branch `feat/shipper-phase-metrics` (the three metrics above, a directed simulation test, and an
-  assertion in the group-commit test) passed `cargo fmt`, `cargo clippy --workspace --all-targets` and the tests of
-  `crucible-env`, `crucible-wal`, `crucible-shipper` and the two directed simulation suites; the workspace test
-  run, `cargo deny` and its own pull request are still to do.
 - A repeat on a quiet machine: other jobs' containers had no cpuset, and the burst spread follows them.
 
 ## Reproducing
 
-From the repository root, with release builds of `crucible` (with the companion metrics for the phase split) and
-`crucible-loadgen` in a cargo target volume:
+From the repository root, with release builds of `crucible` and `crucible-loadgen` in a cargo target volume:
 
 ```sh
 TARGET_VOLUME=crucible-target tools/perf/baseline.sh all

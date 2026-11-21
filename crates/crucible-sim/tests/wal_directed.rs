@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -19,6 +21,7 @@ use crucible_wal_codec::{
     BatchSeal, Checkpoint, CheckpointHint, Compression, FRAME_HEADER_LEN, FrameHeaderError,
     PreparedFrame, Record, RecordType, SEGMENT_HEADER_LEN, Scan, SegmentHeader, scan_frame,
 };
+use futures::FutureExt;
 
 /// The segment size of most tests.
 const SEGMENT: u64 = 1024;
@@ -497,6 +500,39 @@ fn a_tailing_replay_follows_the_log_and_never_sees_a_superseded_frame() {
             seen.push((frame.lsn().get(), frame.stored_payload()[0]));
         }
         assert_eq!(seen[2..], [(4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9)]);
+        node.stop().await;
+    });
+}
+
+/// A reader at the end of the durable log waits for the next frame with `Replay::wait_durable`. A frame that
+/// becomes durable after the reader found the log exhausted but before its wait began ends the wait at once: the
+/// wait registers for the committer's wake before it checks the durable LSN. A frame that becomes durable during
+/// the wait wakes it, with no timer.
+#[test]
+fn a_reader_waiting_for_the_next_durable_frame_misses_none() {
+    run(19, |sim| async move {
+        let disk = sim.disk("disk");
+        let node = start(&sim, &disk, "a", &config(SEGMENT)).await;
+        let mut replay = node.wal.replay(Lsn::FIRST);
+        assert_eq!(replay.next().await, Ok(None));
+        let wait = replay.wait_durable();
+        node.fill(1..=1).await;
+        assert_eq!(wait.now_or_never(), Some(()));
+        assert_eq!(replay.next().await.unwrap().unwrap().lsn(), Lsn::new(1));
+        assert_eq!(replay.next().await, Ok(None));
+
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woken);
+        let mut waiter = node.host.env.spawn("reader", async move {
+            replay.wait_durable().await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        node.host.env.clock.sleep(Duration::from_millis(10)).await;
+        assert!(!woken.load(Ordering::SeqCst));
+        node.fill(2..=2).await;
+        node.host.env.clock.sleep(Duration::from_millis(1)).await;
+        assert!(woken.load(Ordering::SeqCst));
+        waiter.join().await.unwrap();
         node.stop().await;
     });
 }

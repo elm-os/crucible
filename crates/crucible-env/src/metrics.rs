@@ -316,6 +316,15 @@ pub mod registry {
         labels: &["kind"],
     };
 
+    /// The shipper task's time by the phase it was in (`read`, `stage_a`, `stage_b`, `rows`, `encode`,
+    /// `wal_append`, `wait_inserts`, `wait_frames`), timed by the task with the `Env` clock. Every moment of the
+    /// task's run falls in exactly one phase, so the phases add up to the time it has run.
+    pub static SHIPPER_TASK_TIME: CounterDef = CounterDef {
+        name: "crucible_shipper_task_microseconds_total",
+        help: "Time the shipper task spent in each phase of its loop, in microseconds.",
+        labels: &["phase"],
+    };
+
     /// Estimated bytes of the rows the shipper holds, tracked against the `shipper.encoded_bytes` budget.
     pub static SHIPPER_ENCODED_BYTES: GaugeDef = GaugeDef {
         name: "crucible_shipper_encoded_bytes",
@@ -449,6 +458,7 @@ pub mod registry {
                 SHIPPER_DELETION_DROPS.labels,
                 &[],
             ),
+            (SHIPPER_TASK_TIME.name, SHIPPER_TASK_TIME.labels, &[]),
             (
                 SHIPPER_ENCODED_BYTES.name,
                 SHIPPER_ENCODED_BYTES.labels,

@@ -875,6 +875,28 @@ pub(crate) struct Defects {
     pub(crate) sum_capture_sources: bool,
 }
 
+/// How each of a frame's remaining spans heads its trace (contract 3.9), in order: every root span, and the
+/// provisional heads stage B found. It walks the provisional heads, which are in ascending order, beside the
+/// spans, so a frame costs one pass however many traces it starts.
+pub(crate) fn head_kinds<'a>(
+    frame: &'a NormalizedFrame,
+    admission: &'a Admission,
+) -> impl Iterator<Item = Option<HeadKind>> + 'a {
+    let mut provisional = admission.provisional_heads.iter().copied().peekable();
+    frame.spans.iter().enumerate().map(move |(index, span)| {
+        // Positions below the span's are passed, so the cursor keeps up whatever the span is.
+        while provisional.next_if(|&head| head < index).is_some() {}
+        let head = provisional.next_if_eq(&index).is_some();
+        if span.core.is_root {
+            Some(HeadKind::Root)
+        } else if head {
+            Some(HeadKind::Provisional)
+        } else {
+            None
+        }
+    })
+}
+
 /// [`derive`], with the seeded defects of `defects`.
 pub(crate) fn derive_rows(
     frame: &NormalizedFrame,
@@ -884,7 +906,8 @@ pub(crate) fn derive_rows(
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
     let count_aggregates = defects.count_aggregates;
     let mut out = Vec::with_capacity(frame.spans.len() * 7 + frame.mcp_ops.len() * 5);
-    for (index, span) in frame.spans.iter().enumerate() {
+    let spans = frame.spans.iter().zip(head_kinds(frame, admission));
+    for (index, (span, head_kind)) in spans.enumerate() {
         let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
         let start = span.core.start_time;
         let mut push = |table: TableId, cells: Vec<Value>| -> Result<(), OutOfRange> {
@@ -909,13 +932,6 @@ pub(crate) fn derive_rows(
             &unflagged
         } else {
             span
-        };
-        let head_kind = if span.core.is_root {
-            Some(HeadKind::Root)
-        } else if admission.provisional_heads.contains(&index) {
-            Some(HeadKind::Provisional)
-        } else {
-            None
         };
         if let Some(kind) = head_kind {
             push(TableId::TraceHeads, trace_head_row(&trace_head(span, kind)))?;
