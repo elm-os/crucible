@@ -39,6 +39,7 @@ function provider(fields: Partial<AuthProvider> = {}): AuthProvider {
     enabled: true,
     seeded: false,
     redirect_uri: callback(SSO_ID),
+    version: 1,
     ...fields,
   };
 }
@@ -229,28 +230,36 @@ test.describe("settings: sign-in providers", () => {
     await expectAccessible(page, "sign-in page with the new provider");
   });
 
-  test("replace secret, edit, turn off and delete each send what they change", async ({
+  test("replace secret, edit, turn off and delete each send what they change, with If-Match", async ({
     page,
     api,
   }) => {
     signedIn(api);
     let stored = [provider(), GITHUB];
     api.on(ORG_PROVIDERS_PATH, (route) => route.fulfill(json({ data: stored })));
-    const patches: { body: unknown; csrf: string | undefined }[] = [];
+    const patches: { body: unknown; csrf: string | undefined; ifMatch: string | undefined }[] = [];
+    let deletedAt: string | undefined;
     api.on(providerPath(SSO_ID), (route) => {
       const request = route.request();
       if (request.method() === "DELETE") {
+        deletedAt = request.headers()["if-match"];
         stored = stored.filter((row) => row.id !== SSO_ID);
         return route.fulfill({ status: 204 });
       }
       const body = request.postDataJSON() as AuthProviderPatch;
-      patches.push({ body, csrf: request.headers()["x-crucible-csrf"] });
+      patches.push({
+        body,
+        csrf: request.headers()["x-crucible-csrf"],
+        ifMatch: request.headers()["if-match"],
+      });
       stored = stored.map((row) =>
         row.id === SSO_ID
           ? {
               ...row,
+              client_id: body.client_id ?? row.client_id,
               allowed_domains: body.allowed_domains ?? row.allowed_domains,
               enabled: body.enabled ?? row.enabled,
+              version: row.version + 1,
             }
           : row,
       );
@@ -273,18 +282,25 @@ test.describe("settings: sign-in providers", () => {
     await sso.getByRole("button", { name: "Edit Continue with Acme SSO" }).click();
     const edit = page.getByRole("dialog", { name: "Change Continue with Acme SSO" });
     await expect(edit.getByLabel("Allowed email domains")).toHaveValue("acme.example");
+    await expect(edit.getByLabel("Client ID")).toHaveValue("crucible-web");
     await edit.getByLabel("Allowed email domains").fill("acme.example, acme.test");
+    await edit.getByLabel("Client ID").fill("crucible-web-2");
     await expectAccessible(page, "edit provider dialog");
     await edit.getByRole("button", { name: "Save changes" }).click();
     await expect(edit).toBeHidden();
     await expect(sso).toContainText("acme.example, acme.test");
+    await expect(sso).toContainText("crucible-web-2");
 
     await sso.getByRole("button", { name: "Turn off Continue with Acme SSO" }).click();
     await expect(sso).toContainText("Turned off");
     expect(patches).toEqual([
-      { body: { client_secret: "rotated-secret" }, csrf: CSRF },
-      { body: { allowed_domains: ["acme.example", "acme.test"] }, csrf: CSRF },
-      { body: { enabled: false }, csrf: CSRF },
+      { body: { client_secret: "rotated-secret" }, csrf: CSRF, ifMatch: '"1"' },
+      {
+        body: { client_id: "crucible-web-2", allowed_domains: ["acme.example", "acme.test"] },
+        csrf: CSRF,
+        ifMatch: '"2"',
+      },
+      { body: { enabled: false }, csrf: CSRF, ifMatch: '"3"' },
     ]);
 
     await sso.getByRole("button", { name: "Delete Continue with Acme SSO" }).click();
@@ -294,7 +310,37 @@ test.describe("settings: sign-in providers", () => {
     await question.getByRole("button", { name: "Delete provider" }).click();
     await expect(question).toBeHidden();
     await expect(sso).toHaveCount(0);
+    expect(deletedAt).toBe('"4"');
     await expect(item(page, "Continue with GitHub")).toBeVisible();
+  });
+
+  test("the last way to sign in stays on, and a change made meanwhile reloads the list", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    let stored = [provider()];
+    api.on(ORG_PROVIDERS_PATH, (route) => route.fulfill(json({ data: stored })));
+    api.on(providerPath(SSO_ID), problem(409, "conflict"));
+    await page.goto(URL);
+    const sso = item(page, "Continue with Acme SSO");
+    await sso.getByRole("button", { name: "Turn off Continue with Acme SSO" }).click();
+    const refusal = sso.getByRole("alert");
+    await expect(refusal).toContainText("This provider is the last way to sign in.");
+    await expect(refusal).toContainText("Turn password sign-in on in the organization settings");
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    await expect(sso).toContainText("On");
+    await expectAccessible(page, "the last way to sign in refused");
+
+    api.on(providerPath(SSO_ID), (route) => {
+      stored = [provider({ allowed_domains: ["acme.test"], version: 2 })];
+      return route.fulfill(problem(412, "precondition_failed"));
+    });
+    await sso.getByRole("button", { name: "Turn off Continue with Acme SSO" }).click();
+    await expect(sso).toContainText("acme.test");
+    await expect(sso.getByRole("alert")).toContainText(
+      "This provider changed since the list loaded.",
+    );
   });
 
   test("a member is told who manages providers, and nothing is requested", async ({

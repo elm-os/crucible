@@ -58,11 +58,11 @@ variable is a warning, also with the nearest name, and is otherwise ignored.
 
 ### Secrets
 
-The master key and the three passwords are secrets. Each can be given as its value, in an environment variable or
-the file, or as the path of a file that holds it, in its `_file` twin. No flag takes a secret's value, so a secret
-never appears in a process list; the flags take the file. The file's content, without a trailing line break, is
-the value. When both forms are given, the one from the later layer wins; in the same layer the file wins and a
-warning says so.
+The master key, the three passwords and the sign-in providers' client secrets are secrets. Each can be given as its
+value, in an environment variable or the file, or as the path of a file that holds it, in its `_file` twin. No flag
+takes a secret's value, so a secret never appears in a process list; the flags take the file. The file's content,
+without a trailing line break, is the value. When both forms are given, the one from the later layer wins; in the
+same layer the file wins and a warning says so.
 
 | Secret | Value | File |
 |---|---|---|
@@ -70,6 +70,7 @@ warning says so.
 | The ClickHouse admin password | `clickhouse.password`, `CRUCIBLE_CLICKHOUSE_PASSWORD` | `clickhouse.password_file`, `CRUCIBLE_CLICKHOUSE_PASSWORD_FILE`, `--clickhouse-password-file` |
 | The Postgres password | `postgres.password`, `CRUCIBLE_POSTGRES_PASSWORD` | `postgres.password_file`, `CRUCIBLE_POSTGRES_PASSWORD_FILE`, `--postgres-password-file` |
 | The mail server password | `smtp.password`, `CRUCIBLE_SMTP_PASSWORD` | `smtp.password_file`, `CRUCIBLE_SMTP_PASSWORD_FILE` |
+| A sign-in provider's client secret | `auth_github.client_secret`, `CRUCIBLE_AUTH_GITHUB_CLIENT_SECRET` (and the same for `auth_google` and `auth_oidc`) | `auth_github.client_secret_file`, `CRUCIBLE_AUTH_GITHUB_CLIENT_SECRET_FILE` |
 
 Files suit Docker and Kubernetes secrets mounted under `/run/secrets/`.
 
@@ -160,6 +161,52 @@ in Postgres stop working under another key.
 | `auth.pg_outage_mode` | `CRUCIBLE_AUTH_PG_OUTAGE_MODE` | | `fail_open` | API keys while Postgres is unreachable. `fail_open`: keys the server already knows keep working for ingest. `fail_closed`: every secret key is refused after 5 s without a successful poll of the key feed |
 | `auth.fail_open_max` | `CRUCIBLE_AUTH_FAIL_OPEN_MAX` | | unlimited | Seconds after which a `fail_open` outage behaves as `fail_closed` |
 | `auth.session_outage_grace` | `CRUCIBLE_AUTH_SESSION_OUTAGE_GRACE` | | `600` | Seconds that signed-in sessions keep working while Postgres is unreachable. `0` refuses them at once |
+
+### `[auth_github]`, `[auth_google]` and `[auth_oidc]`
+
+Sign-in providers declared in the configuration, at most one of each kind. They need Postgres. At every start the
+server makes each provider's row in Postgres match its section: a new section adds the provider, a changed one
+changes its row in place, and a section you remove turns its provider off. The row keeps its id, so the callback URL
+stays the same, and a provider you declare again comes back on with it. These providers are read-only under
+**Settings > Sign-in** and in the API, and their client secrets stay in the configuration: Postgres never stores
+them. Give every server of a deployment the same sections, because each one applies its own at start.
+
+```toml
+[auth_oidc]
+issuer = "https://login.example.com"
+client_id = "crucible"
+client_secret_file = "/run/secrets/oidc"
+display_name = "Continue with Example SSO"
+allowed_domains = "example.com"
+```
+
+The sign-in page offers them once `server.public_url` is set, because their callback URLs are built from it: register
+`<server.public_url>/api/v1/auth/oauth/<provider id>/callback` with the provider. **Settings > Sign-in** shows the
+URL with the provider's id.
+
+| Key | Environment variable | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `auth_github.client_id` | `CRUCIBLE_AUTH_GITHUB_CLIENT_ID` | | none | The client id of a GitHub OAuth app. Setting it adds GitHub sign-in |
+| `auth_github.client_secret` | `CRUCIBLE_AUTH_GITHUB_CLIENT_SECRET` | | none | That app's client secret |
+| `auth_github.client_secret_file` | `CRUCIBLE_AUTH_GITHUB_CLIENT_SECRET_FILE` | | none | A file that holds it |
+| `auth_github.display_name` | `CRUCIBLE_AUTH_GITHUB_DISPLAY_NAME` | | `Continue with GitHub` | The text of the sign-in button |
+| `auth_github.allowed_domains` | `CRUCIBLE_AUTH_GITHUB_ALLOWED_DOMAINS` | | any | Comma-separated email domains, such as `example.com`. Only a verified email at one of them signs in with GitHub, at every sign-in |
+| `auth_google.client_id` | `CRUCIBLE_AUTH_GOOGLE_CLIENT_ID` | | none | The client id of a Google OAuth client. Setting it adds Google sign-in |
+| `auth_google.client_secret` | `CRUCIBLE_AUTH_GOOGLE_CLIENT_SECRET` | | none | That client's secret |
+| `auth_google.client_secret_file` | `CRUCIBLE_AUTH_GOOGLE_CLIENT_SECRET_FILE` | | none | A file that holds it |
+| `auth_google.display_name` | `CRUCIBLE_AUTH_GOOGLE_DISPLAY_NAME` | | `Continue with Google` | The text of the sign-in button |
+| `auth_google.allowed_domains` | `CRUCIBLE_AUTH_GOOGLE_ALLOWED_DOMAINS` | | any | Comma-separated email domains that may sign in with Google |
+| `auth_oidc.issuer` | `CRUCIBLE_AUTH_OIDC_ISSUER` | | none | The issuer URL of an OpenID Connect provider. Crucible reads its settings from the issuer followed by `/.well-known/openid-configuration` |
+| `auth_oidc.client_id` | `CRUCIBLE_AUTH_OIDC_CLIENT_ID` | | none | The client id Crucible has at that provider. Setting it adds its sign-in, and then the issuer is required |
+| `auth_oidc.client_secret` | `CRUCIBLE_AUTH_OIDC_CLIENT_SECRET` | | none | The client secret Crucible has there |
+| `auth_oidc.client_secret_file` | `CRUCIBLE_AUTH_OIDC_CLIENT_SECRET_FILE` | | none | A file that holds it |
+| `auth_oidc.display_name` | `CRUCIBLE_AUTH_OIDC_DISPLAY_NAME` | | `Continue with single sign-on` | The text of the sign-in button |
+| `auth_oidc.scopes` | `CRUCIBLE_AUTH_OIDC_SCOPES` | | none | Comma-separated scopes to ask for besides `openid`, `email` and `profile` |
+| `auth_oidc.allowed_domains` | `CRUCIBLE_AUTH_OIDC_ALLOWED_DOMAINS` | | any | Comma-separated email domains that may sign in through the provider |
+
+Removing a section can leave nobody able to sign in, when password sign-in is off and that provider was the only one.
+The server then logs `nobody can sign in` at start; `crucible admin enable-password-login` turns password sign-in back
+on ([troubleshooting](troubleshooting.md#signing-in)).
 
 ### `[egress]`
 

@@ -44,4 +44,8 @@ seeded: boolean,
 /**
  * The callback URL to register with the provider.
  */
-redirect_uri: string, };
+redirect_uri: string, 
+/**
+ * The version, for `If-Match`.
+ */
+version: number, };

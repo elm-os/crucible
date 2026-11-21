@@ -189,6 +189,85 @@ pub const SETTINGS: &[Setting] = &[
         "seconds that cached sessions stay valid during a Postgres outage; 0 refuses them at once",
     ),
     plain(
+        "auth_github.client_id",
+        None,
+        "the client id of a GitHub OAuth app; setting it adds GitHub sign-in, which only this file changes",
+    ),
+    secret("auth_github.client_secret", "the client secret of that app"),
+    plain(
+        "auth_github.client_secret_file",
+        None,
+        "a file that holds the GitHub client secret",
+    ),
+    plain(
+        "auth_github.display_name",
+        None,
+        "the text of the sign-in button (default: Continue with GitHub)",
+    ),
+    plain(
+        "auth_github.allowed_domains",
+        None,
+        "comma-separated email domains that may sign in with GitHub (default: any)",
+    ),
+    plain(
+        "auth_google.client_id",
+        None,
+        "the client id of a Google OAuth client; setting it adds Google sign-in, which only this file changes",
+    ),
+    secret(
+        "auth_google.client_secret",
+        "the client secret of that client",
+    ),
+    plain(
+        "auth_google.client_secret_file",
+        None,
+        "a file that holds the Google client secret",
+    ),
+    plain(
+        "auth_google.display_name",
+        None,
+        "the text of the sign-in button (default: Continue with Google)",
+    ),
+    plain(
+        "auth_google.allowed_domains",
+        None,
+        "comma-separated email domains that may sign in with Google (default: any)",
+    ),
+    plain(
+        "auth_oidc.issuer",
+        None,
+        "the issuer URL of an OpenID Connect provider, for example https://login.example.com",
+    ),
+    plain(
+        "auth_oidc.client_id",
+        None,
+        "the client id Crucible has at that provider; setting it adds its sign-in, which only this file changes",
+    ),
+    secret(
+        "auth_oidc.client_secret",
+        "the client secret Crucible has there",
+    ),
+    plain(
+        "auth_oidc.client_secret_file",
+        None,
+        "a file that holds the OpenID Connect client secret",
+    ),
+    plain(
+        "auth_oidc.display_name",
+        None,
+        "the text of the sign-in button (default: Continue with single sign-on)",
+    ),
+    plain(
+        "auth_oidc.scopes",
+        None,
+        "comma-separated scopes to ask for besides openid, email and profile",
+    ),
+    plain(
+        "auth_oidc.allowed_domains",
+        None,
+        "comma-separated email domains that may sign in through the provider (default: any)",
+    ),
+    plain(
         "egress.mode",
         Some("open"),
         "which notification targets may be called: open allows any network except cloud metadata addresses, \
