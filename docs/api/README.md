@@ -98,7 +98,7 @@ server's features:
   "csrf_token": "<token>",
   "session": {"expires_at": "2026-12-20T00:11:32.825262Z", "idle_expires_at": "2026-11-27T00:38:46.795830Z", "auth_method": "password"},
   "features": {"sql_workspace": {"enabled": true}, "media": {"enabled": false, "max_bytes": 0}, "smtp": false, "signup_mode": "invite_only"},
-  "server": {"version": "0.1.0"}
+  "server": {"version": "0.1.1"}
 }
 ```
 
