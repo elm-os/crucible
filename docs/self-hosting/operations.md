@@ -39,10 +39,14 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   about a minute for every 25 million rows of `crucible.mcp_tool_rollup` (`SELECT count() FROM
   crucible.mcp_tool_rollup` tells how many it holds), it uses every core ClickHouse has, and ClickHouse ends it
   after an hour. Stop every server of the earlier version first: calls that an earlier version stores after the
-  copy reach only the minute rollup, so reads over 12 hours or more would leave them out.
-- A copy that stopped part-way (the server stopped, or the hour ran out) leaves the step unfinished, and the next
-  migration stops with a message that says to run `TRUNCATE TABLE crucible.mcp_tool_rollup_hourly` as the ClickHouse
-  admin user and migrate again. When the hour ran out, give ClickHouse more cores before migrating again.
+  copy reach only the minute rollup, so reads over 12 hours or more would leave them out. A server that starts
+  while another one copies waits for it, up to a minute, and then stops with a message that says so.
+- A copy that did not finish (its server stopped, or the hour ran out) leaves the step unfinished, and ClickHouse
+  may still be running it after its server stopped. The next migration stops with a message that says to stop every
+  server, then, as the ClickHouse admin user, end the copy with
+  `KILL QUERY WHERE query LIKE 'INSERT INTO crucible.mcp_tool_rollup_hourly%' SYNC`, empty the table with
+  `TRUNCATE TABLE crucible.mcp_tool_rollup_hourly`, and migrate again. When the hour ran out, give ClickHouse more
+  cores before migrating again.
 
 ## Backups
 

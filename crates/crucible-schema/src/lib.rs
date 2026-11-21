@@ -31,10 +31,10 @@ pub use ddl::{
     Variant, create_database, create_table, partition_by,
 };
 pub use migrate::{
-    ACCESS_SERVICE, ACCESS_WORKSPACE, HOURLY_COPY_DONE, LEDGER_ORDER, MigrationStep, PolicyForm,
-    SCHEMA_BASE, SCHEMA_MCP_TOOL_ROLLUP_HOURLY, SCHEMA_SPAN_USAGE_AGGREGATE, StepKind,
-    WorkspaceAction, access_service, access_workspace_shape, schema_base,
-    schema_mcp_tool_rollup_hourly, schema_span_usage_aggregate,
+    ACCESS_SERVICE, ACCESS_WORKSPACE, HOURLY_COPY_DONE, HOURLY_COPY_STARTED, LEDGER_ORDER,
+    MigrationStep, PolicyForm, SCHEMA_BASE, SCHEMA_MCP_TOOL_ROLLUP_HOURLY,
+    SCHEMA_SPAN_USAGE_AGGREGATE, StepKind, WorkspaceAction, access_service, access_workspace_shape,
+    schema_base, schema_mcp_tool_rollup_hourly, schema_span_usage_aggregate,
 };
 pub use partition::{
     CutoffDay, DAY_COUNT, OutOfRange, PartitionFate, PartitionRule, RetentionSettings, clamp_from,

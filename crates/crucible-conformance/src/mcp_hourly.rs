@@ -19,7 +19,8 @@ use crucible_records::{
     Timestamp, WalEpoch,
 };
 use crucible_schema::{
-    Granularity as Partitioning, Ident, RetentionSettings, route, schema_mcp_tool_rollup_hourly,
+    Granularity as Partitioning, HOURLY_COPY_DONE, HOURLY_COPY_STARTED, Ident, RetentionSettings,
+    route, schema_mcp_tool_rollup_hourly,
 };
 
 use crate::blocks::Rows;
@@ -495,19 +496,35 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
         minute_block(ctx, project, epoch, seq, hour).await?;
     }
 
-    // A copy that stopped part-way: rows without the record of a finished copy.
-    ctx.admin(format!(
+    // A copy that began and did not finish: the record of its start and a part of its rows, and then the record
+    // alone, as a copy leaves it that ClickHouse still runs after its server stopped. Either way the step refuses,
+    // and the message it shows names the fix.
+    let started = format!(
+        "INSERT INTO {tier} (project_id, marker_epoch) VALUES ('{}', toUUID('{HOURLY_COPY_STARTED}'))",
+        crucible_records::Uuid::NIL
+    );
+    let part = format!(
         "INSERT INTO {tier} (project_id, side, hour, count) VALUES ('{}', 'server', toDateTime({}, 'UTC'), 1)",
         project.uuid(),
         hour_start().micros() / 1_000_000
-    ))
-    .await?;
-    let refused = ctx.store.apply_migration(&step).await;
-    expect(
-        matches!(&refused, Err(error) if format!("{error:?}").contains("TRUNCATE TABLE crucible.mcp_tool_rollup_hourly")),
-        || format!("the step over an incomplete copy answered {refused:?}"),
-    )?;
-    ctx.admin(format!("TRUNCATE TABLE {tier}")).await?;
+    );
+    for unfinished in [vec![started.clone(), part], vec![started]] {
+        for statement in unfinished {
+            ctx.admin(statement).await?;
+        }
+        let refused = ctx.store.apply_migration(&step).await;
+        let names_the_fix = |error: &crucible_env::StoreError| {
+            let shown = error.to_string();
+            shown.contains(
+                "KILL QUERY WHERE query LIKE 'INSERT INTO crucible.mcp_tool_rollup_hourly%' SYNC",
+            ) && shown.contains("TRUNCATE TABLE crucible.mcp_tool_rollup_hourly")
+        };
+        expect(
+            matches!(&refused, Err(error) if names_the_fix(error)),
+            || format!("the step over an unfinished copy answered {refused:?}"),
+        )?;
+        ctx.admin(format!("TRUNCATE TABLE {tier}")).await?;
+    }
     ctx.store
         .apply_migration(&step)
         .await
@@ -581,17 +598,19 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
     expect(again == copied, || {
         format!("the step applied again changed the hourly table from {copied} to {again} rows")
     })?;
-    let done = ctx
-        .admin_count(format!(
-            "SELECT count() FROM {tier} WHERE marker_epoch = toUUID('{}')",
-            crucible_schema::HOURLY_COPY_DONE
-        ))
-        .await?;
-    expect(done == 1, || {
-        format!("{done} rows record the finished copy")
-    })?;
+    for (record, epoch) in [("start", HOURLY_COPY_STARTED), ("end", HOURLY_COPY_DONE)] {
+        let records = ctx
+            .admin_count(format!(
+                "SELECT count() FROM {tier} WHERE marker_epoch = toUUID('{epoch}')"
+            ))
+            .await?;
+        expect(records == 1, || {
+            format!("{records} rows record the copy's {record}")
+        })?;
+    }
     Ok(format!(
-        "step 0005 refused an incomplete copy and named the fix; after it, it copied the minute rollup by hour \
+        "step 0005 refused an unfinished copy, with part of its rows or none, and named the fix; after it, it \
+         copied the minute rollup by hour \
          ({copied} rows, two batches' markers included, so both batches' hourly pairs probe present and another \
          batch's absent), a tiered read of the copied project equals its minute read, and the step applied again \
          changed nothing"

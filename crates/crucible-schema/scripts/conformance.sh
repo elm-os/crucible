@@ -89,7 +89,7 @@ later_steps() {
 # hourly_step <container> <variant> <on cluster clause> [clickhouse-client args]: step 0005 from the shape before
 # it (no hourly table), twice. It needs the service identities of access step A1, so it runs after A1. The minute
 # rollup holds one known row and one marker row by then, and the hourly table must hold the hour of the first,
-# the marker row, and the record of the finished copy, after either apply.
+# the marker row, and the records of the copy's start and end, after either apply.
 hourly_step() {
   local container=$1 variant=$2 on_cluster=$3
   shift 3
@@ -103,7 +103,7 @@ SQL
     apply "$container" "step__${variant}__0005_mcp_tool_rollup_hourly" "$@"
     local held
     held=$(client "$container" "$ADMIN" "$@" -q "SELECT count(), sum(count), countIf(marker_batch_seq = 7) FROM crucible.mcp_tool_rollup_hourly FORMAT TSV")
-    [ "$held" = "$(printf '3	0	1')" ] || { echo "step 0005 left $held in the hourly table" >&2; return 1; }
+    [ "$held" = "$(printf '4	0	1')" ] || { echo "step 0005 left $held in the hourly table" >&2; return 1; }
   done
 }
 

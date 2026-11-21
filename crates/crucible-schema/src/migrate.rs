@@ -55,9 +55,17 @@ pub const LEDGER_ORDER: [(&str, StepKind); 5] = [
 /// The `marker_epoch` of the row of `mcp_tool_rollup_hourly` that records a finished copy of the minute rollup
 /// ([`schema_mcp_tool_rollup_hourly`]). Like every marker row it has the nil project, so no read sees it. Its
 /// time is the epoch, so it sits in partition `197001`, which holds no project's rows and which retention never
-/// drops. No WAL has this epoch: a WAL epoch carries the time it was made.
+/// drops. No WAL has this epoch: a WAL epoch carries the time it was made. A marker purge (contract 5.5) has to
+/// keep this row and [`HOURLY_COPY_STARTED`]: without them the step takes the copy for unfinished.
 pub const HOURLY_COPY_DONE: Uuid =
     Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1]);
+
+/// The `marker_epoch` of the row of `mcp_tool_rollup_hourly` that records a started copy, in partition `197001`
+/// like [`HOURLY_COPY_DONE`]. The step writes it before the copy, so a later run that finds it without the record
+/// of a finished copy knows that a copy began and did not finish, also one that ClickHouse still runs after its
+/// server stopped and that has written no row yet.
+pub const HOURLY_COPY_STARTED: Uuid =
+    Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 2]);
 
 /// The partition of the row that records a finished copy.
 const COPY_DONE_PARTITION: &str = "197001";
@@ -233,12 +241,14 @@ fn copy_minute_rollup(minute: &TableDef, tier: &TableDef) -> String {
 ///
 /// 1. the table, the grants of `crucible_ingest` and `crucible_maint` on it, and its service policy (contract
 ///    7.3), each idempotent;
-/// 2. a refusal when the tier holds rows but no record of a finished copy: an earlier copy stopped part-way, and
-///    the message says how to start it again;
-/// 3. the copy ([`copy_minute_rollup`]), unless it has finished;
-/// 4. the row that records the finished copy ([`HOURLY_COPY_DONE`]), unless it is there.
+/// 2. a refusal when the tier holds rows but no record of a finished copy: an earlier copy began (the record of
+///    its start is a row) and did not finish, or ClickHouse still runs it, and the message says how to end it and
+///    start again;
+/// 3. the row that records the start of the copy ([`HOURLY_COPY_STARTED`]), unless the copy has finished;
+/// 4. the copy ([`copy_minute_rollup`]), unless it has finished;
+/// 5. the row that records the finished copy ([`HOURLY_COPY_DONE`]), unless it is there.
 ///
-/// Steps 3 and 4 do nothing once the copy has finished, so the step can run on every start, as it does without
+/// Steps 3 to 5 do nothing once the copy has finished, so the step can run on every start, as it does without
 /// Postgres. The shipper writes both tiers of every batch from this version on, and the step runs before the
 /// shipper starts, so every operation reaches the tier once: through the copy when its minute row was stored
 /// before the step, and through the shipper otherwise. Operations that a server of an earlier version ships after
@@ -249,19 +259,23 @@ pub fn schema_mcp_tool_rollup_hourly(variant: &Variant, admin_user: &Ident) -> M
     let on = variant.on_cluster();
     let unfinished = copy_unfinished(tier);
     let refuse = format!(
-        "SELECT throwIf((SELECT count() FROM {DATABASE}.{name}) > 0 AND {unfinished}, 'The copy of \
-         {DATABASE}.{minute} into {DATABASE}.{name} stopped before it finished, so the hourly table is \
-         incomplete. Stop every Crucible server, run TRUNCATE TABLE {DATABASE}.{name} as the ClickHouse admin \
-         user, then migrate again (crucible migrate, or crucible serve --migrate).')",
+        "SELECT throwIf((SELECT count() FROM {DATABASE}.{name}) > 0 AND {unfinished}, 'An earlier copy of \
+         {DATABASE}.{minute} into {DATABASE}.{name} did not finish, so the hourly table is incomplete. Stop \
+         every Crucible server. Then, as the ClickHouse admin user, end the copy in case ClickHouse still runs \
+         it, with KILL QUERY WHERE query LIKE \\'INSERT INTO {DATABASE}.{name}%\\' SYNC, empty the table with \
+         TRUNCATE TABLE {DATABASE}.{name}, and migrate again (crucible migrate, or crucible serve --migrate).')",
         name = tier.name(),
         minute = minute.name(),
     );
-    let done = format!(
-        "INSERT INTO {DATABASE}.{} ({PROJECT_ID}, marker_epoch, marker_at) SELECT {}, {}, now() WHERE {unfinished}",
-        tier.name(),
-        uuid_sql(Uuid::NIL),
-        uuid_sql(HOURLY_COPY_DONE)
-    );
+    let record = |epoch: Uuid| {
+        format!(
+            "INSERT INTO {DATABASE}.{} ({PROJECT_ID}, marker_epoch, marker_at) SELECT {}, {}, now() WHERE \
+             {unfinished}",
+            tier.name(),
+            uuid_sql(Uuid::NIL),
+            uuid_sql(epoch)
+        )
+    };
     MigrationStep {
         id: SCHEMA_MCP_TOOL_ROLLUP_HOURLY,
         kind: StepKind::Schema,
@@ -272,8 +286,9 @@ pub fn schema_mcp_tool_rollup_hourly(variant: &Variant, admin_user: &Ident) -> M
             mask_grant(tier, &on),
             service_policy(tier.id, variant, admin_user),
             refuse,
+            record(HOURLY_COPY_STARTED),
             copy_minute_rollup(minute, tier),
-            done,
+            record(HOURLY_COPY_DONE),
         ],
         settings: hourly_step_settings(variant),
     }
@@ -418,7 +433,7 @@ mod tests {
             let column = schema_span_usage_aggregate(&variant);
             assert_eq!(column.statements.len(), 1);
             let hourly = schema_mcp_tool_rollup_hourly(&variant, &params().admin_user);
-            // The last three statements of the hourly step are the guarded copy (see its own test).
+            // The statements after the first four of the hourly step are the guarded copy (see its own test).
             let (hourly_ddl, _) = hourly.statements.split_at(4);
             for statement in schema
                 .statements
@@ -485,7 +500,8 @@ mod tests {
             assert!(step.settings.starts_with(variant.ddl_settings()));
             assert!(step.settings.ends_with(&COPY_SETTINGS));
             let tier = table(TableId::McpToolRollupHourly);
-            let [create, ingest, maint, policy, refuse, copy, done] = step.statements.as_slice()
+            let [create, ingest, maint, policy, refuse, started, copy, done] =
+                step.statements.as_slice()
             else {
                 panic!("{:#?}", step.statements);
             };
@@ -496,7 +512,10 @@ mod tests {
             assert_eq!(*policy, service_policy(tier.id, &variant, &admin));
             let unfinished = copy_unfinished(tier);
             assert!(refuse.starts_with("SELECT throwIf(") && refuse.contains("TRUNCATE TABLE"));
-            for guarded in [refuse, copy, done] {
+            assert!(refuse.contains(
+                "KILL QUERY WHERE query LIKE \\'INSERT INTO crucible.mcp_tool_rollup_hourly%\\' SYNC"
+            ));
+            for guarded in [refuse, started, copy, done] {
                 assert!(guarded.contains(&unfinished), "{guarded}");
                 assert!(!guarded.contains(" ON CLUSTER "));
             }
@@ -519,11 +538,16 @@ mod tests {
             ] {
                 assert!(copy.contains(expected), "{expected} in {copy}");
             }
+            assert!(started.contains("SELECT toUUID('00000000-0000-0000-0000-000000000000'), toUUID('00000000-0000-7000-8000-000000000002'), now()"));
             assert!(done.contains("SELECT toUUID('00000000-0000-0000-0000-000000000000'), toUUID('00000000-0000-7000-8000-000000000001'), now()"));
         }
         assert_eq!(
             HOURLY_COPY_DONE.to_string(),
             "00000000-0000-7000-8000-000000000001"
+        );
+        assert_eq!(
+            HOURLY_COPY_STARTED.to_string(),
+            "00000000-0000-7000-8000-000000000002"
         );
     }
 
