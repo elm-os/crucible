@@ -190,16 +190,16 @@ head rows and `trace_stats` counts, and the spans a restart keeps); the usage-ag
 because a deletion does not change them.
 
 A restart that knows more requests can also leave a pair of a sealed batch with no rows at all, and then nothing
-ships that pair again. If a crash at `quarantine.copied` left a copy of the pair, the copy stays (contract 5.9),
-and the store's last answer about the pair can be a data error from an incarnation that crashed before it
-quarantined the pair again. So a quarantine directory counts as a quarantine only when a `Quarantine` frame names
-its pair: one that stage B passed, or one in the log at the check. A named pair gets no answer after its frame, so
-the rule that a pair the store had accepted is quarantined only after a probe that read absent (I2) is checked
-against the answer its quarantine followed. The corpus line of seed 44853202051001 (invariant I2) is a run where
-the oracle read the store's last answer alone: the second incarnation copied an `mcp_ops` pair after an absent
-probe and crashed at `quarantine.copied`, the third and fourth sent the pair again and crashed after a data error,
-and the fifth left the batch without rows and checkpointed it without a call to the store
-(`ship_directed.rs`, `a_copy_that_no_quarantine_frame_names_is_no_quarantine`).
+ships that pair again. If a crash at `quarantine.copied` left a copy of the pair, the copy stays, and the store's
+last answer about the pair can be a data error from an incarnation that crashed before it quarantined the pair
+again. So a quarantine directory counts as a quarantine only when a `Quarantine` frame names its pair: one that
+stage B passed, or one in the log at the check. A named pair gets no answer after its frame, so the rule that a
+pair the store had accepted is quarantined only after a probe that read absent (I2) is checked against the answer
+its quarantine followed. The corpus line of seed 44853202051001 (invariant I2) is a run where the oracle read the
+store's last answer alone: the second incarnation copied an `mcp_ops` pair after an absent probe and crashed at
+`quarantine.copied`, the third and fourth sent the pair again and crashed after a data error, and the fifth left
+the batch without rows and checkpointed it without a call to the store (`ship_directed.rs`,
+`a_copy_that_no_quarantine_frame_names_is_no_quarantine`).
 
 Three weightings make the rule about an issuer show. A request made at start names, three times in four and when
 it can, the subject of an MCP operation in a frame above the watermark, under the other issuer half of the time.

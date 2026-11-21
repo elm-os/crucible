@@ -793,10 +793,12 @@ pub fn read_quarantines(
         if q.last > through {
             continue;
         }
+        // Asked for every directory, named or not: each call settles the store model, which draws from its seeded
+        // streams, so the checks call it as often whatever the frames name.
+        let (accepted, last) = model.pair_history(&(q.table, q.partition, q.first));
         if named.is_some_and(|named| !named.contains(&(q.first, q.table, q.partition))) {
             continue;
         }
-        let (accepted, last) = model.pair_history(&(q.table, q.partition, q.first));
         match last {
             Some(LastAnswer::ProbeAbsent) => {}
             Some(LastAnswer::InsertPoison) if !accepted => {}
