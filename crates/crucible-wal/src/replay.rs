@@ -37,6 +37,14 @@ impl Replay {
         Lsn::new(self.next_lsn)
     }
 
+    /// Resolves once the frame at [`Replay::position`] is durable, so that [`Replay::next`] returns it, or the error
+    /// reading it gives, rather than `None`. The committer wakes the wait after it stores a new durable LSN, and
+    /// the wait registers for that wake before it checks the LSN, so a frame that becomes durable between a `next`
+    /// that returned `None` and this wait ends it at once. Cancel-safe.
+    pub async fn wait_durable(&self) {
+        self.shared.durable_reaches(self.next_lsn).await;
+    }
+
     async fn open_segment(&mut self) -> Result<(), ReplayError> {
         let segments = self.shared.segments();
         let lsn = Lsn::new(self.next_lsn);

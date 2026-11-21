@@ -9,11 +9,12 @@ use crucible_recent::{
     DeletionSelector, Frame, QuarantineReach, QuarantinedPair, RecentWriter, SpanEntry,
     SpanSummary, WalLocator,
 };
-use crucible_records::{HeadKind, Lsn, PartitionId, ProjectId, TableId};
+use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_wal::WalFrame;
 use crucible_wal_codec::{Record, RecordType, TombstoneSelector};
 
 use crate::hooks::RecentIndex;
+use crate::tables::head_kinds;
 
 /// Feeds the recent-span index from stage B and pins the WAL below the index's oldest entry.
 ///
@@ -193,17 +194,12 @@ impl RecentIndex for RecentHook {
         let spans = frame
             .spans
             .iter()
+            .zip(head_kinds(frame, admission))
             .enumerate()
-            .map(|(position, span)| SpanEntry {
+            .map(|(position, (span, head))| SpanEntry {
                 project_id: span.core.project_id,
                 summary: SpanSummary::of(&span.core),
-                head: if span.core.is_root {
-                    Some(HeadKind::Root)
-                } else if admission.provisional_heads.contains(&position) {
-                    Some(HeadKind::Provisional)
-                } else {
-                    None
-                },
+                head,
                 locator: WalLocator {
                     segment: source.segment_no(),
                     offset: source.offset(),

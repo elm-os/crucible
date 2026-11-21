@@ -36,6 +36,7 @@ use crate::hooks::{
 };
 use crate::limits::{DrainRate, Gate, SealLimits, backoff};
 use crate::pair::{PairEnd, PairJob, ship_pair};
+use crate::phase::{Laps, Phase};
 use crate::quarantine::quarantine_frame;
 use crate::tables::{Defects, RoutedRow, derive_facts, derive_rows};
 
@@ -418,6 +419,8 @@ pub struct Shipper {
     /// Consecutive failures to read the deletion requests, for the backoff of what waits for them.
     deletion_failures: u32,
     drain: DrainRate,
+    /// The task's time by phase (`crucible_shipper_task_microseconds_total`).
+    laps: Laps,
 }
 
 /// The stage B context of a frame: what is known of its project's identity and, unless the seeded defect skips
@@ -593,6 +596,7 @@ impl Shipper {
             issuers: det_map(),
             deletion_failures: 0,
             drain: DrainRate::new(ctx.env.clock.now()),
+            laps: Laps::new(env.metrics.as_ref(), env.clock.now()),
             ctx,
         })
     }
@@ -600,6 +604,12 @@ impl Shipper {
     /// The shipper's counters.
     pub fn stats(&self) -> Arc<ShipperStats> {
         Arc::clone(&self.ctx.stats)
+    }
+
+    /// Charges the task's time since the previous lap to `phase`.
+    fn lap(&mut self, phase: Phase) {
+        let now = self.ctx.env.clock.now();
+        self.laps.lap(phase, now);
     }
 
     /// The stage A context. This build has one price table, so a batch that an earlier build sealed with another
@@ -639,7 +649,11 @@ impl Shipper {
         if let Some(salt) = self.salts.get(&project) {
             return Some(Identity::Salted(*salt));
         }
-        match self.ctx.salts.salt(project).await {
+        self.lap(Phase::StageB);
+        let fetched = self.ctx.salts.salt(project).await;
+        // The wait for the control store is not the task's work.
+        self.lap(Phase::WaitFrames);
+        match fetched {
             Ok(salt) => {
                 self.salts.insert(project, salt);
                 self.salt_failures = 0;
@@ -668,7 +682,10 @@ impl Shipper {
         {
             return true;
         }
-        match self.ctx.deletions.requested_after(received_at).await {
+        self.lap(Phase::StageB);
+        let read = self.ctx.deletions.requested_after(received_at).await;
+        self.lap(Phase::WaitFrames);
+        match read {
             Ok(requests) => {
                 let count = requests.len();
                 for known in requests {
@@ -725,11 +742,13 @@ impl Shipper {
             match self.issuers.get(&tombstone.request_id) {
                 Some(known) => issuer.clone_from(known),
                 None if self.ctx.deletions.configured() => {
+                    self.lap(Phase::StageB);
                     let read = self
                         .ctx
                         .deletions
                         .request(tombstone.project_id, tombstone.request_id)
                         .await;
+                    self.lap(Phase::WaitFrames);
                     match read {
                         // A request that is not there names no issuer.
                         Ok(found) => *issuer = found.and_then(|known| issuer_of(&known.tombstone)),
@@ -752,13 +771,16 @@ impl Shipper {
     async fn wait_for_deletions(&mut self, lsn: Lsn) {
         self.replay = self.ctx.wal.replay(lsn);
         self.ctx.pause(self.deletion_failures).await;
+        self.lap(Phase::WaitFrames);
         self.deletion_failures = self.deletion_failures.saturating_add(1);
     }
 
     /// The next durable frame, or `None` when there is none yet or the read failed. A failed read is tried
     /// again from the same position: the cursor never moves past a frame it did not return.
     async fn next_frame(&mut self) -> Result<Option<WalFrame>, ShipError> {
-        match self.replay.next().await {
+        let read = self.replay.next().await;
+        self.lap(Phase::Read);
+        match read {
             Ok(frame) => {
                 self.read_failures = 0;
                 Ok(frame)
@@ -769,6 +791,7 @@ impl Shipper {
                 tracing::warn!(lsn = %position, error = %e, "wal read failed; retrying");
                 self.replay = self.ctx.wal.replay(position);
                 self.ctx.pause(self.read_failures).await;
+                self.lap(Phase::WaitFrames);
                 self.read_failures = self.read_failures.saturating_add(1);
                 Ok(None)
             }
@@ -794,13 +817,16 @@ impl Shipper {
                 RecordType::IngestRequest | RecordType::FactBatch
             ) {
                 self.ctx.recent.passed(&frame);
+                self.lap(Phase::StageB);
                 continue;
             }
             if !self.cover(frame.received_at()).await {
                 self.wait_for_deletions(frame.lsn()).await;
                 continue;
             }
-            match read_frame(&self.ctx.wal, &frame, &self.norm_ctx(), &self.ctx.config) {
+            let read = read_frame(&self.ctx.wal, &frame, &self.norm_ctx(), &self.ctx.config);
+            self.lap(Phase::StageA);
+            match read {
                 Ok(Content::Spans(mut normalized)) => {
                     // The rows are not shipped again, and no salt changes what stage B remembers. What a deletion
                     // selects stays out of the recent index.
@@ -816,6 +842,7 @@ impl Shipper {
                 // (contract 5.6).
                 Err(why) => self.ctx.recent.unshippable(&frame, why.project, why.facts),
             }
+            self.lap(Phase::StageB);
         }
         Ok(())
     }
@@ -909,18 +936,22 @@ impl Shipper {
             let now = self.ctx.env.clock.now();
             self.open
                 .take_frame(lsn, frame.received_at(), raw_bytes, !own, now);
+            self.lap(Phase::StageB);
             return Ok(());
         }
         if !self.cover(frame.received_at()).await {
             self.wait_for_deletions(lsn).await;
             return Ok(());
         }
-        let rows = match read_frame(&self.ctx.wal, frame, &self.norm_ctx(), &self.ctx.config) {
+        let read = read_frame(&self.ctx.wal, frame, &self.norm_ctx(), &self.ctx.config);
+        self.lap(Phase::StageA);
+        let rows = match read {
             Ok(Content::Spans(mut normalized)) => {
                 let Some(identity) = self.identity_of(&normalized).await else {
                     // Stage B has not seen the frame: it is read again once the backoff has passed.
                     self.replay = self.ctx.wal.replay(lsn);
                     self.ctx.pause(self.salt_failures).await;
+                    self.lap(Phase::WaitFrames);
                     self.salt_failures = self.salt_failures.saturating_add(1);
                     return Ok(());
                 };
@@ -964,20 +995,26 @@ impl Shipper {
                 // Frame quarantine (contract 5.6): the copy is durable before the frame joins a batch, so
                 // before any checkpoint can pass it. From there the frame yields no rows.
                 quarantine_frame(&self.ctx, frame, &why).await?;
+                // The copy retries a failing disk; like the control store's reads, it is not counted as work.
+                self.lap(Phase::WaitFrames);
                 self.ctx.recent.unshippable(frame, why.project, why.facts);
                 let now = self.ctx.env.clock.now();
                 self.open
                     .take_frame(lsn, frame.received_at(), raw_bytes, true, now);
+                self.lap(Phase::StageB);
                 return Ok(());
             }
         };
-        self.place(Held {
+        self.lap(Phase::StageB);
+        let placed = self.place(Held {
             lsn,
             rows,
             received_at: frame.received_at(),
             raw_bytes,
             row_bytes: None,
-        })
+        });
+        self.lap(Phase::Rows);
+        placed
     }
 
     /// Whether the open batch takes another frame.
@@ -1059,6 +1096,7 @@ impl Shipper {
             ctx.barriers.reached(Barrier::SealAppended).await;
             ctx.stats.sealed.add(1);
         }
+        self.lap(Phase::WalAppend);
         let marker_at = batch.marker_at();
         let mut jobs = Vec::new();
         for (pair, mut rows) in batch.into_pairs() {
@@ -1102,6 +1140,7 @@ impl Shipper {
             row_bytes,
             released: false,
         });
+        self.lap(Phase::Encode);
         Ok(())
     }
 
@@ -1206,15 +1245,18 @@ impl Shipper {
     /// the control store that can select it.
     pub async fn run(mut self) -> Result<(), ShipError> {
         let mut shutdown = self.ctx.env.shutdown();
+        self.laps.start(self.ctx.env.clock.now());
         self.rebuild().await?;
         loop {
             if shutdown.is_shutdown() {
+                self.lap(Phase::WaitFrames);
                 return Ok(());
             }
             while let Ok(done) = self.done_rx.try_recv() {
                 self.on_done(done)?;
             }
             self.checkpoint_resolved().await?;
+            self.lap(Phase::WalAppend);
             if self.seal_due() {
                 self.seal().await?;
                 continue;
@@ -1228,14 +1270,25 @@ impl Shipper {
                 // The batch the frame did not fit is sealed, and the budget has room: the frame opens the
                 // next one.
                 self.place(held)?;
+                self.lap(Phase::Rows);
                 continue;
             }
-            if !self.gc_in_doubt
-                && self.can_read()
-                && let Some(frame) = self.next_frame().await?
-            {
-                self.on_frame(&frame).await?;
-                continue;
+            // What the wait below waits for: frames, unless a full batch or a frame held for the budget waits
+            // for the batches in flight. A collection in doubt waits for the next attempt, which is no work of
+            // the task either.
+            let mut waiting = Phase::WaitFrames;
+            // The open batch takes another frame and the durable log has none: the wait also ends when one
+            // becomes durable, with the timer left to the linger, garbage collection and maintenance.
+            let mut caught_up = false;
+            if !self.gc_in_doubt {
+                if !self.can_read() {
+                    waiting = Phase::WaitInserts;
+                } else if let Some(frame) = self.next_frame().await? {
+                    self.on_frame(&frame).await?;
+                    continue;
+                } else {
+                    caught_up = true;
+                }
             }
             let now = self.ctx.env.clock.now();
             if self.gc_in_doubt
@@ -1243,7 +1296,18 @@ impl Shipper {
             {
                 self.report_drain();
                 self.collect_garbage().await;
+                self.lap(Phase::WalAppend);
             }
+            // The wait checks the durable LSN again after it registers for the committer's wake, so a frame that
+            // became durable since the read above, during the collection for one, ends it at once.
+            let replay = &self.replay;
+            let durable = async {
+                if caught_up {
+                    replay.wait_durable().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
             let mut tick = self.ctx.env.clock.sleep(self.ctx.config.tail_poll).fuse();
             select_biased! {
                 done = self.done_rx.recv().fuse() => {
@@ -1251,9 +1315,14 @@ impl Shipper {
                         self.on_done(done)?;
                     }
                 }
+                () = durable.fuse() => {}
                 () = tick => {}
-                () = (&mut shutdown).fuse() => return Ok(()),
+                () = (&mut shutdown).fuse() => {
+                    self.lap(waiting);
+                    return Ok(());
+                }
             }
+            self.lap(waiting);
         }
     }
 }
