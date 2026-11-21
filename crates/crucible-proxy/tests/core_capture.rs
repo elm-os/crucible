@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crucible_env::{ChaChaRng, Instant};
+use crucible_proxy::capture::MAX_CAP_BYTES;
 use crucible_proxy::encode::{ResourceInfo, encode};
 use crucible_proxy::{
     BodyKind, CaptureRule, CoreConfig, EndReason, ExportResult, HeaderView, Now, Op, ProxyCore,
@@ -489,6 +490,66 @@ fn http_answers_in_json_and_event_streams_are_captured() {
         result(by_id(&ops, "2")),
         Some(r#"{"content":[{"type":"text","text":"event answer"}]}"#)
     );
+}
+
+#[test]
+fn a_field_captured_at_the_largest_cap_is_exported_with_its_operation() {
+    // The largest cap a rule may set, with the other fields of the operation as long as the proxy keeps them: the
+    // operation fits the 8 MiB export buffer with its content, so nothing is dropped.
+    let cap = MAX_CAP_BYTES;
+    assert!(CaptureRule::parse(&format!("*,max_bytes={}", cap + 1)).is_err());
+    let rule = format!("*,args=false,max_bytes={cap}");
+    let (mut core, tap) = stdio(&[&rule]);
+    let long = "n".repeat(4096);
+    send(
+        &tap,
+        C2S,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"{long}","method":"initialize","params":{{"protocolVersion":"{long}","clientInfo":{{"name":"{long}","version":"{long}"}}}}}}"#
+        ),
+        0,
+    );
+    send(
+        &tap,
+        S2C,
+        &answer_with_id(
+            &format!(r#""{long}""#),
+            &format!(r#"{{"serverInfo":{{"name":"{long}","version":"{long}"}}}}"#),
+        ),
+        1,
+    );
+    send(
+        &tap,
+        C2S,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"{long}","method":"tools/call","params":{{"name":"{long}","arguments":{{}}}}}}"#
+        ),
+        2,
+    );
+    let line = format!(
+        "{}\n",
+        answer_with_id(
+            &format!(r#""{long}""#),
+            &format!(
+                r#"{{"content":[{{"type":"{long}","text":"{}"}}],"isError":true}}"#,
+                "y".repeat(cap)
+            )
+        )
+    );
+    for chunk in line.as_bytes().chunks(64 * 1024) {
+        tap.forward(StreamId::STDIO, S2C, Bytes::copy_from_slice(chunk), at(3));
+        core.drain();
+    }
+    let ops = finished(&mut core);
+    assert_eq!(core.stats().dropped_ops, 0);
+    let call = ops.iter().find(|op| op.method == "tools/call").unwrap();
+    let content = call.content.as_ref().unwrap();
+    assert_eq!(content.result.as_ref().unwrap().len(), cap);
+    assert!(content.truncated);
+}
+
+fn answer_with_id(id: &str, result: &str) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#)
 }
 
 #[test]

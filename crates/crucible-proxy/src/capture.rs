@@ -13,12 +13,16 @@ use std::fmt;
 use std::sync::Arc;
 
 use crucible_env::Rng;
-use crucible_records::caps::MCP_CONTENT_MAX_BYTES;
 
+use crate::core::BUFFER_BYTES;
 use crate::scrub;
 
 /// The cap per captured field when a rule sets none, in bytes.
 pub const DEFAULT_MAX_BYTES: usize = 16 * 1024;
+
+/// The largest cap a rule may set: 8 MiB less 64 KiB, so that a field captured at the cap fits the 8 MiB export
+/// buffer with the rest of its operation, whose other fields the proxy keeps to a few KiB.
+pub const MAX_CAP_BYTES: usize = BUFFER_BYTES - 64 * 1024;
 
 /// The share of matching calls that are captured: a number from 0 to 1.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -145,11 +149,12 @@ impl CaptureRule {
                     rule.max_bytes = value
                         .parse()
                         .ok()
-                        .filter(|max| (1..=MCP_CONTENT_MAX_BYTES).contains(max))
+                        .filter(|max| (1..=MAX_CAP_BYTES).contains(max))
                         .ok_or_else(|| {
                             refuse(format!(
-                                "max_bytes must be a whole number from 1 to {MCP_CONTENT_MAX_BYTES} (the most \
-                                 Crucible keeps of a field), not {value:?}"
+                                "max_bytes must be a whole number from 1 to {MAX_CAP_BYTES} (8 MiB less 64 KiB, so \
+                                 that a field captured at the cap fits the proxy's 8 MiB export buffer with its \
+                                 operation), not {value:?}"
                             ))
                         })?;
                 }
@@ -313,11 +318,16 @@ mod tests {
             ),
             (
                 "secret,max_bytes=0",
-                "max_bytes must be a whole number from 1 to 8388608",
+                "max_bytes must be a whole number from 1 to 8323072",
             ),
             (
                 "secret,max_bytes=9000000",
-                "max_bytes must be a whole number from 1 to 8388608",
+                "max_bytes must be a whole number from 1 to 8323072",
+            ),
+            // 8 MiB: a field that large could never be exported with its operation.
+            (
+                "secret,max_bytes=8388608",
+                "fits the proxy's 8 MiB export buffer",
             ),
             ("secret,other", "tool is given twice"),
             ("", "the tool glob is empty"),
@@ -325,6 +335,8 @@ mod tests {
             let error = CaptureRule::parse(text).unwrap_err();
             assert!(error.to_string().contains(fix), "{text:?}: {error}");
         }
+        let largest = CaptureRule::parse(&format!("secret,max_bytes={MAX_CAP_BYTES}")).unwrap();
+        assert_eq!(largest.max_bytes, 8_323_072);
     }
 
     #[test]

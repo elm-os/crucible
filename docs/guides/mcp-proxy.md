@@ -176,11 +176,11 @@ crucible proxy stdio --capture 'search_*' --capture 'lookup_order,result=false,s
 | `args` | `true` | Record `params.arguments` as `gen_ai.tool.call.arguments` |
 | `result` | `true` | Record the result's `content`, `structuredContent` and `isError` as `gen_ai.tool.call.result` |
 | `sample_rate` | `1` | The share of matching calls recorded, from 0 to 1 |
-| `max_bytes` | `16384` | The cap per field, in bytes, from 1 to 8,388,608 |
+| `max_bytes` | `16384` | The cap per field, in bytes, from 1 to 8,323,072 (8 MiB less 64 KiB, so that a field captured at the cap fits the 8 MiB export buffer with its operation) |
 
 `tool=<glob>` is accepted for the glob too. A rule the proxy cannot read is refused at startup with what to write
-instead, for example `max_bytes must be a whole number from 1 to 8388608 (the most Crucible keeps of a field), not
-"lots"`.
+instead, for example `max_bytes must be a whole number from 1 to 8323072 (8 MiB less 64 KiB, so that a field
+captured at the cap fits the proxy's 8 MiB export buffer with its operation), not "lots"`.
 
 - **Which calls.** Only `tools/call` requests from the client. The first rule whose glob matches the tool applies;
   a tool no rule matches is not recorded. In `CRUCIBLE_PROXY_CAPTURE`, rules are separated by `;`.
@@ -210,7 +210,9 @@ The proxy fails open. Telemetry runs on its own task, on a copy of the traffic:
 - The copy goes through a bounded queue with a send that never waits. When the queue is full, the copy is dropped
   and counted; the bytes are already on their way.
 - Finished operations wait in a buffer of at most 8 MiB or 10,000 operations. When it is full, the oldest are
-  dropped. The number dropped is logged on standard error at the next export that succeeds.
+  dropped. The number dropped is logged on standard error at the next export that succeeds. A call whose arguments
+  and result are both captured, under a `max_bytes` above 4 MiB, can make one operation larger than the buffer,
+  and such an operation is dropped the same way.
 - Exports are retried with a backoff of 1 s doubling to 30 s. A refusal (for example a wrong key) drops the batch
   and says what to check.
 - At exit the proxy waits at most 500 ms for a last export.
