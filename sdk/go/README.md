@@ -8,8 +8,7 @@ server over OTLP/HTTP. It has two packages:
 | `crucible` | The process-wide exporter (`Init`, `Flush`, `Shutdown`), the session, user, tags and metadata of a trace carried in a `context.Context`, `Observe` for spans with input, output, model, usage and cost, and `SendFeedback` for scores |
 | `cruciblemcp` | Middleware for the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`, tested at v1.8.0) in both protocol eras: one span per MCP operation on the server, and trace context propagation from the client |
 
-It needs Go 1.26 or later. The SDK has the server's version; add the one that matches Crucible 0.1.1 with
-`go get github.com/elm-os/crucible/sdk/go@v0.1.1`.
+It needs Go 1.26 or later. Add it with `go get github.com/elm-os/crucible/sdk/go@v0.1.1`.
 
 ## Send traces from an agent
 

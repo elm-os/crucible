@@ -12,8 +12,7 @@ It needs Go 1.26 or newer.
 
 ## Install
 
-Add the module at the version of your Crucible server; the SDK has the server's version, and the release of Crucible
-0.1.1 tags it as `sdk/go/v0.1.1`:
+Add the module at the version of your Crucible server:
 
 ```sh
 go get github.com/elm-os/crucible/sdk/go@v0.1.1

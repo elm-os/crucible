@@ -55,7 +55,8 @@ The tag runs three workflows:
 | `sdk-release.yml` | The SDK packages on the GitHub release: `elm-os-crucible-X.Y.Z.tgz` (TypeScript), `crucible_sdk-X.Y.Z-py3-none-any.whl` and `crucible_sdk-X.Y.Z.tar.gz` (Python) and `crucible-sdk-X.Y.Z.crate` (Rust); the Go module tag `sdk/go/vX.Y.Z` on the release commit; and each registry that [Registry setup](#registry-setup) turns on |
 
 `sdk-release.yml` builds and checks the packages, waits until `release.yml` has created the release, and then
-attaches them, so it finishes shortly after `release.yml`.
+attaches them, so it finishes shortly after `release.yml`. It adds them to a release that is already published, so
+the repository's immutable releases setting has to stay off.
 
 ```sh
 gh run list --repo elm-os/crucible --branch vX.Y.Z
@@ -122,6 +123,9 @@ To publish the current release after a step below, run the workflow from its tag
 ```sh
 gh workflow run sdk-release.yml --repo elm-os/crucible --ref vX.Y.Z
 ```
+
+The tag's commit has to hold `sdk-release.yml`: a release tagged before the workflow existed has no SDK packages to
+publish.
 
 ### PyPI
 
