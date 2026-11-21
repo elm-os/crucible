@@ -77,8 +77,8 @@ use, with the amount to give it. With the defaults, give the container at least 
 | 422 `query_too_broad`: `the window is longer than the project's maximum of 30 days` | Ask for a window of at most 30 days |
 | 400 `cursor_invalid` | The cursor expired (after 24 hours) or belongs to another query: start again from the first page |
 | 428 `precondition_required` or 412 `precondition_failed` | Read the resource again and send its `ETag` in `If-Match` |
-| 503 `telemetry_store_unavailable` | ClickHouse is not configured, or not reachable and the recent-span index cannot answer the read |
-| 504 `query_timeout` | The read hit its time limit. A read made with an API key or through the MCP server runs under a 5-second limit, and first waits, within its deadline, for one of the 16 ClickHouse statements that these reads share ([rate limits](../api/README.md#rate-limits)): narrow the time range, or send fewer reads at once |
+| 503 `telemetry_store_unavailable` | ClickHouse is not configured, or not reachable and the recent-span index cannot answer the read. With several Crucible servers, it can also mean that their reads by API keys and the MCP server together reached the 16 statements ClickHouse runs at once for those reads ([rate limits](../api/README.md#rate-limits)): send fewer such reads at once |
+| 504 `query_timeout` | The read hit its time limit. A read made with an API key or through the MCP server runs under a 5-second limit, and first waits, within its deadline, for one of the 16 ClickHouse statements that each Crucible server allows these reads at once ([rate limits](../api/README.md#rate-limits)): narrow the time range, or send fewer reads at once |
 
 ## Channels and alerts
 
