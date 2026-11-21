@@ -70,6 +70,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   a field captured near 8 MiB did not fit the proxy's 8 MiB export buffer with its operation, which was then dropped.
 - With object storage, one server at a time sweeps the export objects, the one that runs the media collector, so the
   servers of a deployment no longer each list every project's export keys every 10 minutes.
+- A read made with an API key or through the MCP server that ClickHouse refuses because several servers together run
+  as many such reads as it allows (`TOO_MANY_SIMULTANEOUS_QUERIES`) waits and is sent again within its deadline,
+  instead of answering 503.
 
 ## [0.1.1] - 2026-11-21
 
