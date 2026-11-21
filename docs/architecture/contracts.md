@@ -369,7 +369,7 @@ Repository-shaped access to Postgres. One repository per aggregate in section 11
 | `leases().acquire(name, holder, ttl) -> Option<Lease { fencing_token, expires_at }>`, `renew(lease)`, `release(lease)` | Section 11.7. Expiry uses the database clock |
 | `claims().claim(queue, limit, lease_for) -> Vec<Claim>`, `complete(claim)`, `fail(claim, retry_at)` | Row claims with skip-locked semantics, a `lease_until` and an attempt counter |
 | `db_now() -> Timestamp` | Database clock |
-| `migrations().{applied, apply}` | Forward-only ledger for Postgres and for ClickHouse schema and access steps |
+| `migrations().{applied, apply}` | Forward-only ledger for Postgres and for ClickHouse schema and access steps. `apply` records the checksum of what was applied: a step recorded with another checksum takes the new checksum and time and keeps its kind, and one recorded with the same checksum is left as it is (`false`) (#164) |
 
 Rules: ids and timestamps are produced in Rust from `Clock` and `Rng`, never by column defaults (lease expiry is
 the one exception). Nothing may depend on session state (no LISTEN dependency, no session advisory locks), so
@@ -1295,7 +1295,12 @@ missing, or either self-test fails. All behaviour-affecting settings are sent pe
 
 Settled in code: `crucible serve` also refuses ingest on a server whose flavour is not single node, saying to point
 `clickhouse.url` at a single-node server, and on one where not every table exists, saying to start once with
-`--migrate`. `--migrate` and `crucible migrate` render the single-node variant of every step.
+`--migrate`. `--migrate` and `crucible migrate` render the single-node variant of every step. With Postgres, a
+server started without `--migrate` also refuses ingest until the migrations ledger records every step of
+`crucible_schema::LEDGER_ORDER` (section 6.6): `/readyz` and ingest answer 503 naming the missing steps, `crucible
+migrate` and `--migrate`, and the server checks again with the store's backoff (1 s doubling to 15 s), so it opens
+without a restart once the steps are recorded. Without Postgres there is no ledger, and the table check above gates
+such a server (#164).
 
 ### 5.9 Crash barriers
 
@@ -1589,21 +1594,25 @@ report(b) = lower(b) + width(b) / 2          (integer division)
   300 s. Operations that a server of an earlier version ships after the step reach `mcp_tool_rollup` only (#149).
 
 Ledger (settled in code): with Postgres configured, `crucible migrate` (and `serve --migrate`) runs every pending
-Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
-`migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
-(steps are idempotent, so a crash between apply and record only repeats the step). While a step applies, the runner
-renews the lease every 5 s (section 11.7), so a step may outlast the lease's TTL; the step ends when the lease is
-lost, because Postgres refuses the renewal or the lease's local validity runs out first. A step whose lease was lost
-is not recorded, and the run reports that it must be repeated. A server that starts meanwhile waits for the lease,
-up to 60 s per attempt, and then finds the step recorded (#149).
-A ledger row whose checksum differs from the step makes
-the step reapply, with a warning. The checksum is SHA-256 over the step's statements with every password digest left
-out (`crucible_schema::without_secrets`), because the digests come from the master key: a start with another master
-key finds every recorded step and applies nothing again. A row written before digests were left out holds the
-checksum over the whole statements and still matches under the key it was recorded with (#114). After the steps,
-every migration with Postgres provisions the SQL workspace's two probe identities again with the current key's
-passwords (section 7.5), unless the service identities refuse that key; then a warning names the key to use. Without
-Postgres, `--migrate` applies the ClickHouse steps on every start.
+Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under
+the `migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease
+token (steps are idempotent, so a crash between apply and record only repeats the step). While a step applies, the
+runner renews the lease every 5 s (section 11.7), so a step may outlast the lease's TTL; the step ends when the
+lease is lost, because Postgres refuses the renewal or the lease's local validity runs out first. A step whose lease
+was lost is not recorded, and the run reports that it must be repeated. A server that starts meanwhile waits for the
+lease, up to 60 s per attempt, and then finds the step recorded (#149). The checksum is SHA-256 over the step's
+statements with every password digest left out (`crucible_schema::without_secrets`), because the digests come from
+the master key. A step whose ledger row holds another checksum, such as one whose content a new version changed,
+applies again once, with a warning, and its row takes the new checksum and time (section 2.7), so the next start
+applies nothing. It does so only while the service identities accept this node's master key, by the store's health
+check; otherwise, and whenever that check fails, the step waits, with a warning, for a start with the key the
+deployment was migrated with (#164). A start with another master key therefore applies no step that the ledger
+records, changed or not; a step the ledger does not record yet still applies. A row written before digests were left
+out holds the checksum over the whole statements and still matches under the key it was recorded with (#114). After
+the steps, every migration with Postgres provisions the SQL workspace's two probe identities again with the current
+key's passwords (section 7.5), unless the service identities refuse that key; then a warning names the key to use.
+With Postgres, a server started without `--migrate` takes no ingest until the ledger records every step of
+`LEDGER_ORDER` (section 5.8). Without Postgres, `--migrate` applies the ClickHouse steps on every start.
 
 ### 6.7 Settled in code
 
@@ -1611,7 +1620,7 @@ Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper c
 
 | Topic | Rule |
 |---|---|
-| Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy` |
+| Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy`. Released steps render from the current table list, so a step that adds a table changes `0001` to `0003` too, and they apply once more on that upgrade (section 6.6) |
 | Clustered DDL | `ON CLUSTER` statements carry `distributed_ddl_entry_format_version = 8` or higher, and every host must set `distributed_ddl_use_initial_user_and_roles = 1` (text-index preprocessors need it); startup detection (5.8) checks the server setting on the clustered variant |
 | Replication path | `'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'` |
 | Profile ceilings | Constraints use `MIN 1`, because 0 means unlimited for these settings |
@@ -3318,3 +3327,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-21 | Settled in code by #142, #144, #145 and #146: agent statement slots and the deletion drop metric (2.14); the agent cap held per node (7.1); `use_statistics = 0` (8.4); reads sent together (8.7); the proxy's failure messages (9.1) and state-hash key (9.6); where each SDK scrubs captured content, and the flush and shutdown deadlines (9.10); compat auth and dialect 7's scope rules (10.1); the arrival-bounded deletion read (11.10, 13.3, 13.6); the compat media refusal and its log lines (14.5) |
 | v2 | 2026-11-21 | Settled in code by #149: the hourly tier `mcp_tool_rollup_hourly`, table 19 (3.10, 6.3, 6.4); the copy's marker rows (5.5); schema step 0005 and the runner's lease renewal (6.6); no workspace access (7.4); tiered aggregates and their rendering (8.1, 8.3); long-window MCP reads (8.7, 9.9); deletion reach (13.4) |
 | v2 | 2026-11-21 | Settled in code by #162: the proxy's content capture, with its sampling, canonical JSON and result shape (9.10); the content keys the proxy sends (9.1); flush and shutdown share one deadline in every SDK (9.10) |
+| v2 | 2026-11-21 | Settled in code by #164: `Migrations::apply` records what was applied (2.7); a server without `--migrate` waits for every step (5.8, 6.6); a changed step applies once, and only under an accepted master key, which restates the master-key rule (6.6); released steps render from the current table list (6.7) |
