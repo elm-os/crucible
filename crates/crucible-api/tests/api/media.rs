@@ -345,3 +345,166 @@ fn without_an_object_store_every_media_route_answers_media_not_supported() {
         .assert_problem(501, "media_not_supported");
     });
 }
+
+/// How the test platform's media read references out of a payload: `[[media <sha256 hex> <content type>]]`, a
+/// stand-in for the compat SDKs' tokens, whose reader is tested in `crucible-compat`. Each reference's pointer
+/// is its position in the body.
+pub(crate) fn test_refs(body: &[u8]) -> Vec<crucible_media::PayloadRef> {
+    let text = String::from_utf8_lossy(body);
+    text.split("[[media ")
+        .skip(1)
+        .filter_map(|rest| rest.split("]]").next())
+        .enumerate()
+        .filter_map(|(at, inside)| {
+            let (sha, content_type) = inside.split_once(' ')?;
+            let bytes: Vec<u8> = (0..sha.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(sha.get(i..i + 2)?, 16).ok())
+                .collect::<Option<_>>()?;
+            let hash = <[u8; 32]>::try_from(bytes).ok()?;
+            Some(crucible_media::PayloadRef {
+                pointer: format!("/{at}"),
+                content_type: content_type.to_owned(),
+                hashes: (hash, hash),
+            })
+        })
+        .collect()
+}
+
+fn reference(bytes: &[u8], content_type: &str) -> String {
+    format!("[[media {} {content_type}]]", hex(&Sha256::digest(bytes)))
+}
+
+/// The media a span references: those its input and metadata name, resolved to the project's media (or to none
+/// when the upload never arrived), then those uploaded for the span that its payload does not name. Without an
+/// object store the route answers `media_not_supported`, and a request that names no span is refused.
+#[test]
+fn a_span_lists_the_media_its_payload_references() {
+    use crucible_records::TableId;
+
+    use crate::store::stored_row;
+    use crate::world::{NOW, span};
+
+    run(|env| async move {
+        const WAV: &[u8] = b"RIFF0000WAVEfmt not really audio";
+        let mut world = World::new(10);
+        let entry = span(1, 10, 0, NOW.saturating_add_micros(-1_500));
+        let lsn = world.ack(vec![entry.clone()]);
+        let s = entry.summary.clone();
+        let input = format!(
+            "[{{\"role\":\"user\",\"content\":\"{} and {}\"}}]",
+            reference(PNG, "image/png"),
+            reference(b"never uploaded", "application/pdf")
+        );
+        let text = |t: &str| crucible_plan::Value::String(t.into());
+        world.store.insert(
+            TableId::SpanPayload,
+            stored_row(
+                TableId::SpanPayload,
+                &[
+                    ("project_id", crucible_plan::Value::Uuid(entry.project_id.uuid())),
+                    ("start_minute", crucible_plan::Value::Time(s.start_time.floor_minute())),
+                    ("trace_hash", crucible_plan::Value::UInt(u64::from(s.trace_id.trace_hash()))),
+                    ("span_id", crucible_plan::Value::Bytes(s.span_id.as_bytes().to_vec())),
+                    ("trace_id", crucible_plan::Value::Bytes(s.trace_id.as_bytes().to_vec())),
+                    ("start_time", crucible_plan::Value::Time(s.start_time)),
+                    ("input", text(&input)),
+                    ("output", text("{\"answer\":\"a bird\"}")),
+                    ("metadata_keys", crucible_plan::Value::Array(vec![text("chart")])),
+                    (
+                        "metadata_values",
+                        crucible_plan::Value::Array(vec![text(&reference(PNG, "image/png"))]),
+                    ),
+                    ("lsn", crucible_plan::Value::UInt(lsn.get())),
+                    ("received_at", crucible_plan::Value::Time(NOW)),
+                ],
+            ),
+        );
+        world.settle();
+        let p = platform_with(&env, &world, false).await;
+        let (trace, span) = (s.trace_id.to_string(), s.span_id.to_string());
+
+        // The PNG is uploaded for the span's input; the WAV for its output, which does not name it.
+        let mut ids = Vec::new();
+        for (bytes, content_type, field) in [(PNG, "image/png", "input"), (WAV, "audio/wav", "output")] {
+            let mut body = create(bytes, content_type, &trace);
+            body["span_id"] = Value::from(span.as_str());
+            body["field"] = Value::from(field);
+            let created = call(&p.router, Method::POST, &media_path(""), &p.key, Some(body), &[]).await;
+            let id = created.body["media_id"].as_str().unwrap().to_owned();
+            let url = created.body["upload"]["url"].as_str().unwrap();
+            p.objects
+                .upload(url, content_type, Bytes::copy_from_slice(bytes))
+                .unwrap();
+            let confirmed = call(
+                &p.router,
+                Method::PATCH,
+                &media_path(&format!("/{id}")),
+                &p.key,
+                None,
+                &[],
+            )
+            .await;
+            assert_eq!(confirmed.status.as_u16(), 200, "{}", confirmed.pretty());
+            ids.push(id);
+        }
+
+        let route = format!(
+            "/api/v1/projects/{}/spans/{trace}/{span}/media?start_time={}",
+            project(1),
+            s.start_time
+        );
+        let listed = call(&p.router, Method::GET, &route, &p.key, None, &[]).await;
+        assert_eq!(listed.status.as_u16(), 200, "{}", listed.pretty());
+        let data = listed.body["data"].as_array().unwrap();
+        let seen: Vec<(&str, Option<&str>, &str, Option<&str>)> = data
+            .iter()
+            .map(|r| {
+                (
+                    r["field"].as_str().unwrap(),
+                    r["pointer"].as_str(),
+                    r["content_type"].as_str().unwrap(),
+                    r["media"]["id"].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("input", Some("/0"), "image/png", Some(ids[0].as_str())),
+                ("input", Some("/1"), "application/pdf", None),
+                ("metadata", Some("/0"), "image/png", Some(ids[0].as_str())),
+                ("output", None, "audio/wav", Some(ids[1].as_str())),
+            ]
+        );
+        assert_eq!(data[0]["media"]["state"], "uploaded");
+        assert!(data[0]["media"].get("url").is_none(), "links come from GET media/{{id}}");
+
+        let viewer = session(&p.identity.login("vic@example.com", PASSWORD).await.unwrap());
+        let as_viewer = call(&p.router, Method::GET, &route, &viewer, None, &[]).await;
+        assert_eq!(as_viewer.body, listed.body);
+
+        let unknown = route.replace(&span, "00000000000000ff");
+        call(&p.router, Method::GET, &unknown, &p.key, None, &[])
+            .await
+            .assert_problem(404, "not_found");
+        let bad = route.replace(&span, "xyz");
+        call(&p.router, Method::GET, &bad, &p.key, None, &[])
+            .await
+            .assert_problem(422, "validation_failed");
+        let no_time = route.split('?').next().unwrap().to_owned();
+        call(&p.router, Method::GET, &no_time, &p.key, None, &[])
+            .await
+            .assert_problem(422, "validation_failed");
+
+        // Without an object store there is no media to show, and the answer names the settings.
+        let bare = get(&api(&env, &world), &route).await;
+        bare.assert_problem(501, "media_not_supported");
+        assert!(
+            bare.body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("object_store.endpoint")
+        );
+    });
+}

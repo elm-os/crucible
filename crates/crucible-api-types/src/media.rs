@@ -161,3 +161,45 @@ pub struct MediaList {
     /// The uses.
     pub data: Vec<MediaUse>,
 }
+
+/// The query of `GET spans/{trace_id}/{span_id}/media`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, IntoParams, TS)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct SpanMediaParams {
+    /// The span's start time as the API returned it (RFC 3339): it locates the span's payload.
+    #[param(format = DateTime)]
+    pub start_time: String,
+}
+
+/// One medium a span references: where it appears, and the media when the project holds it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct SpanMedia {
+    /// The payload field it appears in: `input`, `output` or `metadata` for a reference in the payload, or the
+    /// field its upload named; absent when the upload named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub field: Option<String>,
+    /// The JSON pointer, within the field, of the string that holds the reference: empty for a field that is the
+    /// reference itself or is not JSON, and absent for media uploaded for the span that its payload does not name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub pointer: Option<String>,
+    /// The content type: the media's, or the one the reference names when the project holds no media for it.
+    pub content_type: String,
+    /// The media, without a download URL: read `GET media/{media_id}` for one. Absent when the project holds no
+    /// media for the reference, for example because its upload never reached this server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub media: Option<Media>,
+}
+
+/// The answer of `GET spans/{trace_id}/{span_id}/media`: the media the span references, at most 64.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct SpanMediaList {
+    /// The references, those in the payload first, in field order and the order they appear.
+    pub data: Vec<SpanMedia>,
+}

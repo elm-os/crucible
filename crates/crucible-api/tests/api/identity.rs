@@ -264,7 +264,8 @@ pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool)
             prefix: "media".to_owned(),
             max_bytes: 1 << 20,
         },
-    );
+    )
+    .with_payload_refs(crate::media::test_refs);
     let router = crucible_api::platform_router(
         env,
         Some((world.service.clone(), writer)),

@@ -17,11 +17,16 @@
 //!
 //! The client half of the wire shapes ([`upload_request`], [`report_request`], [`UploadReply`], [`MediaReply`]) is
 //! what tests play the SDK with, so that no other crate spells the dialect's fields.
+//!
+//! [`payload_tokens`] reads the references the SDKs leave in a payload in place of their media, so that the span
+//! panel can show the media a span references; [`payload_token`] writes one, for tests.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use crucible_records::{SpanId, TraceId};
 use serde::{Deserialize, Serialize};
+
+use crate::MediaToken;
 
 /// The compat media endpoint of one dialect.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -330,6 +335,133 @@ pub fn media_answer(media: &MediaAnswer<'_>) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// A media reference that a payload carries, in the token format that the compat media endpoint's SDKs write in
+/// place of the media they upload.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PayloadToken {
+    /// The JSON pointer (RFC 6901) of the string that holds it: empty for a body that is the string itself, or that
+    /// is not JSON.
+    pub pointer: String,
+    /// The content type the reference names.
+    pub content_type: String,
+    /// The SHA-256 values its media id can stand for, the least and the greatest ([`hash_range`]).
+    pub hashes: ([u8; 32], [u8; 32]),
+}
+
+/// The most references [`payload_tokens`] reads from one body: a payload of up to 8 MiB could hold far more than
+/// anyone looks at, and each one is looked up.
+pub const MAX_PAYLOAD_TOKENS: usize = 64;
+
+/// The delimiters of the tokens of the dialect whose SDKs call the compat media endpoint.
+fn delimiters() -> Option<&'static MediaToken> {
+    let dialect = MEDIA_ROUTES[0].dialect;
+    crate::TABLES
+        .iter()
+        .find(|table| table.dialect == dialect)
+        .and_then(|table| table.media.first())
+}
+
+/// The media references in one payload field's bytes, in the order they appear, at most [`MAX_PAYLOAD_TOKENS`].
+/// A JSON body is read string by string, so that each reference has the pointer of the string that holds it;
+/// any other body is read as text. A token without a content type, or whose id is not a compat media id, is not
+/// a reference.
+pub fn payload_tokens(body: &[u8]) -> Vec<PayloadToken> {
+    let Some(token) = delimiters() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(value) => walk(&value, &mut String::new(), token, &mut found),
+        Err(_) => {
+            if let Ok(text) = std::str::from_utf8(body) {
+                scan(text, "", token, &mut found);
+            }
+        }
+    }
+    found
+}
+
+fn walk(
+    value: &serde_json::Value,
+    pointer: &mut String,
+    token: &MediaToken,
+    found: &mut Vec<PayloadToken>,
+) {
+    use serde_json::Value;
+    let mut enter = |name: &str, item: &Value, found: &mut Vec<PayloadToken>| {
+        let len = pointer.len();
+        pointer.push('/');
+        pointer.push_str(&name.replace('~', "~0").replace('/', "~1"));
+        walk(item, pointer, token, found);
+        pointer.truncate(len);
+    };
+    match value {
+        Value::String(text) => scan(text, pointer, token, found),
+        Value::Array(items) => {
+            for (at, item) in items.iter().enumerate() {
+                if found.len() >= MAX_PAYLOAD_TOKENS {
+                    return;
+                }
+                enter(&at.to_string(), item, found);
+            }
+        }
+        Value::Object(members) => {
+            for (name, item) in members {
+                if found.len() >= MAX_PAYLOAD_TOKENS {
+                    return;
+                }
+                enter(name, item, found);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn scan(text: &str, pointer: &str, token: &MediaToken, found: &mut Vec<PayloadToken>) {
+    let mut rest = text;
+    while found.len() < MAX_PAYLOAD_TOKENS {
+        let Some(at) = rest.find(token.prefix) else {
+            return;
+        };
+        let inside = rest.get(at + token.prefix.len()..).unwrap_or_default();
+        let Some(end) = inside.find(token.suffix).filter(|_| !token.suffix.is_empty()) else {
+            return;
+        };
+        if let Some((content_type, hashes)) = token_fields(inside.get(..end).unwrap_or_default()) {
+            found.push(PayloadToken {
+                pointer: pointer.to_owned(),
+                content_type,
+                hashes,
+            });
+        }
+        rest = inside.get(end + token.suffix.len()..).unwrap_or_default();
+    }
+}
+
+/// The content type and the hash range of a token's fields, `type=<content type>|id=<media id>|...`.
+fn token_fields(fields: &str) -> Option<(String, ([u8; 32], [u8; 32]))> {
+    let (mut content_type, mut id) = (None, None);
+    for field in fields.split('|') {
+        match field.split_once('=') {
+            Some(("type", value)) => content_type = Some(value.trim()),
+            Some(("id", value)) => id = Some(value.trim()),
+            _ => {}
+        }
+    }
+    let content_type = content_type.filter(|value| value.contains('/'))?;
+    Some((content_type.to_owned(), hash_range(id?)?))
+}
+
+/// The reference the SDKs write into a payload in place of bytes of `content_type` with this SHA-256: what
+/// [`payload_tokens`] reads, and what tests play the SDK with.
+pub fn payload_token(content_type: &str, sha256: &[u8; 32]) -> String {
+    let (prefix, suffix) = delimiters().map_or(("", ""), |token| (token.prefix, token.suffix));
+    format!(
+        "{prefix}type={content_type}|id={}|source=bytes{suffix}",
+        media_id(sha256)
+    )
+}
+
 /// The compat media id of bytes with this SHA-256: the first 22 characters of its URL-safe base64 form.
 pub fn media_id(sha256: &[u8; 32]) -> String {
     let mut id = URL_SAFE_NO_PAD.encode(sha256);
@@ -508,6 +640,71 @@ mod tests {
         );
     }
 
+    /// The references in a payload are found in every string of a JSON body, each with the pointer of its string,
+    /// and in a body that is not JSON, without one.
+    #[test]
+    fn payload_tokens_are_found_with_where_they_are() {
+        let (png, pdf) = ([1u8; 32], [2u8; 32]);
+        let image = payload_token("image/png", &png);
+        assert!(image.starts_with("@@@langfuseMedia:type=image/png|id="));
+        let document = payload_token("application/pdf", &pdf);
+        let body = serde_json::json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": image}},
+            ]},
+            {"a/b~c": format!("see {document} and {image}")},
+        ]);
+        let found = payload_tokens(body.to_string().as_bytes());
+        let seen: Vec<(&str, &str)> = found
+            .iter()
+            .map(|t| (t.pointer.as_str(), t.content_type.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("/0/content/1/image_url/url", "image/png"),
+                ("/1/a~1b~0c", "application/pdf"),
+                ("/1/a~1b~0c", "image/png"),
+            ]
+        );
+        assert_eq!(found[0].hashes, hash_range(&media_id(&png)).unwrap());
+        assert_eq!(found[1].hashes, hash_range(&media_id(&pdf)).unwrap());
+        let text = format!("an image, {image}, in plain text");
+        let found = payload_tokens(text.as_bytes());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pointer, "");
+        assert_eq!(
+            payload_tokens(serde_json::json!(image).to_string().as_bytes())[0].pointer,
+            ""
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_whole_token_with_an_id_is_left_alone() {
+        let id = media_id(&[3; 32]);
+        for body in [
+            format!("@@@langfuseMedia:type=image/png|id={id}"),
+            "@@@langfuseMedia:type=image/png|id=short|source=bytes@@@".to_owned(),
+            format!("@@@langfuseMedia:id={id}|source=bytes@@@"),
+            format!("@@@langfuseMedia:type=|id={id}@@@"),
+            format!("@@@otherMedia:type=image/png|id={id}@@@"),
+            String::new(),
+        ] {
+            assert!(payload_tokens(body.as_bytes()).is_empty(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_body_gives_at_most_the_cap_of_references() {
+        let token = payload_token("image/png", &[4; 32]);
+        let body = serde_json::json!(vec![token; MAX_PAYLOAD_TOKENS + 10]);
+        assert_eq!(
+            payload_tokens(body.to_string().as_bytes()).len(),
+            MAX_PAYLOAD_TOKENS
+        );
+    }
+
     #[test]
     fn texts_that_are_not_ids_are_refused() {
         for id in [
@@ -530,6 +727,26 @@ mod tests {
             prop_assert!(low <= sha256 && sha256 <= high);
             let inside = low <= other && other <= high;
             prop_assert_eq!(inside, media_id(&other) == id);
+        }
+
+        /// The reference the SDKs write for bytes is read back with their content type and the range their hash is
+        /// in, wherever the payload holds it.
+        #[test]
+        fn a_payload_token_reads_back(
+            content_type in "[a-z]{1,12}/[a-z0-9.+-]{1,24}",
+            sha256: [u8; 32],
+            before in "[ -~]{0,20}",
+            key in "[a-z/~]{1,8}",
+        ) {
+            let token = payload_token(&content_type, &sha256);
+            let body = serde_json::json!({ key.clone(): format!("{before}{token}") });
+            let found = payload_tokens(body.to_string().as_bytes());
+            prop_assert_eq!(found.len(), 1);
+            let (low, high) = found[0].hashes;
+            prop_assert!(low <= sha256 && sha256 <= high);
+            prop_assert_eq!(&found[0].content_type, &content_type);
+            let pointer = format!("/{}", key.replace('~', "~0").replace('/', "~1"));
+            prop_assert_eq!(&found[0].pointer, &pointer);
         }
 
         /// What a client sends is read back as it was meant.

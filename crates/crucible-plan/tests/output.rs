@@ -888,3 +888,25 @@ fn fact_and_filter_value_outputs() {
         ])
     );
 }
+
+#[test]
+fn span_bodies_reads_the_fields_that_can_reference_media() {
+    use crucible_plan::span_bodies;
+
+    let (trace, span) = (TraceId::from_bytes([3; 16]), SpanId::from_bytes([4; 8]));
+    let plan = span_bodies(scope(), &keep(), Caller::Session, trace, span, window().from())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        shape(&plan.output()),
+        vec![
+            ("input".to_owned(), "String".to_owned()),
+            ("output".to_owned(), "String".to_owned()),
+            ("metadata_keys".to_owned(), "Array(String)".to_owned()),
+            ("metadata_values".to_owned(), "Array(String)".to_owned()),
+            ("lsn".to_owned(), "UInt64".to_owned()),
+        ]
+    );
+    assert_eq!(plan.class(), QueryClass::Point);
+    assert_eq!(plan.window(), TimeWindow::new(window().from(), window().from().saturating_add_micros(1)).unwrap());
+}
