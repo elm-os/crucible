@@ -1,5 +1,13 @@
 import { type ScaleLinear, type ScaleTime, scaleLinear, scaleUtc } from "d3-scale";
-import { line, symbol, symbolCircle, symbolDiamond, symbolSquare, symbolTriangle } from "d3-shape";
+import {
+  area,
+  line,
+  symbol,
+  symbolCircle,
+  symbolDiamond,
+  symbolSquare,
+  symbolTriangle,
+} from "d3-shape";
 
 export interface ChartPoint {
   /** The first instant of the bucket, in milliseconds. */
@@ -14,7 +22,7 @@ export interface ChartSeries {
   points: ChartPoint[];
 }
 
-export type ChartForm = "line" | "bar";
+export type ChartForm = "line" | "bar" | "area";
 
 // Two of the four series colors are neutral, so every series also has its own dash and marker.
 export const MAX_SERIES = 4;
@@ -62,6 +70,8 @@ export interface ChartModel {
   /** The width of one bucket in pixels, for bars and hit testing. */
   step: number;
   paths: string[];
+  /** The area of each series down to zero, for the area form; empty for the others. */
+  areas: string[];
   xTicks: Tick[];
   yTicks: Tick[];
 }
@@ -95,12 +105,19 @@ export function chartModel(
     .defined((p) => p.v !== null)
     .x((p) => x(new Date(p.t)))
     .y((p) => y(p.v ?? 0));
+  const fill = area<ChartPoint>()
+    .defined((p) => p.v !== null)
+    .x((p) => x(new Date(p.t)))
+    .y0(y(0))
+    .y1((p) => y(p.v ?? 0));
+  const sorted = series.map((s) => s.points.toSorted((a, b) => a.t - b.t));
   return {
     times,
     x,
     y,
     step: Math.max(1, x(new Date(first + width)) - x(new Date(first))),
-    paths: series.map((s) => path(s.points.toSorted((a, b) => a.t - b.t)) ?? ""),
+    paths: sorted.map((points) => path(points) ?? ""),
+    areas: form === "area" ? sorted.map((points) => fill(points) ?? "") : [],
     xTicks: x.ticks(4).map((d) => ({ value: d.getTime(), position: x(d) })),
     yTicks: y.ticks(4).map((v) => ({ value: v, position: y(v) })),
   };

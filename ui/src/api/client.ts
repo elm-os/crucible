@@ -32,6 +32,8 @@ import type { ExportList } from "./generated/ExportList";
 import type { ExportRequest } from "./generated/ExportRequest";
 import type { FactWritten } from "./generated/FactWritten";
 import type { FeedbackRequest } from "./generated/FeedbackRequest";
+import type { FilterValues } from "./generated/FilterValues";
+import type { FilterValuesParams } from "./generated/FilterValuesParams";
 import type { FlagRequest } from "./generated/FlagRequest";
 import type { InvitationAccept } from "./generated/InvitationAccept";
 import type { InvitationCreate } from "./generated/InvitationCreate";
@@ -529,6 +531,15 @@ export function queryMetrics(
   signal?: AbortSignal,
 ): Promise<MetricsResponse> {
   return apiPost(projectPath(project, "/metrics/query"), body, { signal });
+}
+
+// The most frequent values of a metrics source's filter field in a window.
+export function getFilterValues(
+  project: string,
+  params: FilterValuesParams,
+  signal?: AbortSignal,
+): Promise<FilterValues> {
+  return apiGet(projectPath(project, "/filter-values"), params, signal);
 }
 
 export function searchSpans(
