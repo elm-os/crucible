@@ -1,6 +1,6 @@
 //! The lifecycle simulation suite (contract 13, invariant I9): the retention executor, the mask scheduler, the
 //! deletion executor and the node timer of `crucible-lifecycle` over `ChModel` and `PgModel` under crashes,
-//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the five seeded
+//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the six seeded
 //! defects it must catch (docs/testing/lifecycle-simulation.md).
 //!
 //! Replay one seed:
@@ -61,11 +61,13 @@ fn assert_exercised(total: &Stats) {
         "{total:?}"
     );
     // A project was deleted in every run, frames of it were taken after its deletion, and its control-plane
-    // rows were checked.
+    // rows were checked. The project that keeps everything wrote late rows into the deleted project's partitions
+    // as the deletion acted on them.
     assert!(
         total.by_project > 0 && total.late_frames > 0 && total.control_rows_checked > 0,
         "{total:?}"
     );
+    assert!(total.live_late_frames > 0, "{total:?}");
     assert!(
         total.retention_changes > 0 && total.deletes > 0 && total.drops > 0 && total.masks > 0,
         "{total:?}"
@@ -185,7 +187,24 @@ fn reaching_mcp_rows_only_by_trace_is_caught() {
     }
 }
 
-/// The mutant "drop shared partitions": a project deletion drops the old partitions it reaches although a project
+/// The mutant "drop within reach", the rule before the live projects' retention horizons were consulted: a project
+/// deletion drops a partition that only deleted projects hold rows in, although the project that keeps everything
+/// can still write there, and the late row it writes as the drop is sent goes with the partition.
+#[test]
+fn dropping_partitions_that_a_live_project_can_still_write_to_is_caught() {
+    let options = Options {
+        mutant: Some(Mutant::DropWithinReach),
+        ..Options::CALM
+    };
+    let caught = catching(8_000..8_006, options, "I9:");
+    println!("drop within reach: caught in seeds {caught:?}");
+    assert!(!caught.is_empty());
+    for seed in caught.into_iter().take(2) {
+        assert_holds(&run_lifecycle_sim(seed, Options::CALM));
+    }
+}
+
+/// The mutant "drop shared partitions": a project deletion drops the partitions it reaches although a project
 /// that is not deleted holds rows there, and those rows go with it.
 #[test]
 fn dropping_partitions_that_a_live_project_shares_is_caught() {

@@ -96,7 +96,11 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   tool inventory included, then its remaining objects and its rows in Postgres (members, alert rules with their
   history, channels with their secrets, saved queries, SQL runs, exports, API keys, retention floor and salt).
   `DELETE projects/{project_id}` answers as before, and org owners and admins follow the purge with
-  `GET projects/{project_id}/deletion-requests` under the deleted project's id.
+  `GET projects/{project_id}/deletion-requests` under the deleted project's id. A partition is dropped whole only
+  when every project with rows in it is deleted and no live project can still write there; elsewhere the project's
+  rows are deleted, so the rows of live projects stay.
+- A project deleted on an earlier version gets the same purge after the upgrade: the server that holds the
+  `lifecycle` lease makes its deletion request of kind `project`, with `requested_by` set to `system:upgrade`.
 - From the moment a project is deleted, the notification outbox sends nothing to its channels.
 - `POST deletion-requests` refuses the kind `project` with 422 and says to delete the project instead.
 - The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as

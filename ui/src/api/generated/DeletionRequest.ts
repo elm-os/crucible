@@ -48,7 +48,8 @@ verified: boolean,
  */
 requested_at: string, 
 /**
- * Who asked: `user:<id>` or `key:<id>`.
+ * Who asked: `user:<id>`, `key:<id>`, or `system:upgrade` for the project deletion that the server makes
+ * for a project deleted on an earlier version.
  */
 requested_by: string, 
 /**

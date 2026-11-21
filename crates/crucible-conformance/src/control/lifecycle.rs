@@ -391,6 +391,18 @@ async fn ledger(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         ..delete.clone()
     };
     t.outcome("update", repo.update_action(&issued).await);
+    // A project deletion's purge is planned as a delete and may be issued as a drop.
+    let as_drop = LifecycleAction {
+        kind: ActionKind::Drop,
+        ..issued.clone()
+    };
+    t.outcome("update the kind", repo.update_action(&as_drop).await);
+    t.outcome(
+        "the kind is stored",
+        repo.request_actions(request_id)
+            .await
+            .map(|a| a.iter().map(|a| a.kind).collect::<Vec<_>>()),
+    );
     let missing = action(55, "nothing", ActionKind::Drop, None)?;
     t.outcome(
         "update an action that does not exist",
@@ -718,11 +730,49 @@ async fn purge(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     Ok(())
 }
 
+/// The deleted projects without a project deletion request (contract 13.4): those deleted before deleting a
+/// project made one. A live project and a deleted one with its project deletion are not among them; a deletion
+/// of another kind does not count.
+async fn earlier(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
+    let s = ctl.store.as_ref();
+    let repo = s.lifecycle();
+    let (bare, traced, live) = (project(71), project(70), project(72));
+    for row in [&bare, &traced, &live] {
+        s.projects().insert(row).await?;
+    }
+    for row in [&bare, &traced] {
+        let deleted = crucible_control::Project {
+            deleted_at: Some(at(7)),
+            version: 2,
+            ..row.clone()
+        };
+        s.projects().update_if_version(&deleted, 1).await?;
+    }
+    repo.insert_request(&request(
+        150,
+        traced.id,
+        DeletionSelector::Traces(vec![TraceId::from_bytes([8; 16])]),
+    ))
+    .await?;
+    t.outcome(
+        "deleted without a project deletion, by id",
+        repo.deleted_without_request().await,
+    );
+    repo.insert_request(&request(151, bare.id, DeletionSelector::Project))
+        .await?;
+    t.outcome(
+        "one of them gets its project deletion",
+        repo.deleted_without_request().await,
+    );
+    Ok(())
+}
+
 /// The lifecycle script.
 pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     registry(ctl, t).await?;
     requests(ctl, t).await?;
     ledger(ctl, t).await?;
     floors(ctl, t).await?;
-    purge(ctl, t).await
+    purge(ctl, t).await?;
+    earlier(ctl, t).await
 }

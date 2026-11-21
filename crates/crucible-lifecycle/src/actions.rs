@@ -19,6 +19,7 @@ use crucible_records::{
 };
 
 use crate::config::LifecycleConfig;
+use crate::deletion::Purges;
 use crate::detail::{self, Call, Detail};
 
 /// The most actions one run moves. The rest wait for the next run, 30 s later.
@@ -129,6 +130,7 @@ struct Run<'a> {
     ctx: &'a LeaderCtx,
     shared: &'a Shared,
     scopes: Scopes,
+    purges: Purges,
     /// The open actions by id, as this run last wrote them.
     open: BTreeMap<Uuid, LifecycleAction>,
 }
@@ -193,8 +195,14 @@ impl Run<'_> {
         Ok(Pair::Free)
     }
 
-    /// Sends the action's call to the store, after recording it as issued under the fencing token.
+    /// Sends the action's call to the store, after recording it as issued under the fencing token. A purge of a
+    /// project deletion is recorded and sent as a drop or a delete, whichever its partition allows now.
     async fn issue(&mut self, action: &LifecycleAction) -> Result<Pair, JobError> {
+        let kind = self.purges.kind(self.ctx, self.shared, action).await?;
+        let action = &LifecycleAction {
+            kind,
+            ..action.clone()
+        };
         let scope = self.scopes.of(self.ctx, action.project_id).await?;
         let call = match detail::call(action, scope) {
             Ok(call) => call,
@@ -396,6 +404,7 @@ pub(crate) async fn advance(ctx: &LeaderCtx, shared: &Shared) -> JobResult {
         ctx,
         shared,
         scopes: Scopes::default(),
+        purges: Purges::default(),
         open: actions.iter().map(|a| (a.id, a.clone())).collect(),
     };
     let mut busy: BTreeSet<(TableId, PartitionId)> = BTreeSet::new();

@@ -47,6 +47,8 @@ plan the same key again: false
 open, by creation: [("deletion:2:page0:span_core", Planned, 0, None, 0), ("drop:span_core:1", Planned, 0, None, 0), ("mask:span_core:1", Planned, 0, None, 0)]
 of the request: [("deletion:2:page0:span_core", Planned, 0, None, 0)]
 update: true
+update the kind: true
+the kind is stored: [Drop]
 update an action that does not exist: false
 nothing is open: []
 prune: 1
@@ -71,3 +73,5 @@ what the other project holds: [("memberships", 1), ("api_keys", 1), ("channels",
 the deleted project's row stays: Some(true)
 its deletion request stays: [("{}", Pending)]
 a project that does not exist: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
+deleted without a project deletion, by id: [ProjectId(01a3185c-5046-7000-8000-000000000046), ProjectId(01a3185c-5047-7000-8000-000000000047)]
+one of them gets its project deletion: [ProjectId(01a3185c-5046-7000-8000-000000000046)]

@@ -170,7 +170,8 @@ pub struct DeletionRequest {
     /// The point in time of the delete: data received at or after it is kept (RFC 3339).
     #[schema(format = DateTime)]
     pub requested_at: String,
-    /// Who asked: `user:<id>` or `key:<id>`.
+    /// Who asked: `user:<id>`, `key:<id>`, or `system:upgrade` for the project deletion that the server makes
+    /// for a project deleted on an earlier version.
     pub requested_by: String,
     /// When the request last changed (RFC 3339).
     #[schema(format = DateTime)]

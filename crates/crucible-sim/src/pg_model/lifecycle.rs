@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ActionState, DeletionRequest, LifecycleAction, LifecycleRepo, Node, NodeAck, PurgedRows,
-    RetentionFloor, TxError, duration_micros,
+    ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo, Node, NodeAck,
+    PurgedRows, RetentionFloor, TxError, duration_micros,
 };
 use crucible_records::{DeletionRequestId, DeletionState, ProjectId, Timestamp, WalEpoch};
 
@@ -251,6 +251,24 @@ impl LifecycleRepo for Runner {
         .await
     }
 
+    async fn deleted_without_request(&self) -> Result<Vec<ProjectId>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            let requested: Vec<ProjectId> = all!(cx, Tbl::DeletionRequests, Row::DeletionRequest)
+                .into_iter()
+                .filter(|request| request.selector == DeletionSelector::Project)
+                .map(|request| request.project_id)
+                .collect();
+            let mut deleted: Vec<ProjectId> = all!(cx, Tbl::Projects, Row::Project)
+                .into_iter()
+                .filter(|project| project.deleted_at.is_some() && !requested.contains(&project.id))
+                .map(|project| project.id)
+                .collect();
+            deleted.sort_unstable();
+            Ok(deleted)
+        })
+        .await
+    }
+
     async fn record_ack(&self, ack: &NodeAck) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| {
             let key = ack_key(ack.request_id, ack.wal_epoch);
@@ -362,6 +380,7 @@ impl LifecycleRepo for Runner {
                 return Ok(false);
             };
             let next = LifecycleAction {
+                kind: action.kind,
                 state: action.state,
                 fencing_token: action.fencing_token,
                 mutation: action.mutation.clone(),

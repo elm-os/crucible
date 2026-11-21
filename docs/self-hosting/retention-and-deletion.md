@@ -91,8 +91,11 @@ deletion makes in the same transaction:
 2. Once every server's write-ahead log has passed the request, every table of the project is emptied: spans and
    their payloads, trace heads and trace statistics, MCP operations with their arguments and results, the four fact
    tables, the session and user rollups, the minute rollups, the hourly rollup of MCP calls, the MCP deploys and the
-   tool inventory. A partition that holds rows of deleted projects only, and ended more than an hour before the
-   deletion, is dropped whole; the project's rows are deleted from every other one. Rows that servers took in the
+   tool inventory. A partition is dropped whole only when every project with rows in it is deleted and no live
+   project can still write there: the partition ends before the retention horizon of every live project (the
+   oldest start time that ingest takes for it), or no project is left. Every other partition gets a delete of the
+   project's rows, which keeps the rows of live projects, also those a live project writes there while the
+   deletion runs. While any live project keeps its data forever, nothing is dropped. Rows that servers took in the
    seconds after the deletion, before their keys caught up, go too, as long as they reach ClickHouse before the
    request completes.
 3. After the next mask cycle, within 24 hours, every table is checked to hold no row of the project and no deleted
@@ -115,6 +118,8 @@ secret keys after 5 seconds.
 
 Org owners and admins follow the purge with `GET /api/v1/projects/{project_id}/deletion-requests`, under the deleted
 project's id: the request of kind `project` lists each table with its deletes, as any deletion request does, and the
-place `control_plane` once the Postgres rows are gone. Nobody else can read a deleted project's requests. The purge
-removes the data of projects deleted on this version; a project deleted on an earlier version keeps the telemetry it
-left in ClickHouse, where no page, API answer or MCP tool reads it.
+place `control_plane` once the Postgres rows are gone. Nobody else can read a deleted project's requests.
+
+A project deleted on an earlier version has no such request. After the upgrade, the server that holds the
+`lifecycle` lease makes it, with `requested_by` set to `system:upgrade`, and the project's data goes as above. The
+same holds for a project that a server still on the earlier version deletes during a rolling upgrade.

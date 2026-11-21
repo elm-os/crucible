@@ -5,25 +5,27 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(clippy::disallowed_methods)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crucible_auth::test_support::scope;
 use crucible_control::{
-    ControlStore, DeletionRequest, DeletionSelector, ExportCommit, ExportFormat, JsonDoc,
-    MediaObject, MediaRef, MediaState, NewExport, Project, Queue, Repos as _,
+    ActionKind, ControlStore, DeletionRequest, DeletionSelector, ExportCommit, ExportFormat,
+    JsonDoc, MediaObject, MediaRef, MediaState, NewExport, Project, Queue, Repos as _,
 };
 use crucible_env::{StoreFlavour, Stores};
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
-    ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, NewDeletion, NodeLog as _,
-    NodeState, Service, Subjects, WalLog, leader_jobs, node_job,
+    EARLIER_DELETION_BY, ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, NewDeletion,
+    NodeLog as _, NodeState, Service, Subjects, WalLog, leader_jobs, node_job,
 };
 use crucible_plan::Value;
 use crucible_records::{
-    DeletionState, ExportJobId, Lsn, MediaObjectId, ProjectId, TableId, Timestamp, TraceId,
+    DeletionState, ExportJobId, Lsn, MediaObjectId, PartitionId, ProjectId, TableId, Timestamp,
+    TraceId,
 };
-use crucible_schema::{Granularity, table};
+use crucible_schema::{Granularity, route, table};
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
 use crucible_sim::ch_model::ChModel;
 use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
@@ -69,12 +71,17 @@ impl Node {
 
     /// Appends one request with the spans `spans` of the trace `tag` and returns its LSN once durable.
     async fn ingest(&self, tag: u8, spans: std::ops::Range<u8>) -> Lsn {
+        self.ingest_at(tag, spans, SIM_EPOCH_MICROS).await
+    }
+
+    /// [`Node::ingest`] with spans that start at `start` (microseconds) and after.
+    async fn ingest_at(&self, tag: u8, spans: std::ops::Range<u8>, start: i64) -> Lsn {
         let specs: Vec<SpanSpec> = spans
             .map(|i| {
                 (
                     [tag; 16],
                     [tag, i, 1, 1, 1, 1, 1, 1],
-                    SIM_EPOCH_MICROS + i64::from(i),
+                    start + i64::from(i),
                     i == 0,
                 )
             })
@@ -106,6 +113,95 @@ impl Node {
             .unwrap()
             .unwrap()
     }
+
+    /// Marks the project deleted as `DELETE projects/{id}` does, with the project deletion request that this version
+    /// makes in the same transaction when `request` is given, and with none, as an older version did, otherwise.
+    async fn mark_deleted(&self, project: ProjectId, request: Option<DeletionRequest>) {
+        let at = request.as_ref().map_or_else(
+            || self.host.env.clock.wall_now(),
+            |request| request.requested_at,
+        );
+        crucible_control::transaction(&self.pg, move |tx| {
+            Box::pin(async move {
+                let stored = tx.projects().get(project).await?.unwrap();
+                let deleted = Project {
+                    deleted_at: Some(at),
+                    version: stored.version + 1,
+                    ..stored.clone()
+                };
+                assert!(
+                    tx.projects()
+                        .update_if_version(&deleted, stored.version)
+                        .await?
+                );
+                if let Some(request) = &request {
+                    tx.lifecycle().insert_request(request).await?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    }
+
+    /// No table that a project deletion reaches holds a row of the project, masked or not.
+    fn assert_purged(&self, project: ProjectId) {
+        for table_id in crucible_lifecycle::project_reach() {
+            let at = table(table_id)
+                .columns
+                .iter()
+                .position(|column| column.name == "project_id")
+                .unwrap();
+            let left = self
+                .ch
+                .held_rows(table_id)
+                .iter()
+                .filter(|(_, _, cells)| cells[at] == Value::Uuid(project.uuid()))
+                .count();
+            assert_eq!(
+                left,
+                0,
+                "{} still holds rows of the project",
+                table_id.name()
+            );
+        }
+    }
+}
+
+/// A project of the store, live and keeping its data forever.
+fn project(n: u8, name: &str) -> Project {
+    Project {
+        id: ProjectId::from_bytes([n; 16]),
+        name: name.to_owned(),
+        slug: name.to_lowercase(),
+        settings: JsonDoc::empty(),
+        retention_days: None,
+        payload_retention_days: None,
+        mcp_content_retention_days: None,
+        config_version: 1,
+        version: 1,
+        deleted_at: None,
+    }
+}
+
+/// The leader jobs of a second server over the same stores, which takes the `lifecycle` lease when the first does
+/// not hold it.
+fn second_server(node: &Node) -> crucible_jobs::Running {
+    let mut config = LifecycleConfig::default();
+    config.mask_cycle = Duration::from_secs(1_800);
+    config.media = true;
+    let stores = LeaderStores {
+        telemetry: Arc::new(node.ch.clone()),
+        subjects: Arc::new(NoSalt),
+        exports: Some(ExportObjects::new(node.objects.clone(), "media")),
+    };
+    let source: LeaderSource = Arc::new(move || Some(stores.clone()));
+    let mut registry = Registry::new();
+    for job in leader_jobs(&source, config) {
+        registry.register(job);
+    }
+    let control: Arc<dyn ControlStore> = Arc::new(node.pg.clone());
+    registry.start(&node.host.env, Some(control), "node#2")
 }
 
 /// One node: the real WAL on a simulated disk, the real shipper over the store model, and the lifecycle jobs
@@ -287,26 +383,7 @@ fn a_project_deletion_empties_every_table_and_completes_over_the_real_wal_and_sh
             node.host.env.clock.wall_now(),
             "user:test".to_owned(),
         );
-        let row = request.clone();
-        crucible_control::transaction(&node.pg, move |tx| {
-            Box::pin(async move {
-                let stored = tx.projects().get(project).await?.unwrap();
-                let deleted = Project {
-                    deleted_at: Some(row.requested_at),
-                    version: stored.version + 1,
-                    ..stored.clone()
-                };
-                assert!(
-                    tx.projects()
-                        .update_if_version(&deleted, stored.version)
-                        .await?
-                );
-                tx.lifecycle().insert_request(&row).await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
+        node.mark_deleted(project, Some(request.clone())).await;
         // A node whose key snapshot has not caught up still takes a frame of the project.
         node.ingest(3, 0..1).await;
 
@@ -327,25 +404,7 @@ fn a_project_deletion_empties_every_table_and_completes_over_the_real_wal_and_sh
         node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
         let done = node.request(request.id).await;
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
-        for table_id in crucible_lifecycle::project_reach() {
-            let at = table(table_id)
-                .columns
-                .iter()
-                .position(|column| column.name == "project_id")
-                .unwrap();
-            let left = node
-                .ch
-                .held_rows(table_id)
-                .iter()
-                .filter(|(_, _, cells)| cells[at] == Value::Uuid(project.uuid()))
-                .count();
-            assert_eq!(
-                left,
-                0,
-                "{} still holds rows of the project",
-                table_id.name()
-            );
-        }
+        node.assert_purged(project);
         // The shipper had written the trace and minute rollups too, and they went with the spans.
         for written in [
             TableId::SpanCore,
@@ -383,6 +442,112 @@ fn a_project_deletion_empties_every_table_and_completes_over_the_real_wal_and_sh
         );
         let open = node.pg.lifecycle().open_actions().await.unwrap();
         assert!(open.is_empty(), "{open:?}");
+    });
+}
+
+/// Contract 13.4: a project deletion drops a partition only when every project with rows there is deleted and no
+/// live project can still write there. Beside the deleted project lives a project that keeps two days: ingest takes
+/// its spans from the start of the day two days back, so the deleted project's partition of ten days ago is out of
+/// its reach and dropped, while those of two days ago and of today get deletes of the deleted project's rows
+/// (where the rule before dropped the settled partition of two days ago too). Every row of the project goes.
+#[test]
+fn a_project_deletion_drops_only_the_partitions_that_no_live_project_can_write_to() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        let live = Project {
+            retention_days: Some(2),
+            ..self::project(2, "Two")
+        };
+        node.pg.projects().insert(&live).await.unwrap();
+        const DAY: i64 = 86_400_000_000;
+        for (tag, back) in [(1, 10), (2, 2), (3, 0)] {
+            node.ingest_at(tag, 0..2, SIM_EPOCH_MICROS - back * DAY)
+                .await;
+        }
+        node.sleep(Duration::from_secs(2)).await;
+        let request = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([0x0e; 16]),
+            project,
+            node.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        node.mark_deleted(project, Some(request.clone())).await;
+
+        node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
+        let done = node.request(request.id).await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        node.assert_purged(project);
+        let day = |back: i64| {
+            route(
+                TableId::SpanCore,
+                Granularity::Day,
+                Timestamp::from_micros(SIM_EPOCH_MICROS - back * DAY),
+            )
+            .unwrap()
+        };
+        let kinds: BTreeMap<PartitionId, ActionKind> = node
+            .pg
+            .lifecycle()
+            .request_actions(request.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|action| action.table == TableId::SpanCore)
+            .map(|action| (action.partition, action.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            BTreeMap::from([
+                (day(10), ActionKind::Drop),
+                (day(2), ActionKind::Delete),
+                (day(0), ActionKind::Delete),
+            ])
+        );
+    });
+}
+
+/// Contract 13.4: a project that an older version deleted (its row marked deleted, without a project deletion
+/// request) gets that request from the deletion executor, made by `system:upgrade`, and is purged like a project
+/// deleted now. The executor runs every 30 s, and a second server's leader jobs take the lease in turn, yet the
+/// project gets one request; a project deleted with its request gets no second one, and a live project none.
+#[test]
+fn a_project_deleted_by_an_older_version_gets_one_project_deletion_and_is_purged() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        let (with, live) = (self::project(3, "Three"), self::project(4, "Four"));
+        node.pg.projects().insert(&with).await.unwrap();
+        node.pg.projects().insert(&live).await.unwrap();
+        node.ingest(1, 0..3).await;
+        node.sleep(Duration::from_secs(2)).await;
+        let _second = second_server(&node);
+        node.mark_deleted(project, None).await;
+        let made = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([0x0f; 16]),
+            with.id,
+            node.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        node.mark_deleted(with.id, Some(made)).await;
+
+        node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
+        let requests = |id| {
+            let repo = node.pg.lifecycle();
+            async move { repo.list_requests(id, None, 10).await.unwrap() }
+        };
+        let earlier = requests(project).await;
+        assert_eq!(earlier.len(), 1, "{earlier:?}");
+        assert_eq!(earlier[0].selector, DeletionSelector::Project);
+        assert_eq!(earlier[0].requested_by, EARLIER_DELETION_BY);
+        assert_eq!(earlier[0].state, DeletionState::Completed, "{earlier:?}");
+        node.assert_purged(project);
+        assert_eq!(node.held(1), 0);
+        let others: Vec<usize> = [requests(with.id).await, requests(live.id).await]
+            .iter()
+            .map(Vec::len)
+            .collect();
+        assert_eq!(others, [1, 0]);
+        let unrequested = node.pg.lifecycle().deleted_without_request().await.unwrap();
+        assert!(unrequested.is_empty(), "{unrequested:?}");
     });
 }
 

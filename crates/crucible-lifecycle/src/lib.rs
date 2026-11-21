@@ -8,7 +8,9 @@
 //! - **Deletion executor** (`lifecycle-deletion`): every 30 s. It acts on a request only after every live
 //!   node's checkpoint has passed the request's tombstone, and then deletes across the reach list (13.3 and
 //!   13.4). A project deletion, which deleting a project makes, reaches every table of the project and then
-//!   its control-plane rows. It also issues, polls and verifies the actions of all three jobs.
+//!   its control-plane rows; it drops a partition only when every project with rows there is deleted and no
+//!   live project can still write there, and a project deleted without that request gets one. It also issues,
+//!   polls and verifies the actions of all three jobs.
 //! - **Node timer** ([`node_job`], `lifecycle-node`): every 5 s on every node. Heartbeat, pending-deletion
 //!   set, tombstone and acknowledgement, checkpoint report, retention snapshot (13.3, steps 2 and 4).
 //! - **[`Service`]**: what the API calls: retention settings and deletion requests.
@@ -48,7 +50,7 @@ use futures::future::BoxFuture;
 pub use config::{LifecycleConfig, Mutant};
 /// Where export files are when the deployment has an object store: the type of [`LeaderStores::exports`].
 pub use crucible_export::ExportObjects;
-pub use deletion::{PlaceStatus, Progress};
+pub use deletion::{EARLIER_DELETION_BY, PlaceStatus, Progress};
 pub use node::{AckError, LogError, NodeLog, NodeState, node_job};
 pub use partitions::{partition_window, partitions_between, partitions_of_days};
 pub use pending::{KEEP_AFTER_APPLIED, PendingDeletion, PendingDeletions, RetentionSnapshot};

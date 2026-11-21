@@ -50,8 +50,9 @@ pub(crate) enum Detail {
         /// The ids of those delete actions.
         covers: Vec<String>,
     },
-    /// A delete of every row of a deleted project in one partition, whatever its arrival: the project takes no
-    /// new data once its keys are revoked (contract 13.4).
+    /// Every row of a deleted project in one partition, whatever its arrival: the project takes no new data once
+    /// its keys are revoked (contract 13.4). Sent as a delete of those rows, or as the drop of the partition when
+    /// nothing else in it is kept or can still arrive; the action's kind records which.
     Purge,
 }
 
@@ -359,6 +360,9 @@ mod tests {
             assert_eq!(plan.target(), crucible_plan::DeleteTarget::Project(scope));
             assert_eq!(plan.partition(), partition);
             assert_eq!(plan.pred(), &Pred::all());
+            // A purge sent as a drop drops its partition.
+            purge.kind = ActionKind::Drop;
+            assert_eq!(call(&purge, Some(scope)), Ok(Call::Drop(table, partition)));
         }
     }
 

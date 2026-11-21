@@ -12638,7 +12638,7 @@
           },
           "requested_by": {
             "type": "string",
-            "description": "Who asked: `user:<id>` or `key:<id>`."
+            "description": "Who asked: `user:<id>`, `key:<id>`, or `system:upgrade` for the project deletion that the server makes\nfor a project deleted on an earlier version."
           },
           "session_id": {
             "type": "string",

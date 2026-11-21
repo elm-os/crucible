@@ -377,6 +377,9 @@ pub trait LifecycleRepo: Send + Sync {
     /// Writes the request's state, places, attempts, error and update time. `false` when there is no such
     /// request.
     async fn update_request(&self, request: &DeletionRequest) -> Result<bool, TxError>;
+    /// The deleted projects that have no deletion request of kind `project`, ordered by id: the projects deleted
+    /// before deleting a project made that request (contract 13.4).
+    async fn deleted_without_request(&self) -> Result<Vec<ProjectId>, TxError>;
     /// Deletes, in one statement, the control-plane rows of a deleted project once its telemetry is purged
     /// (contract 13.4): its memberships, alert rules (with their state and events), channels and their sealed
     /// secrets (every `channel` secret scoped to the project), saved queries, SQL runs, export jobs, API keys,
@@ -410,8 +413,8 @@ pub trait LifecycleRepo: Send + Sync {
         &self,
         request_id: DeletionRequestId,
     ) -> Result<Vec<LifecycleAction>, TxError>;
-    /// Writes the action's state, fencing token, mutation, attempts and update time. `false` when there is no
-    /// such action.
+    /// Writes the action's kind, state, fencing token, mutation, attempts and update time: a project deletion's
+    /// purge is planned as a delete and may be issued as a drop. `false` when there is no such action.
     async fn update_action(&self, action: &LifecycleAction) -> Result<bool, TxError>;
     /// Deletes the verified actions without a request that last changed before `before`; returns how many.
     async fn prune_actions(&self, before: Timestamp) -> Result<u64, TxError>;

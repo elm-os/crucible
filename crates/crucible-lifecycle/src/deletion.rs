@@ -9,10 +9,14 @@
 //!   the MCP tables by `user_id` and `user_subject_hash`, in the partitions where its MCP rows are found: an
 //!   operation can carry the user, or only the hash of the user's subject, when no span of its trace names
 //!   the user. While the project's salt cannot be read, such a request waits and says why;
-//! - a logged project deletion is planned a table at a time instead: every table of the project, each
-//!   partition that holds the project's rows dropped when every project in it is deleted and it ended before
-//!   the request by more than the clock margin, otherwise deleted from, whatever the rows' arrival (the
-//!   project takes no new data once deleted);
+//! - a logged project deletion is planned a table at a time instead: every table of the project, one purge per
+//!   partition that holds the project's rows, whatever their arrival (the project takes no new data once
+//!   deleted). Each time a purge is sent it is decided again whether it drops the partition or deletes the
+//!   project's rows from it: it drops only when every project with rows there is deleted and no live project
+//!   can still write there, because the partition lies before every live project's retention horizon or no
+//!   project is live ([`Purges::kind`]);
+//! - a deleted project without a project deletion request, deleted before deleting a project made one, gets one
+//!   at the start of every run, so an upgrade purges the projects deleted before it;
 //! - it is `applied` when every delete has finished, `verified` when every delete is verified after the mask
 //!   cycle, and `completed` once the places outside ClickHouse are accounted for: for a project deletion, once
 //!   its remaining objects and its control-plane rows are removed too;
@@ -27,27 +31,30 @@ use std::sync::Arc;
 use crucible_auth::stored_project_scope;
 use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
-    TxError, duration_micros,
+    RetentionFloor, TxError, duration_micros,
 };
 use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
-    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_issuers,
-    deletion_traces, lifecycle_column, lifecycle_days,
+    DELETION_TRACES_PAGE, RetentionClamp, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value,
+    deletion_issuers, deletion_traces, lifecycle_column, lifecycle_days,
 };
 use crucible_records::{
-    DeletionState, PartitionId, ProjectId, ProjectScope, TableId, Timestamp, TraceId, WalEpoch,
+    DeletionRequestId, DeletionState, PartitionId, ProjectId, ProjectScope, TableId, Timestamp,
+    TraceId, WalEpoch,
 };
 use crucible_schema::PartitionExpr;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{self, Place, Shared, advance, planned};
+use crate::config::LifecycleConfig;
 use crate::detail::{Detail, subject_hash, subject_hex};
 use crate::partitions::{day_of, days_spanned, partition_window, partitions_of_days};
 use crate::reach::{
     CONTROL_PLANE, EXPORT_FILES, MEDIA, OTHER_PLACES, Reach, final_reach, identity_reach,
     page_reach, project_reach,
 };
+use crate::retention;
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
@@ -167,6 +174,117 @@ fn resolved(rows: &[Row]) -> Vec<(TraceId, Timestamp, Timestamp)> {
             _ => None,
         })
         .collect()
+}
+
+/// Whether a partition that ends at `end` is out of every live project's reach. Each live project is given by
+/// its retention horizon, `None` for one that keeps its data forever. Ingest refuses a span that starts before
+/// its project's horizon, and a fact takes the time of a target that a read clamped to the horizon found
+/// (contract 1.2), so no live project writes a row before its horizon. True when no project is live.
+pub(crate) fn out_of_reach(end: Timestamp, horizons: &[Option<Timestamp>]) -> bool {
+    horizons
+        .iter()
+        .all(|horizon| horizon.is_some_and(|horizon| end <= horizon))
+}
+
+/// The retention horizon of every live project: the first instant of `span_core` that its reads keep, never
+/// below its floor, which ingest takes from the same settings (contract 1.2); `None` for a project that keeps
+/// its data forever, or whose settings give no cut-off. Taken a clock margin behind the database clock, as the
+/// retention executor takes its cut-offs, so that a node whose clock is behind takes nothing older.
+async fn horizons(
+    ctx: &LeaderCtx,
+    config: &LifecycleConfig,
+) -> Result<Vec<Option<Timestamp>>, JobError> {
+    let store = ctx.store();
+    let now = store
+        .db_now()
+        .await?
+        .saturating_add_micros(-duration_micros(config.clock_margin));
+    let floors: BTreeMap<ProjectId, RetentionFloor> =
+        store.lifecycle().floors().await?.into_iter().collect();
+    Ok(store
+        .projects()
+        .list()
+        .await?
+        .iter()
+        .map(|project| {
+            let floor = floors.get(&project.id).copied().unwrap_or_default();
+            RetentionClamp::new(retention::settings(project), now)
+                .with_floors(retention::floors(floor))
+                .cutoff(TableId::SpanCore)
+                .ok()
+                .flatten()
+        })
+        .collect())
+}
+
+/// How the purges of a project deletion that one run of the actions sends remove their rows (contract 13.4).
+#[derive(Debug, Default)]
+pub(crate) struct Purges {
+    /// Whether each project is deleted, read once per run: a deleted project stays deleted, and a project read
+    /// as live only keeps a partition from being dropped.
+    gone: BTreeMap<ProjectId, bool>,
+}
+
+impl Purges {
+    /// The kind a purge is sent as: the drop of its partition when every project with rows there is deleted and
+    /// no live project can write rows there any more ([`out_of_reach`]), otherwise the delete of its project's
+    /// rows, which keeps every other project's. It is decided each time the purge is sent, from the partition's
+    /// projects and the live projects as they are then, so a row that a live project wrote into the partition
+    /// after the purge was planned never goes with it. Every other action keeps its kind.
+    pub(crate) async fn kind(
+        &mut self,
+        ctx: &LeaderCtx,
+        shared: &Shared,
+        action: &LifecycleAction,
+    ) -> Result<ActionKind, JobError> {
+        if Detail::parse(&action.detail) != Ok(Detail::Purge) {
+            return Ok(action.kind);
+        }
+        let config = &shared.config;
+        // An unpartitioned table has no partition to drop.
+        let Some(window) = partition_window(action.table, config.granularity, action.partition)
+        else {
+            return Ok(ActionKind::Delete);
+        };
+        if config.drops_shared_partitions() {
+            return Ok(ActionKind::Drop);
+        }
+        // While the store cannot list the partition's projects, the delete is the safe choice.
+        let Ok(listed) = shared
+            .telemetry
+            .partition_projects(action.table, action.partition)
+            .await
+        else {
+            return Ok(ActionKind::Delete);
+        };
+        for project in listed {
+            if !self.is_gone(ctx, project).await? {
+                return Ok(ActionKind::Delete);
+            }
+        }
+        let out =
+            config.drops_within_reach() || out_of_reach(window.to(), &horizons(ctx, config).await?);
+        Ok(if out {
+            ActionKind::Drop
+        } else {
+            ActionKind::Delete
+        })
+    }
+
+    /// Whether a project is deleted. A project the control store does not have counts as live.
+    async fn is_gone(&mut self, ctx: &LeaderCtx, project_id: ProjectId) -> Result<bool, JobError> {
+        if let Some(gone) = self.gone.get(&project_id) {
+            return Ok(*gone);
+        }
+        let gone = ctx
+            .store()
+            .projects()
+            .get(project_id)
+            .await?
+            .is_some_and(|project| project.deleted_at.is_some());
+        self.gone.insert(project_id, gone);
+        Ok(gone)
+    }
 }
 
 struct Executor<'a> {
@@ -625,31 +743,43 @@ impl Executor<'_> {
         Ok(())
     }
 
-    /// Plans a project deletion (contract 13.4), a table of [`project_reach`] at a time: the partitions that
-    /// hold the project's rows are read from the table, and each gets a drop or a delete
-    /// ([`Executor::purge_action`]). A table's actions are recorded in transactions of a bounded size, then the
-    /// table joins the request's progress, so a later run or another leader goes on from the next one; an action
-    /// planned again has the key of the first and is not recorded twice.
+    /// Plans a project deletion (contract 13.4), a table of [`project_reach`] at a time: one purge for each
+    /// partition that holds the project's rows, as the table reads them. A purge is planned as a delete of the
+    /// project's rows, and each time it is sent it becomes the drop of its partition instead when nothing in the
+    /// partition is kept or can still arrive ([`Purges::kind`]). A table's purges are recorded in transactions
+    /// of a bounded size, then the table joins the request's progress, so a later run or another leader goes on
+    /// from the next one; a purge planned again has the key of the first and is not recorded twice.
     async fn plan_project(
         &self,
         request: &mut DeletionRequest,
         scope: ProjectScope,
         progress: &mut Progress,
     ) -> JobResult {
-        let mut gone = BTreeMap::new();
         for table in project_reach() {
             if progress.purged.iter().any(|name| name == table.name()) {
                 continue;
             }
-            let mut purges = Vec::new();
-            for partition in self.partitions_of(scope, table).await? {
-                if let Some(action) = self
-                    .purge_action(request, table, partition, &mut gone)
-                    .await?
-                {
-                    purges.push(action);
-                }
-            }
+            let now = self.ctx.env.clock.wall_now();
+            let purges = self
+                .partitions_of(scope, table)
+                .await?
+                .into_iter()
+                .map(|partition| {
+                    planned(
+                        self.ctx.env.new_id(),
+                        now,
+                        format!("deletion:{}:purge:{}:{partition}", request.id, table.name()),
+                        ActionKind::Delete,
+                        Place {
+                            table,
+                            partition,
+                            project_id: Some(request.project_id),
+                            request_id: Some(request.id),
+                        },
+                        &Detail::Purge,
+                    )
+                })
+                .collect();
             actions::plan(self.ctx, purges).await?;
             progress.purged.push(table.name().to_owned());
             self.record(request, progress, Vec::new(), &[]).await?;
@@ -661,14 +791,29 @@ impl Executor<'_> {
     }
 
     /// The partitions of a table that hold rows of the project: those of the UTC days its rows fall in, or the
-    /// one partition of an unpartitioned table.
+    /// one partition of an unpartitioned table when its projects include this one.
     async fn partitions_of(
         &self,
         scope: ProjectScope,
         table: TableId,
     ) -> Result<BTreeSet<PartitionId>, JobError> {
         if crucible_schema::table(table).partition == PartitionExpr::None {
-            return Ok(BTreeSet::from([PartitionId::UNPARTITIONED]));
+            let partition = PartitionId::UNPARTITIONED;
+            let listed = self
+                .shared
+                .telemetry
+                .partition_projects(table, partition)
+                .await
+                .map_err(|error| {
+                    JobError::Failed(format!(
+                        "the read of a partition's projects failed: {error}"
+                    ))
+                })?;
+            return Ok(if listed.contains(&scope.project_id()) {
+                BTreeSet::from([partition])
+            } else {
+                BTreeSet::new()
+            });
         }
         let plan = lifecycle_days(scope, table).map_err(|error| {
             JobError::Failed(format!("the read of a table's days was refused: {error}"))
@@ -687,91 +832,6 @@ impl Executor<'_> {
             self.shared.config.granularity,
             days,
         ))
-    }
-
-    /// Whether a project is deleted, read once per run.
-    async fn is_gone(
-        &self,
-        project_id: ProjectId,
-        gone: &mut BTreeMap<ProjectId, bool>,
-    ) -> Result<bool, JobError> {
-        if let Some(known) = gone.get(&project_id) {
-            return Ok(*known);
-        }
-        let deleted = self
-            .ctx
-            .store()
-            .projects()
-            .get(project_id)
-            .await?
-            .is_some_and(|project| project.deleted_at.is_some());
-        gone.insert(project_id, deleted);
-        Ok(deleted)
-    }
-
-    /// What removes the project's rows from one partition. A partition is dropped when every project with
-    /// rows in it is deleted and it ended before the request by more than the clock margin, so that no live
-    /// project can still be writing its first rows there (contract 13.2, as retention drops a partition);
-    /// otherwise the project's rows are deleted from it. Nothing is planned for a partition that a read finds
-    /// without a visible row of the project.
-    async fn purge_action(
-        &self,
-        request: &DeletionRequest,
-        table: TableId,
-        partition: PartitionId,
-        gone: &mut BTreeMap<ProjectId, bool>,
-    ) -> Result<Option<LifecycleAction>, JobError> {
-        let config = &self.shared.config;
-        let margin = duration_micros(config.clock_margin);
-        let settled =
-            partition_window(table, config.granularity, partition).is_some_and(|window| {
-                window.to() <= request.requested_at.saturating_add_micros(-margin)
-            });
-        let mut kind = ActionKind::Delete;
-        if settled || partition.is_unpartitioned() {
-            let listed = self
-                .shared
-                .telemetry
-                .partition_projects(table, partition)
-                .await
-                .map_err(|error| {
-                    JobError::Failed(format!(
-                        "the read of a partition's projects failed: {error}"
-                    ))
-                })?;
-            if !listed.contains(&request.project_id) {
-                return Ok(None);
-            }
-            if settled {
-                kind = ActionKind::Drop;
-                for project in listed {
-                    if config.drops_shared_partitions() {
-                        break;
-                    }
-                    if project != request.project_id && !self.is_gone(project, gone).await? {
-                        kind = ActionKind::Delete;
-                        break;
-                    }
-                }
-            }
-        }
-        let detail = match kind {
-            ActionKind::Drop => Detail::Drop,
-            _ => Detail::Purge,
-        };
-        Ok(Some(planned(
-            self.ctx.env.new_id(),
-            self.ctx.env.clock.wall_now(),
-            format!("deletion:{}:purge:{}:{partition}", request.id, table.name()),
-            kind,
-            Place {
-                table,
-                partition,
-                project_id: Some(request.project_id),
-                request_id: Some(request.id),
-            },
-            &detail,
-        )))
     }
 
     /// The control-plane side of a project deletion, once every place of its telemetry is verified (contract
@@ -916,9 +976,48 @@ impl Executor<'_> {
     }
 }
 
+/// Who makes the project deletion request of a project deleted without one.
+pub const EARLIER_DELETION_BY: &str = "system:upgrade";
+/// The idempotency key of that request, so that a project gets one whichever leader makes it.
+const EARLIER_DELETION_KEY: &str = "project-purge";
+
+/// Makes the project deletion request of every deleted project that has none (contract 13.4): a project
+/// deleted before deleting a project made that request, by this version or by an older server during an
+/// upgrade, is purged as one deleted now. Each request is made under one idempotency key per project, so
+/// leaders that race make it once, and a later run finds nothing to do.
+async fn request_earlier_deletions(ctx: &LeaderCtx) -> JobResult {
+    for project_id in ctx.store().lifecycle().deleted_without_request().await? {
+        let request = DeletionRequest {
+            idempotency_key: Some(EARLIER_DELETION_KEY.to_owned()),
+            ..DeletionRequest::project(
+                DeletionRequestId::from_uuid(ctx.env.new_id()),
+                project_id,
+                ctx.env.clock.wall_now(),
+                EARLIER_DELETION_BY.to_owned(),
+            )
+        };
+        let made = ctx
+            .fenced(move |tx| {
+                Box::pin(async move { tx.lifecycle().insert_request(&request).await })
+            })
+            .await;
+        match made {
+            Ok(_) => tracing::info!(
+                project = %project_id,
+                "requested the purge of a project that was deleted before deleting a project purged its data"
+            ),
+            // Another leader made it first.
+            Err(JobError::Store(TxError::UniqueViolation(_))) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// One pass of the deletion executor.
 pub(crate) async fn run(ctx: LeaderCtx, shared: Arc<Shared>) -> JobResult {
     advance(&ctx, &shared).await?;
+    request_earlier_deletions(&ctx).await?;
     let requests = ctx.store().lifecycle().open_requests().await?;
     if requests.is_empty() {
         return Ok(());
@@ -956,8 +1055,47 @@ pub(crate) async fn run(ctx: LeaderCtx, shared: Arc<Shared>) -> JobResult {
 #[cfg(test)]
 mod tests {
     use crucible_records::{DeletionRequestId, Lsn};
+    use proptest::prelude::*;
 
     use super::*;
+
+    const DAY: i64 = 86_400_000_000;
+
+    fn day(n: i64) -> Timestamp {
+        Timestamp::from_micros(n * DAY)
+    }
+
+    /// A partition is out of reach only when it ends at or before the horizon of every live project: a project
+    /// that keeps its data forever reaches every partition, and with no project live nothing can arrive.
+    #[test]
+    fn a_partition_is_out_of_reach_only_before_every_live_horizon() {
+        assert!(out_of_reach(day(10), &[]));
+        assert!(out_of_reach(day(10), &[Some(day(10)), Some(day(12))]));
+        assert!(!out_of_reach(day(11), &[Some(day(10)), Some(day(12))]));
+        assert!(!out_of_reach(day(1), &[Some(day(12)), None]));
+    }
+
+    proptest! {
+        /// Out of reach is exactly "no live project can still write a row that starts inside the partition":
+        /// ingest takes a span that starts at or after its project's horizon, and anything from a project
+        /// without one, so the latest instant before the partition's end is refused for every live project.
+        #[test]
+        fn out_of_reach_means_ingest_refuses_every_live_project_there(
+            end in 1i64..100,
+            horizons in prop::collection::vec(prop::option::of(0i64..100), 0..6),
+        ) {
+            let horizons: Vec<Option<Timestamp>> =
+                horizons.into_iter().map(|horizon| horizon.map(day)).collect();
+            let takes = |horizon: &Option<Timestamp>, start: Timestamp| {
+                horizon.is_none_or(|horizon| start >= horizon)
+            };
+            let last = day(end).saturating_add_micros(-1);
+            prop_assert_eq!(
+                out_of_reach(day(end), &horizons),
+                horizons.iter().all(|horizon| !takes(horizon, last))
+            );
+        }
+    }
 
     fn node(n: u8) -> Node {
         Node {

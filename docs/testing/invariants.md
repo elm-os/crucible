@@ -174,7 +174,9 @@ After a deletion request or a retention expiry:
 - a **project deletion** selects every row of its project whatever its arrival: once it reaches `completed`, no
   table of the project holds a row of it (the minute rollups, the hourly tier, `mcp_deploys` and
   `mcp_tool_inventory` included), its control-plane rows are gone, and every other project keeps every row of the
-  partitions it dropped or deleted from. The exception is a frame that a node took for the project under I10's
+  partitions it dropped or deleted from, also a row that a live project wrote there while the deletion ran: a
+  partition is dropped only where no live project can still write. A project deleted before deletions made their
+  project deletion request gets one. The exception is a frame that a node took for the project under I10's
   fail-open allowance and shipped only after the deletion completed, which stage B keeps as data received after
   `requested_at`.
 
@@ -186,7 +188,7 @@ Minute rollups keep their counts by contract, unless the whole project is delete
 | Completeness across the reach list, including the media model, after replay and restart | Quiescence |
 | The write path: no row that a completed request selects lands after the request completed, whether the request's tombstone is in the node's log or it completed while the node was down; nothing that no request selects goes (system simulation, dimension `deletions`) | Continuous and quiescence |
 | What stage B drops for a deletion, against a linear model; dropping leaves stage B's state alone | Property |
-| Project deletion: every table of the project empty whatever the rows' arrival, its control-plane rows gone, the other projects' rows kept in the partitions it dropped or deleted from (lifecycle simulation and its directed scenario over the real WAL and shipper) | Quiescence |
+| Project deletion: every table of the project empty whatever the rows' arrival, its control-plane rows gone, the other projects' rows kept in the partitions it dropped or deleted from, late rows of a live project included; a project deleted without a request gets one (lifecycle simulation and its directed scenarios over the real WAL and shipper) | Quiescence |
 | C9 delete visibility; "mask application" (`APPLY DELETED MASK`, `DELETE ... IN PARTITION`); no masked parts within the cycle | Conformance |
 | W11 lifecycle races (retention change, policy rewrite) | Conformance (`sqliso`) |
 | Retention boundary arithmetic | Proof (Kani) |

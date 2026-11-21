@@ -39,6 +39,11 @@
 //! reach list holds a row of the deleted project, the minute rollups, the hourly tier, the deploys and the
 //! inventory included, whatever the row's arrival, that its control-plane rows are gone, and that the other
 //! projects lost no row of a partition that the deletion dropped or deleted from.
+//!
+//! The project that keeps everything also writes late: at the moment the deletion's drop or delete of a
+//! `span_core` partition reaches the store, a frame of it whose spans start in that partition lands there, as a
+//! node ships spans with an old start time that ingest accepted inside the project's retention. The deletion must
+//! keep those rows too, so it may drop a partition only where no live project can still write.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -63,10 +68,12 @@ use crucible_env::{
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
     LeaderSource, LeaderStores, LifecycleConfig, LogError, NewDeletion, NodeLog, NodeState,
-    Service, Subjects, leader_jobs, node_job, retention_tables,
+    Service, Subjects, leader_jobs, node_job, partition_window, retention_tables,
 };
 use crucible_normalize::ProjectSalt;
-use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, TraceSelector, Value, deletion_traces};
+use crucible_plan::{
+    BatchProbe, DeletePlan, DeleteTarget, Pred, QueryPlan, TraceSelector, Value, deletion_traces,
+};
 use crucible_records::{
     AlertRuleId, ApiKeyId, BatchToken, ChannelId, DeletionRequestId, DeletionState, ExportJobId,
     Lsn, PartitionId, ProjectId, SavedQueryId, SqlRunId, TableId, Timestamp, TraceId, UserId, Uuid,
@@ -126,6 +133,9 @@ pub enum Mutant {
     McpByTraceOnly,
     /// A project deletion drops the partitions it reaches whatever other projects hold rows there.
     DropSharedPartitions,
+    /// A project deletion drops a partition in which every project with rows is deleted although a live project
+    /// can still write rows there.
+    DropWithinReach,
 }
 
 /// What one run does.
@@ -231,6 +241,9 @@ pub struct Stats {
     pub late_frames: u64,
     /// Control-plane rows of the projects checked at the end: gone for the deleted project, there for another.
     pub control_rows_checked: u64,
+    /// Late frames of the project that keeps everything that landed in a partition just as the deletion's drop
+    /// or delete of it reached the store.
+    pub live_late_frames: u64,
 }
 
 impl Stats {
@@ -265,6 +278,7 @@ impl Stats {
         self.by_project += other.by_project;
         self.late_frames += other.late_frames;
         self.control_rows_checked += other.control_rows_checked;
+        self.live_late_frames += other.live_late_frames;
     }
 }
 
@@ -474,11 +488,32 @@ enum Fate {
     Dropped,
 }
 
+/// The late frames of the project that keeps everything: one per `span_core` partition that the project deletion
+/// acts on.
+#[derive(Default)]
+struct Late {
+    /// The partitions that have had their late frame.
+    landed: BTreeSet<PartitionId>,
+    /// The log position of the last late frame, in the log of [`late_epoch`].
+    lsn: u64,
+}
+
+/// The log the late frames come from: a node that ships only them.
+fn late_epoch() -> WalEpoch {
+    WalEpoch::from_uuid(Uuid::from_v7_parts(1_800_000_000_200, 1))
+}
+
 /// The telemetry store as the leader reaches it, with the oracle of L1.
 struct Audited {
     ch: ChModel,
     pg: PgModel,
     ledger: Arc<Mutex<Ledger>>,
+    /// The project that keeps everything writes the late frames, into partitions of the deleted project.
+    projects: [ProjectId; 3],
+    ids: Arc<AtomicU64>,
+    late: Arc<Mutex<Late>>,
+    /// The database host's clock, which stamps a late frame's arrival.
+    clock: Arc<dyn Clock>,
 }
 
 impl fmt::Debug for Audited {
@@ -511,6 +546,73 @@ impl Audited {
             ));
         }
     }
+
+    /// Whether a drop of the partition belongs to a deletion request: only a project deletion drops partitions
+    /// for a request, retention drops for none.
+    fn drops_for_a_request(&self, table_id: TableId, partition: PartitionId) -> bool {
+        self.pg.lifecycle_actions().into_iter().any(|action| {
+            action.kind == ActionKind::Drop
+                && action.table == table_id
+                && action.partition == partition
+                && action.state == ActionState::Issued
+                && action.request_id.is_some()
+        })
+    }
+
+    /// A late frame of the project that keeps everything lands in a `span_core` partition, just before the project
+    /// deletion's drop or delete of it reaches the store: its spans start in the partition, as spans with an old
+    /// start time inside that project's retention do. Every table gets the frame's rows, as a shipper writes them.
+    /// Once per partition; a frame the store does not take whole is not counted, and no request can select it.
+    async fn land_late(&self, partition: PartitionId) {
+        let Some(window) = partition_window(TableId::SpanCore, Granularity::Day, partition) else {
+            return;
+        };
+        let lsn = {
+            let mut late = lock(&self.late);
+            if !late.landed.insert(partition) {
+                return;
+            }
+            late.lsn += 1;
+            late.lsn
+        };
+        let trace = self.ids.fetch_add(1, Ordering::SeqCst) + 1;
+        let span = self.ids.fetch_add(1, Ordering::SeqCst) + 1;
+        let spans = Spans {
+            project: self.projects[1],
+            trace: TraceId::from_bytes(u128::from(trace).to_be_bytes()),
+            user: "late".to_owned(),
+            identity: Identity {
+                spans: true,
+                mcp_user: true,
+                issuer: None,
+            },
+            session: "late".to_owned(),
+            start: window.from().saturating_add_micros(3_600_000_000),
+            received_at: self.clock.wall_now(),
+            span_ids: vec![span.to_be_bytes()],
+        };
+        let epoch = late_epoch();
+        for table_id in frame_tables() {
+            let Some((rows, partition)) = rows_of(table_id, &spans, epoch, lsn) else {
+                return;
+            };
+            let Ok(block) = rows.encode() else {
+                return;
+            };
+            let Ok(token) =
+                BatchToken::new(epoch, Lsn::new(lsn), Lsn::new(lsn), table_id, partition)
+            else {
+                return;
+            };
+            let settings = InsertSettings::new(token, StoreFlavour::SingleNode);
+            if self.ch.insert_block(block, settings).await.is_err() {
+                return;
+            }
+        }
+        let mut ledger = lock(&self.ledger);
+        ledger.stats.live_late_frames += 1;
+        ledger.spans.push((spans, Fate::Shipped));
+    }
 }
 
 #[async_trait]
@@ -533,6 +635,11 @@ impl TelemetryStore for Audited {
 
     async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
         self.fenced(ActionKind::Delete, plan.table(), plan.partition());
+        let purge = matches!(plan.target(), DeleteTarget::Project(scope) if scope.project_id() == self.projects[2])
+            && *plan.pred() == Pred::all();
+        if purge && plan.table() == TableId::SpanCore {
+            self.land_late(plan.partition()).await;
+        }
         self.ch.delete(plan).await
     }
 
@@ -542,6 +649,9 @@ impl TelemetryStore for Audited {
         partition: PartitionId,
     ) -> Result<(), StoreError> {
         self.fenced(ActionKind::Drop, table_id, partition);
+        if table_id == TableId::SpanCore && self.drops_for_a_request(table_id, partition) {
+            self.land_late(partition).await;
+        }
         self.ch.drop_partition(table_id, partition).await
     }
 
@@ -632,6 +742,7 @@ struct World {
     /// Whether reads of the project salts fail now and then: while the stores fail.
     salt_faults: Arc<AtomicBool>,
     salt_rng: Arc<dyn Rng>,
+    late: Arc<Mutex<Late>>,
 }
 
 fn uuid(id: Uuid) -> Value {
@@ -883,6 +994,10 @@ impl World {
                 ch: self.ch.clone(),
                 pg: self.pg.clone(),
                 ledger: Arc::clone(&self.ledger),
+                projects: self.projects,
+                ids: Arc::clone(&self.ids),
+                late: Arc::clone(&self.late),
+                clock: Arc::clone(&self.database.clock),
             }),
             subjects: Arc::new(SimSubjects {
                 rng: Arc::clone(&self.salt_rng),
@@ -1990,6 +2105,9 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
         Some(Mutant::DropSharedPartitions) => {
             config.with_mutant(crucible_lifecycle::Mutant::DropSharedPartitions)
         }
+        Some(Mutant::DropWithinReach) => {
+            config.with_mutant(crucible_lifecycle::Mutant::DropWithinReach)
+        }
     }
 }
 
@@ -2062,6 +2180,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         ids: Arc::default(),
         salt_faults: Arc::new(AtomicBool::new(options.store_faults)),
         salt_rng: sim.rng("lifecycle-sim/salts"),
+        late: Arc::default(),
     };
     pg.set_faults(pg_faults(options.store_faults));
     ch.set_faults(ch_faults(options.store_faults));

@@ -255,6 +255,18 @@ impl LifecycleRepo for Handle {
         Ok(changed == 1)
     }
 
+    async fn deleted_without_request(&self) -> Result<Vec<ProjectId>, TxError> {
+        let rows = self
+            .read(
+                "SELECT p.id FROM projects p WHERE p.deleted_at IS NOT NULL AND NOT EXISTS \
+                 (SELECT 1 FROM deletion_requests d WHERE d.project_id = p.id AND d.kind = 'project') \
+                 ORDER BY p.id",
+                &[],
+            )
+            .await?;
+        every(&rows, |c| Ok(ProjectId::from_uuid(c.uuid()?)))
+    }
+
     async fn purge_project(&self, project_id: ProjectId) -> Result<PurgedRows, TxError> {
         // One statement, so the rows go together or not at all. Every delete names only the rows of a project
         // whose row is marked deleted. A rule's state and events cascade from it.
@@ -403,7 +415,7 @@ impl LifecycleRepo for Handle {
         let changed = self
             .write(
                 "UPDATE lifecycle_actions SET state = $2, fencing_token = $3, mutation = $4, \
-                 attempts = $5, updated_at = $6 WHERE id = $1 RETURNING 1",
+                 attempts = $5, updated_at = $6, kind = $7 WHERE id = $1 RETURNING 1",
                 &[
                     P::Uuid(action.id),
                     P::Text(action.state.as_str()),
@@ -411,6 +423,7 @@ impl LifecycleRepo for Handle {
                     P::OptText(action.mutation.as_deref()),
                     P::Int4(action.attempts),
                     P::Ts(action.updated_at),
+                    P::Text(action.kind.as_str()),
                 ],
             )
             .await?;

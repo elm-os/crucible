@@ -24,10 +24,13 @@ pub enum Mutant {
     /// operations' own `user_id` and `user_subject_hash`.
     #[cfg(feature = "test-mutants")]
     McpByTraceOnly,
-    /// A project deletion drops every partition of the project that ended before it, whatever other projects
-    /// hold rows there.
+    /// A project deletion drops every partition it reaches, whatever other projects hold rows there.
     #[cfg(feature = "test-mutants")]
     DropSharedPartitions,
+    /// A project deletion drops a partition in which every project with rows is deleted although a live project
+    /// can still write rows there: the rule before the live projects' retention horizons were consulted.
+    #[cfg(feature = "test-mutants")]
+    DropWithinReach,
 }
 
 /// The settings of the lifecycle jobs.
@@ -49,8 +52,9 @@ pub struct LifecycleConfig {
     pub granularity: Granularity,
     /// How many definite failures an action survives before it is given up as `failed`.
     pub max_attempts: u32,
-    /// How far behind the database clock the retention executor computes its cut-offs, so that it never
-    /// removes a row that a node with a slower clock still serves.
+    /// How far behind the database clock the retention executor computes its cut-offs and the deletion executor
+    /// the live projects' retention horizons, so that neither removes a row that a node with a slower clock still
+    /// serves or still takes.
     pub clock_margin: Duration,
     /// Whether the deployment stores media (an object store is configured): a completed deletion request
     /// then reports the media place `done`, otherwise `not_present`.
@@ -120,6 +124,14 @@ impl LifecycleConfig {
     pub(crate) fn drops_shared_partitions(&self) -> bool {
         #[cfg(feature = "test-mutants")]
         return self.mutant == Some(Mutant::DropSharedPartitions);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether a project deletion drops partitions that a live project can still write to (a seeded defect).
+    pub(crate) fn drops_within_reach(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::DropWithinReach);
         #[cfg(not(feature = "test-mutants"))]
         false
     }
