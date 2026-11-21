@@ -125,7 +125,7 @@ fn one_invalid_filter_is_refused_alike_by_every_surface() {
                 ),
             ];
             for answer in answers {
-                assert_eq!(answer, [expected.clone()], "{filter}");
+                assert_eq!(answer, std::slice::from_ref(&expected), "{filter}");
             }
         }
 
@@ -148,7 +148,7 @@ fn one_invalid_filter_is_refused_alike_by_every_surface() {
                 ),
             ];
             for answer in answers {
-                assert_eq!(answer, [expected.clone()], "{filter}");
+                assert_eq!(answer, std::slice::from_ref(&expected), "{filter}");
             }
             // Past the filter, a server without a store answers that it has none.
             let spans = rest_list(&api, "spans", &filter).await;
