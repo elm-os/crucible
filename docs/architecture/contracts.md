@@ -838,8 +838,12 @@ sums rule of 3.1; their counts and histograms include every span.
 | `user_rollup` | project, day, user_id | `trace_count` (root spans only), `span_count`, `error_count`, cost and token sums, first and last seen. A user's distinct session count is computed at read time (default; revisit) | 60 s |
 | `span_metrics` | project, minute, environment, observation_type, model_response, level, release | `count`, `error_count`, `dur_hist`, `ttft_hist`, cost and token sums. No user dimension | 2 s |
 | `mcp_tool_rollup` | project, side, minute, server_name, deploy_id, capture_source, era, method, target_name, client_name, error_class, caller_fault | `count`, `dur_hist`, `semconv_hist`, request and response byte sums, `last_seen` | 5 s |
+| `mcp_tool_rollup_hourly` | As `mcp_tool_rollup`, with `hour` (the start of the hour) in place of `minute` | As `mcp_tool_rollup`: the rows of an hour merge to what its minute rows merge to | 5 s |
 | `mcp_deploys` | project, server_name, deploy_id, server_version, capture_source | first and last seen | 5 s |
 | `mcp_tool_inventory` | project, server_name, deploy_id, tool_name, schema_hash | first and last seen | 5 s |
+
+The shipper writes `mcp_tool_rollup_hourly` from the same operations as `mcp_tool_rollup`, one partial per key and
+hour of a frame, so long-window reads can take their whole hours from it (sections 8.1 and 9.9) (#149).
 
 ### 3.11 Settled in code
 
@@ -1220,6 +1224,13 @@ commit atomically with their block. They are invisible to every scoped read beca
 `ProjectScope`. `crucible-lifecycle` purges markers whose `marker_at` is older than 7 days, except markers of
 batches named by an open quarantine.
 
+`mcp_tool_rollup_hourly` also holds marker rows that no shipper block sent. Schema step `0005` (section 6.6) copies
+the minute rollup's marker rows with their `marker_epoch` and `marker_batch_seq`, so a batch in doubt at the upgrade
+whose minute pair landed before the copy probes its hourly pair present, and it records the copy in two rows of the
+nil project in partition `197001`: `00000000-0000-7000-8000-000000000002` when the copy starts and
+`00000000-0000-7000-8000-000000000001` when it ends. A marker purge keeps both records: without them the step takes
+the copy for unfinished (#149).
+
 The token covers the remaining race, where the probe reads "absent" while an earlier attempt is still committing.
 That is why every table sets a deduplication window (section 6.2), and why the window must outlast both the longest
 in-flight insert and the probe-to-resend gap.
@@ -1372,6 +1383,7 @@ ORDER BY. Kind P is plain, A is aggregating.
 | 16 | `mcp_deploys` | A | none | **project_id, server_name, deploy_id**, server_version, capture_source, marker_epoch, marker_batch_seq | none | 8192 | `retention_days` on `last_seen` |
 | 17 | `dedup_selftest` | P | none | **id** | none | 8192 | rows older than 1 day purged |
 | 18 | `sql_probe` | P | none | **project_id**, id | none | 8192 | none (access object; section 7.5; never written by the shipper) |
+| 19 | `mcp_tool_rollup_hourly` | A | `toYYYYMM(hour)` | **project_id, side, hour**, server_name, deploy_id, capture_source, era, method, target_name, client_name, error_class, caller_fault, marker_epoch, marker_batch_seq | none | 8192 | `retention_days` on `hour` |
 
 Partition granularity is a provisioning parameter chosen before the first migration: `day` (default) or `week`
 (recommended on Cloud when retention exceeds one year, because of the service's limit on total parts). With `week`,
@@ -1504,6 +1516,9 @@ conventions v1.40.0: inclusive upper bounds of 10, 20, 50, 100, 200 and 500 ms a
 300 s, giving 15 buckets with the last above 300 s), and
 `last_seen SAF(max, DateTime64(6, 'UTC'))`.
 
+**`mcp_tool_rollup_hourly`**: the columns of `mcp_tool_rollup` in its order, with `hour DateTime('UTC')` in place of
+`minute`.
+
 **`mcp_deploys`**: key `project_id`, `server_name LC`, `deploy_id String`, `server_version String`,
 `capture_source Enum8`, marker columns. Measures: `first_seen SAF(min, DateTime64(6, 'UTC'))`,
 `last_seen SAF(max, DateTime64(6, 'UTC'))`.
@@ -1563,12 +1578,25 @@ report(b) = lower(b) + width(b) / 2          (integer division)
   after `row_digest`. Like every step it is forward-only and idempotent; rows written before the step read 0. The
   shipper's rollup functions, the system simulation's I7 oracle and the fixtures' goldens apply the sums rule of
   3.1 from the change that starts writing the column.
+- Schema step `0005_mcp_tool_rollup_hourly` creates `mcp_tool_rollup_hourly` with its grants and service policy,
+  then copies `mcp_tool_rollup` into it once, by hour and marker rows included (section 5.5), before the shipper
+  starts. Two rows of the nil project in partition `197001` record the copy: `00000000-0000-7000-8000-000000000002`,
+  written before it, and `00000000-0000-7000-8000-000000000001`, written after it. Once the second exists, the copy
+  and the records do nothing, so the step can run on every start. When the table holds rows without the record of a
+  finished copy, the step refuses, and the message says to stop every server, end the copy with `KILL QUERY` in case
+  ClickHouse still runs it, empty the table with `TRUNCATE TABLE` and migrate again. The step sets
+  `max_execution_time` to one hour, and the client waits that long plus 2 s for each of its statements instead of
+  300 s. Operations that a server of an earlier version ships after the step reach `mcp_tool_rollup` only (#149).
 
 Ledger (settled in code): with Postgres configured, `crucible migrate` (and `serve --migrate`) runs every pending
 Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
 `migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
-(steps are idempotent, so a crash between apply and record only repeats the step). A step that outlives the lease is
-not recorded and the run reports that it must be repeated. A ledger row whose checksum differs from the step makes
+(steps are idempotent, so a crash between apply and record only repeats the step). While a step applies, the runner
+renews the lease every 5 s (section 11.7), so a step may outlast the lease's TTL; the step ends when the lease is
+lost, because Postgres refuses the renewal or the lease's local validity runs out first. A step whose lease was lost
+is not recorded, and the run reports that it must be repeated. A server that starts meanwhile waits for the lease,
+up to 60 s per attempt, and then finds the step recorded (#149).
+A ledger row whose checksum differs from the step makes
 the step reapply, with a warning. The checksum is SHA-256 over the step's statements with every password digest left
 out (`crucible_schema::without_secrets`), because the digests come from the master key: a start with another master
 key finds every recorded step and applies nothing again. A row written before digests were left out holds the
@@ -1664,7 +1692,8 @@ ClickHouse access control; if every Crucible check were bypassed, another projec
 **Role and grants.** Role `crucible_sql_reader` gets column-level `SELECT` on the curated column list of each base
 table (the `TableDef` marks SQL-readable columns; ingestion and marker columns, `api_key_id` and `row_digest` are
 excluded) and `SELECT` on database `crucible_sql`. It gets nothing else: no source or table-function grants, no
-dictionary access, no temporary tables, no `SYSTEM`, no `KILL`, no access to `dedup_selftest`.
+dictionary access, no temporary tables, no `SYSTEM`, no `KILL`, no access to `dedup_selftest` or to
+`mcp_tool_rollup_hourly`, the hourly tier of `mcp_tool_rollup` (the workspace reads the minute rollup).
 
 **Curated views (`crucible_sql`).** `spans`, `span_payloads`, `traces`, `sessions`, `users`, `mcp_operations`,
 `mcp_contents`, `scores`, `tags`, `flags`, `corrections`, `span_metrics`, `mcp_tool_metrics`, `mcp_tools`,
@@ -1768,6 +1797,12 @@ A plan cannot be constructed without a scope and a window.
 | `TimeSeries` | An `Aggregate` bucketed by a granularity, with gap fill. A zero-filled bucket carries the series' dimension values, 0 for `count` and `sum`, and null for `min`, `max`, `uniq`, histogram and pick measures |
 | `FieldRange` | Point lookup of one payload field with a byte range |
 
+An `Aggregate` over a table with an hourly tier (`crucible_schema::hourly_tier`; `mcp_tool_rollup` is the one such
+table, section 3.10) may read the whole hours of the plan's window from the tier and the minutes before and after
+them from the table, as `HourSplit` divides the window (`Aggregate::hourly`). Each minute is read from exactly one
+of the two, so the answer is the one over the table alone. It is refused when the predicate, a group dimension or a
+measure names the table's time column, and a `TimeSeries` uses it only for steps of whole hours (#149).
+
 `Pred` is a closed AST: `And`, `Or`, `Not`, comparisons (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) between a column from
 the table's column enum and a typed literal, `In`, `StartsWith`, array `HasAny`, `MetadataEq(key, value)`,
 `TextMatch` on `name`, and `InSet(column, aggregate)`: the column's value is among the ids that an `Aggregate`
@@ -1832,6 +1867,10 @@ the source per server, and the main read takes the choice as a predicate.
 - For each table the renderer computes the sort-key and partition predicates from the window (`start_minute`,
   `toDate`, `minute`, `day`), clamps `from` to the table's retention binding (so expired rows are hidden at once),
   and adds `received_at <= as_of` from the cursor on plain tables.
+- An aggregate over an hourly tier renders `FROM (<the table's rows outside the whole hours> UNION ALL <the tier's
+  rows of those hours>)`, each branch with the project, its own window predicates and the plan's predicate. The
+  tier's time column is selected under the table's column name, so the statement around the union reads the columns
+  of one table (#149).
 - Every statement carries a `query_id` (UUIDv7 from `Rng` and `Clock`) and the class settings, explicitly.
 - No rendered statement contains `FINAL`. Aggregating tables are always read through an `Aggregate` whose dimensions
   are key columns (any subset of the key: re-aggregating `SimpleAggregateFunction` columns is associative).
@@ -1909,7 +1948,7 @@ it may trail (barrier expired, peer fan-out incomplete, or replica lag beyond th
 | Sessions, users | `Aggregate` over the rollup for the window, ordered by last seen, keyset `(last_seen, id)` |
 | Search | `TextSearch(span_payload)` returning keys, then a core lookup and a bounded payload substring for the highlight. When the phrase function is unavailable, token AND plus verification in Rust |
 | Fact filter | `SemiJoin(list scan, Aggregate(fact table by key and window, latest-by-version))` |
-| Metrics, dashboards, alerts | Compiled to `span_metrics` or `mcp_tool_rollup` when the dimensions are covered (`source_tier: rollup`); otherwise `Aggregate(span_core)` or `Aggregate(mcp_ops)` in `analytics_raw` (`source_tier: core`). Alerts may use rollups only |
+| Metrics, dashboards, alerts | Compiled to `span_metrics` or `mcp_tool_rollup` when the dimensions are covered (`source_tier: rollup`); otherwise `Aggregate(span_core)` or `Aggregate(mcp_ops)` in `analytics_raw` (`source_tier: core`). Alerts may use rollups only. An `mcp_tool_rollup` read over a window of at least 12 hours takes its whole hours from `mcp_tool_rollup_hourly` (section 9.9) |
 | MCP analytics | Section 9.9 |
 | Data bounds | `Aggregate(span_metrics)` and `Aggregate(mcp_tool_rollup)` for min and max `minute`, merged with the recent index; class `analytics`; cached 30 s per project |
 | Filter values | `Aggregate` grouped by the field, ordered by count, limit at most 100, optional `StartsWith`; over a rollup when the field is a rollup dimension, else over `trace_heads` or `span_core` in class `list` with the window clamped to 24 h (default; revisit) |
@@ -2203,7 +2242,7 @@ tool's schema or arguments. The proxy never produces a `handle_id`.
 
 Every endpoint under `projects/{id}/mcp/` requires `side`, `from` and `to`, and accepts `source` and
 `include_caller_faults` (default false). "Gate" marks the endpoints bound by the 300 ms p95 dashboard target; they
-must read only the listed aggregating tables.
+must read only the listed aggregating tables and `mcp_tool_rollup_hourly`.
 
 | Endpoint | Source tables | Class | Gate |
 |---|---|---|---|
@@ -2218,6 +2257,12 @@ must read only the listed aggregating tables.
 | `operations/{trace_id}/{span_id}` | `PointLookup(mcp_ops)`, `PointLookup(mcp_content)`, and the other side's row in that trace when present | `point` | no |
 | `deploys` | `mcp_deploys` | `analytics` | yes |
 | `compare` | `mcp_tool_rollup` for two deploys or two windows (per-tool deltas of calls, error rate, percentiles) and `mcp_tool_inventory` (tools added, removed, or with a changed schema hash) | `analytics` | yes |
+
+Over a window of at least 12 hours after the retention clamp (`MCP_HOURLY_MIN_WINDOW_HOURS`, default; revisit),
+every read of `mcp_tool_rollup` that can use the hourly tier (section 8.1) takes the window's whole hours from
+`mcp_tool_rollup_hourly` and the minutes at its edges from `mcp_tool_rollup`: the presence read of section 9.5, the
+rollup reads in the table above, the `mcp_ops` metrics source and alert evaluation. A series whose step is finer
+than an hour reads minute rows only (#149).
 
 Alert measures over `mcp_ops`: `mcp.calls`, `mcp.error_rate` (caller faults excluded), `mcp.error_count`,
 `mcp.duration_p50`, `mcp.duration_p90`, `mcp.duration_p99`.
@@ -3132,7 +3177,7 @@ Stage B as built (#121):
 | `mcp_ops`, `mcp_content` | Deleted by trace id, and for user deletes by `user_id` and subject hash |
 | `fact_scores`, `fact_tags`, `fact_flags`, `fact_corrections` | Deleted by target |
 | `trace_stats`, `session_rollup`, `user_rollup` | Rows deleted by key |
-| `span_metrics`, `mcp_tool_rollup`, `mcp_deploys`, `mcp_tool_inventory` | Hold no user dimension and no content. Counts are kept by default; `crucible admin rebuild-rollups` rebuilds a project and day range. Project deletion removes them |
+| `span_metrics`, `mcp_tool_rollup`, `mcp_tool_rollup_hourly`, `mcp_deploys`, `mcp_tool_inventory` | Hold no user dimension and no content. Counts are kept by default; `crucible admin rebuild-rollups` rebuilds a project and day range. Project deletion removes them |
 | Postgres `comments` | Deleted by target |
 | Un-shipped WAL frames | Dropped by stage B (step 3) |
 | Retained and quarantined WAL segments | Replay consults deletion requests; retention is capped at 24 h, so no raw copy outlives the SLA (a pinned quarantine is the documented exception) |
@@ -3266,3 +3311,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-19 | Settled in code by wave B (#84 alerts, #85 lifecycle, #87 exports): five crate rows and the `crucible-api` edges (1.5); queues, columns, permissions, egress and export rules (11.10); deletion hiding bounds and the gaps then open (13.6) |
 | v2 | 2026-11-20 | Settled in code since #94 (#86, #88, #91, #93, #98, #99, #114, #115, #117, #119, #121, #134), and the planned-tense wording removed: a dropped span's usage flag relies on nothing (5.3); the `crucible-media` row with the edges to it and `crucible-mcp-server` to `crucible-export` (1.5); the age check's retention horizon (1.2); what `Stores` holds (2); `ObjectStore` as built (2.10); memory budgets, the CPU budget, read counters, the read deadline and the shutdown order (2.14); never-stored keys in events and links (3.5); `BatchSeal.deletion_seq` (4.4); the ingest CPU budget and its proved kernel (4.8, 4.9); `EPOCH`'s directory entry (4.10); the ledger checksum and probe identity repair (6.6, 7.5); `InSet` (8.1); capture-source selection as a presence read (8.2, 9.5); store-outage reads (8.5, 8.9); MCP metrics and the tags filter (8.8, 8.9, 12.5); SDK feedback (9.10); MCP storage fixes and MCP analytics (9.11); dialect 0 sources (10.5); salts, dashboards and deletion replay (11.1, 11.10); the cursor key (11.2); public-key feedback (11.3); job start (11.7); exports on the disk root (11.10, 12.8); the serve flags, the identity generation, cursor route 8, the search body, the media list route and `features` (12.1, 12.5, 12.6, 12.7); deletion in stage B and what the executor does and does not do (13.3, 13.6); media (14.2, 14.3, 14.5). From the earlier queue: `AssetSource` (2.14); error count and pricing (3.11); the decision order, the per-project bucket and `shipper.encoded_bytes` (4.8); OTLP ids, OTLP/JSON and the rejected bitmap (4.10); the fatal-configuration action and the quarantine layout as built (5.6); single-node serving (5.8); row order in a block (6.7); the index entry charge (8.6); `hint_time` (8.9); span-only `crucible.environment` and `crucible.release` and whole-USD costs (10.6); keys-file key ids (12.1). Rules I5 (one frame over `shipper.encoded_bytes`) and I9 (the repeat exception) in `invariants.md` |
 | v2 | 2026-11-21 | Settled in code by #142, #144, #145 and #146: agent statement slots and the deletion drop metric (2.14); the agent cap held per node (7.1); `use_statistics = 0` (8.4); reads sent together (8.7); the proxy's failure messages (9.1) and state-hash key (9.6); where each SDK scrubs captured content, and the flush and shutdown deadlines (9.10); compat auth and dialect 7's scope rules (10.1); the arrival-bounded deletion read (11.10, 13.3, 13.6); the compat media refusal and its log lines (14.5) |
+| v2 | 2026-11-21 | Settled in code by #149: the hourly tier `mcp_tool_rollup_hourly`, table 19 (3.10, 6.3, 6.4); the copy's marker rows (5.5); schema step 0005 and the runner's lease renewal (6.6); no workspace access (7.4); tiered aggregates and their rendering (8.1, 8.3); long-window MCP reads (8.7, 9.9); deletion reach (13.4) |
