@@ -25,7 +25,7 @@ use crucible_proxy::live::{ExportConfig, Telemetry};
 use crucible_proxy::net::Target;
 use crucible_proxy::scan::StateKey;
 use crucible_proxy::stdio::ClientIo;
-use crucible_proxy::{CoreConfig, ProxyCore};
+use crucible_proxy::{CaptureRule, CoreConfig, ProxyCore};
 use crucible_records::CaptureSource;
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
@@ -91,6 +91,23 @@ struct TelemetryArgs {
     /// The deploy id of the server, for deploy comparison. Also read from CRUCIBLE_DEPLOY_ID.
     #[arg(long, env = "CRUCIBLE_DEPLOY_ID")]
     deploy_id: Option<String>,
+    /// Record the arguments and results of matching tool calls, scrubbed and cut at 16 KiB per field: a tool
+    /// glob, then options, such as 'search_*' or 'lookup_order,result=false,sample_rate=0.1,max_bytes=4096'.
+    /// Repeat it for more rules; the first rule that matches a tool applies. Also read from
+    /// CRUCIBLE_PROXY_CAPTURE, with rules separated by ';'. Without a rule, no content is recorded.
+    #[arg(
+        long = "capture",
+        value_name = "RULE",
+        env = "CRUCIBLE_PROXY_CAPTURE",
+        value_delimiter = ';',
+        value_parser = capture_rule
+    )]
+    capture: Vec<CaptureRule>,
+}
+
+/// A `--capture` rule; a refusal says how to write it.
+fn capture_rule(text: &str) -> Result<CaptureRule, String> {
+    CaptureRule::parse(text).map_err(|error| error.problem)
 }
 
 #[derive(Debug, Args)]
@@ -235,6 +252,7 @@ fn telemetry(
     // The multi-round state hashes are keyed with the export's secret key, as an SDK keys them (contract 9.6).
     let config = CoreConfig {
         state_key: StateKey::new(&key),
+        capture: args.capture.clone(),
         ..CoreConfig::new(capture_source)
     };
     let core = ProxyCore::new(config, env.rng.fork("crucible-proxy"));
@@ -500,5 +518,57 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["crucible", "proxy", "stdio"]).is_err());
         assert!(Cli::try_parse_from(["crucible", "proxy", "stdio", "npx"]).is_err());
+    }
+
+    #[test]
+    fn capture_rules_come_from_repeated_flags_and_a_refused_rule_says_how_to_write_it() {
+        use crucible_proxy::CaptureRule;
+
+        use super::{ProxyArgs, ProxyCommand};
+
+        let capture = |argv: &[&str]| -> Vec<CaptureRule> {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            let Command::Proxy(ProxyArgs {
+                command: ProxyCommand::Stdio(args),
+            }) = cli.command
+            else {
+                panic!("not the stdio proxy");
+            };
+            args.telemetry.capture
+        };
+        assert!(capture(&["crucible", "proxy", "stdio", "--", "server"]).is_empty());
+        let rules = capture(&[
+            "crucible",
+            "proxy",
+            "stdio",
+            "--capture",
+            "search_*",
+            "--capture",
+            "lookup_order,result=false,sample_rate=0.1;secret,max_bytes=4096",
+            "--",
+            "server",
+        ]);
+        let expected = [
+            "search_*",
+            "lookup_order,result=false,sample_rate=0.1",
+            "secret,max_bytes=4096",
+        ]
+        .map(|rule| CaptureRule::parse(rule).unwrap());
+        assert_eq!(rules, expected);
+        let refused = Cli::try_parse_from([
+            "crucible",
+            "proxy",
+            "stdio",
+            "--capture",
+            "secret,max_bytes=lots",
+            "--",
+            "server",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("max_bytes must be a whole number from 1 to 8388608"),
+            "{refused}"
+        );
     }
 }
