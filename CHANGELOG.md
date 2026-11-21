@@ -4,6 +4,20 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+### MCP and SDKs
+
+- `crucible proxy` records the arguments and results of the tool calls a `--capture` rule (or
+  `CRUCIBLE_PROXY_CAPTURE`) names, with the SDKs' rules: off by default, sampled per call, scrubbed with the shared
+  rules and cut at 16 KiB per field, read no further than the cap plus 1 KiB, and never on the forwarding path.
+- The Python SDK encodes captured content without a step per JSON token: a result of 500 records took 0.4 ms
+  instead of 5.2 ms per call on a laptop, with the same text as before.
+- The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
+  a pair of characters every match of it holds (a hexadecimal digit before a `:` for the ipv6 rule), so capturing
+  500 records or 64 KiB of hexadecimal text costs about half as much.
+- The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
+  manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
+  all four variants.
+
 ## [0.1.1] - 2026-11-21
 
 Trace reads stay fast while data is arriving, the MCP server lists spans, sessions and users, the Go SDK scrubs

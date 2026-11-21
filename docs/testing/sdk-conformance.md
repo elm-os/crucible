@@ -389,9 +389,16 @@ counts through a hook inside the SDK.
   four SDKs and of this crate guard the matcher with linear checks (a text shorter than any match is skipped, a rule
   whose required literal is absent is skipped, and a pattern that opens with a literal prefix, a class repetition
   and an anchor outside the class, as the email and jwt rules do, is tried once per anchor), so the steps stay
-  linear in the text; a differential property test in each holds the guarded scrubber to the plain one.
-- The latency gate: every run prints the added p99 per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to the laptop's
-  round counts and fails a shape whose added p99 is above `gate_added_p99_ms` (1 ms). CI never gates on timing.
+  linear in the text; a differential property test in each holds the guarded scrubber to the plain one. The
+  TypeScript scrubber also skips a rule when the text lacks a class member followed by a literal that every match
+  holds (a hexadecimal digit followed by `:` for the ipv6 rule), one search it counts as a step per character.
+- The latency gate: every run prints the added p99 and the gate per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to
+  the laptop's round counts and fails a shape whose added p99 is above its gate: `gate_added_p99_ms` (1 ms), or,
+  for a shape with `gate_relative_p99`, that share of the p99 of its calls without capture when that is larger.
+  Only text-5m has one (5%): its calls move 5 MiB through the MCP library, so without capture their p99 measured
+  25 ms (Rust) to 104 ms (Go) on the laptop, and two arms without capture differed by up to 2.3 ms there, which a
+  1 ms gate cannot tell from capture. Where the library hands the result over in memory (Python, TypeScript), the
+  p99 without capture is under 1 ms, so the 1 ms gate still applies. CI never gates on timing.
 
 | SDK | Test | Command, from the repository root |
 |---|---|---|
