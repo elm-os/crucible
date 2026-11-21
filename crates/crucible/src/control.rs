@@ -36,10 +36,18 @@ const RECORD_ATTEMPTS: u32 = 5;
 /// A step being applied.
 pub(crate) type Applying<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+/// Why the service identities refuse this node's master key, or `None` when they accept it.
+pub(crate) type Refusal<'a> = Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
+
 /// What applies a step to ClickHouse.
 pub(crate) trait ApplyStep: Sync {
     /// Applies the step. It is idempotent, so a step that failed part-way is applied again.
     fn apply<'a>(&'a self, step: &'a MigrationStep) -> Applying<'a>;
+
+    /// Why the service identities refuse this node's master key, or `None` when they accept it. A step that the
+    /// ledger records with other content applies again only under a key they accept: a start with another master
+    /// key applies nothing that a start with the right key recorded (contract 6.6).
+    fn refusal(&self) -> Refusal<'_>;
 }
 
 /// The control plane of this node.
@@ -286,8 +294,9 @@ pub(crate) async fn ensure_migrated(store: &dyn ControlStore) -> anyhow::Result<
     Ok(())
 }
 
-/// Applies the steps the ledger does not hold, or holds with other content, in order, under the `migrations` lease,
-/// and records each with the checksum of what was applied.
+/// Applies the steps the ledger does not hold, in order, under the `migrations` lease, and records each with the
+/// checksum of what was applied. A step that the ledger holds with other content applies again too, unless the
+/// service identities refuse this node's master key ([`ApplyStep::refusal`]).
 pub(crate) async fn apply_steps(
     env: &Env,
     store: &dyn ControlStore,
@@ -308,6 +317,8 @@ pub(crate) async fn apply_steps(
             .into_iter()
             .map(|entry| (entry.id, entry.checksum))
             .collect();
+        // Asked once, and only when a recorded step changed.
+        let mut refusal = None;
         for step in steps {
             let checksum = checksum(step);
             match ledger.get(step.id) {
@@ -317,11 +328,26 @@ pub(crate) async fn apply_steps(
                     tracing::debug!(step = step.id, "migration step already recorded");
                     continue;
                 }
-                Some(_) => tracing::warn!(
-                    step = step.id,
-                    "the ledger records this step with other content (for example from an earlier version, or \
-                     with another sql.statements_per_hour); applying it again"
-                ),
+                Some(_) => {
+                    if refusal.is_none() {
+                        refusal = Some(apply.refusal().await);
+                    }
+                    if let Some(Some(reason)) = &refusal {
+                        tracing::warn!(
+                            step = step.id,
+                            reason,
+                            "this step changed since the ledger recorded it, and the service identities refuse \
+                             this node's master key, so it is not applied again: it applies at the next start \
+                             with the master key this deployment was migrated with"
+                        );
+                        continue;
+                    }
+                    tracing::warn!(
+                        step = step.id,
+                        "the ledger records this step with other content (for example from an earlier version, \
+                         or with another sql.statements_per_hour); applying it again"
+                    );
+                }
                 None => {}
             }
             let asked = env.clock.now();
@@ -391,6 +417,8 @@ mod tests {
         /// The ids of the steps applied, in order.
         log: Mutex<Vec<&'static str>>,
         refuse_access: bool,
+        /// The service identities refuse this node's master key.
+        refuse_key: bool,
         /// Run for three lease lifetimes on this clock while another node tries every second to take the lease.
         outlive: Option<(Arc<dyn crucible_env::Clock>, PgModel)>,
         /// Step the database clock past the lease, let another node take it, and finish at once.
@@ -450,6 +478,13 @@ mod tests {
                 self.log.lock().unwrap().push(step.id);
                 Ok(())
             })
+        }
+
+        fn refusal(&self) -> Refusal<'_> {
+            let refused = self
+                .refuse_key
+                .then(|| "AUTHENTICATION_FAILED for crucible_maint".to_owned());
+            Box::pin(async move { refused })
         }
     }
 
@@ -855,6 +890,14 @@ mod tests {
         });
     }
 
+    /// The service identities refuse every master key but the one the deployment was migrated with.
+    fn other_key() -> Fake {
+        Fake {
+            refuse_key: true,
+            ..Fake::default()
+        }
+    }
+
     /// A start with another master key finds every step recorded, also on a ledger that an upgrade from 0.1.1
     /// brought up to date, so it sends no statement: no identity's password changes (contract 6.6, #114).
     #[test]
@@ -866,20 +909,70 @@ mod tests {
                 if upgraded {
                     record_0_1_1(&env, &model).await;
                 }
-                let apply = Fake::default();
-                apply_steps(&env, &model, "node-a", &release_steps(KEY), &apply)
+                let right = Fake::default();
+                apply_steps(&env, &model, "node-a", &release_steps(KEY), &right)
                     .await
                     .unwrap();
-                let migrated = apply.steps();
                 let _ = log.take();
-                apply_steps(&env, &model, "node-b", &release_steps(OTHER_KEY), &apply)
+                let wrong = other_key();
+                apply_steps(&env, &model, "node-b", &release_steps(OTHER_KEY), &wrong)
                     .await
                     .unwrap();
-                assert_eq!(apply.steps(), migrated, "upgraded: {upgraded}");
+                assert!(wrong.steps().is_empty(), "upgraded: {upgraded}");
                 let other = log.take();
                 assert!(!applied_something(&other), "{other}");
             });
         }
+    }
+
+    /// The first start after an upgrade from 0.1.1 uses another master key. The service identities refuse it, so
+    /// the steps that 0.1.1 recorded with other content are not applied again under it (access step A2 would give
+    /// the probe identities that key's passwords); only step 0005, which is new and holds no password, applies.
+    /// The next start, with the right key, applies the changed steps once (contract 6.6, #114).
+    #[test]
+    fn an_upgrade_started_with_another_master_key_applies_no_changed_step() {
+        let (log, _guard) = capture();
+        sim(PgFaults::default(), async move |env, model| {
+            record_0_1_1(&env, &model).await;
+            let wrong = other_key();
+            apply_steps(&env, &model, "node-a", &release_steps(OTHER_KEY), &wrong)
+                .await
+                .unwrap();
+            assert_eq!(wrong.steps(), ["0005_mcp_tool_rollup_hourly"]);
+            let refused = log.take();
+            assert_eq!(
+                refused
+                    .matches("refuse this node's master key, so it is not applied again")
+                    .count(),
+                3,
+                "{refused}"
+            );
+            assert!(!refused.contains("with other content"), "{refused}");
+            let steps = release_steps(KEY);
+            let right = Fake::default();
+            apply_steps(&env, &model, "node-b", &steps, &right)
+                .await
+                .unwrap();
+            assert_eq!(right.steps(), UPGRADE[..3]);
+            let recorded: Vec<(String, String)> = model
+                .migrations()
+                .applied()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| (row.id, row.checksum))
+                .collect();
+            let applied: Vec<(String, String)> = steps
+                .iter()
+                .map(|step| (step.id.to_owned(), checksum(step)))
+                .collect();
+            assert_eq!(recorded, applied);
+            let later = Fake::default();
+            apply_steps(&env, &model, "node-a", &steps, &later)
+                .await
+                .unwrap();
+            assert!(later.steps().is_empty());
+        });
     }
 
     /// A server started without `--migrate` opens ingest only once the ledger records every step of its version,

@@ -4,11 +4,11 @@
 #
 # 1. Starts compose.yaml with the release, creates the organization's owner and an API key, sends a trace, and sends
 #    three MCP tool calls from two hours ago, then waits until the release reads them back.
-# 2. Upgrades the stack to the given image and restarts the server twice. The first start of the new image applies
-#    the migration steps the release lacks; the two restarts must apply none, which the server's log shows.
+# 2. Upgrades the stack to the given image and restarts the server twice. The first start of the new image must log
+#    each migration step it adds to the ledger, and the two restarts must apply none, which the server's log shows.
 # 3. Reads the trace back, and the MCP tool calls of the last seven days. A read that long takes whole hours from the
-#    hourly MCP rollup, which holds the release's calls only through the copy of migration step 0005, so it must
-#    count each call once.
+#    hourly MCP rollup, which must hold each call the release stored once: through the copy of migration step 0005
+#    when the release predates it.
 # 4. Removes step 0005 from the migrations ledger and starts the server without --migrate. It must stay not ready
 #    and refuse ingest, saying to run `crucible migrate`, and turn ready once that has run.
 #
@@ -75,6 +75,11 @@ server_log() {
 }
 log_lines() {
   docker logs "$(compose ps --quiet crucible)" 2>&1 | wc -l
+}
+# The ClickHouse migration steps that the ledger records, one per line.
+recorded_steps() {
+  compose exec -T postgres psql --username=crucible --dbname=crucible --tuples-only --no-align --command \
+    "SELECT id FROM schema_migrations WHERE kind <> 'postgres' ORDER BY id"
 }
 # Waits until /readyz answers $1 with a body that contains $2.
 wait_ready() {
@@ -165,14 +170,23 @@ wait_body "$trace_url" '"name":"compose upgrade span"'
 wait_body "$week&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$three"
 
 echo "upgrading to $image"
+before=$(recorded_steps)
 write_env "$image"
 compose up --detach --wait --wait-timeout 240
 running=$(docker inspect --format '{{.Config.Image}}' "$(compose ps --quiet crucible)")
 [ "$running" = "$image" ] || { echo "after the upgrade the server runs $running, expected $image" >&2; exit 1; }
-if ! server_log 1 | grep -q 'migration step applied.*0005_mcp_tool_rollup_hourly'; then
-  echo "the first start of $image did not log that it applied step 0005" >&2
-  exit 1
-fi
+upgrade_log=$(server_log 1)
+case "$upgrade_log" in
+  *'ingest is open'*) ;;
+  *) echo "the server's log shows no start of $image" >&2; exit 1 ;;
+esac
+for step in $(comm -13 <(printf '%s\n' "$before" | sort) <(recorded_steps | sort)); do
+  if ! printf '%s\n' "$upgrade_log" | grep -q "migration step applied.*$step"; then
+    echo "the ledger gained step $step, and the first start of $image did not log that it applied it" >&2
+    exit 1
+  fi
+  echo "the upgrade applied step $step"
+done
 
 for restart in 1 2; do
   echo "restart $restart"
@@ -202,6 +216,7 @@ compose exec -T postgres psql --username=crucible --dbname=crucible --quiet --co
   "DELETE FROM schema_migrations WHERE id = '0005_mcp_tool_rollup_hourly'"
 overrides+=(-f "$work/compose.no-migrate.yaml")
 compose up --detach crucible
+# shellcheck disable=SC2016 # the backticks are part of the server's message
 wait_ready 503 'run `crucible migrate`'
 status=$(send "$trace")
 [ "$status" = 503 ] || { echo "ingest answered $status before step 0005 was recorded, expected 503" >&2; exit 1; }

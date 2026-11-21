@@ -32,7 +32,7 @@ use crucible_schema::{
     schema_span_usage_aggregate, workspace_user,
 };
 
-use crate::control::{ApplyStep, Applying, Control};
+use crate::control::{ApplyStep, Applying, Control, Refusal};
 use crucible_store_clickhouse::{
     ClickHouseSqlStore, ClickHouseStore, Credentials, SqlPasswords, SqlStoreConfig, StoreConfig,
 };
@@ -263,6 +263,16 @@ impl ApplyStep for ClickHouseStore {
             self.apply_migration(step)
                 .await
                 .with_context(|| format!("migration step {}", step.id))
+        })
+    }
+
+    /// `crucible_maint` signs in with this node's master key, or the health check says why not.
+    fn refusal(&self) -> Refusal<'_> {
+        Box::pin(async move {
+            match self.health().await {
+                StoreHealth::Healthy => None,
+                StoreHealth::Unavailable { reason } => Some(reason),
+            }
         })
     }
 }

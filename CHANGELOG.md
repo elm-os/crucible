@@ -14,6 +14,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   as the copy of step 0005.
 - A migration step whose content changed, such as steps 0001 to 0003 on an upgrade from 0.1.1, applies once and the
   ledger records its new content; it no longer applies again, with a warning, at every start.
+- A start whose master key the ClickHouse service users refuse leaves a changed migration step for a start with the
+  right key, so it no longer gives the SQL workspace's probe users that key's passwords.
 - With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the migrations ledger
   records every step of its version, and says to run `crucible migrate` or to start one server with `--migrate`.
 
