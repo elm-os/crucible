@@ -59,7 +59,7 @@ pub struct WidgetQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub granularity: Option<Granularity>,
-    /// The time zone of the buckets. Only `UTC` is supported yet.
+    /// The time zone of the buckets: `UTC` or `Etc/UTC`; any other is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub timezone: Option<String>,
