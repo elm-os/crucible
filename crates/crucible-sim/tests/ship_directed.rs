@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(clippy::disallowed_methods)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,7 +25,9 @@ use crucible_shipper::{
     frame_quarantine_ref,
 };
 use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
-use crucible_sim::ship_sim::{QuarantineFault, SpanSpec, read_quarantines, request_payload};
+use crucible_sim::ship_sim::{
+    QuarantineFault, SpanSpec, named_pairs, read_quarantines, request_payload,
+};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use crucible_wal_codec::{
@@ -152,7 +154,8 @@ impl Rig {
         };
         let (wal, report) = Box::pin(Wal::open(&host.env, wal_config)).await.unwrap();
         let stores = Stores::new(Arc::new(self.model.clone()));
-        let shipper = Shipper::new(&host.env, &stores, wal.clone(), &report, config, hooks).unwrap();
+        let shipper =
+            Shipper::new(&host.env, &stores, wal.clone(), &report, config, hooks).unwrap();
         let stats = shipper.stats();
         let ended: Ended = Arc::default();
         let slot = Arc::clone(&ended);
@@ -943,10 +946,32 @@ fn a_copy_that_no_quarantine_frame_names_is_no_quarantine() {
         assert_eq!((rig.model.stats().inserts, rig.model.stats().probes), calls);
         assert_eq!(copied_pairs(&rig.disk), copied);
 
-        let (_, quarantined, faults) = read_quarantines(&rig.disk, &rig.model, watermark);
+        let named = named_in(&node.wal).await;
+        assert!(named.is_empty(), "{named:?}");
+        let (_, quarantined, faults) =
+            read_quarantines(&rig.disk, &rig.model, watermark, Some(&named));
         assert!(quarantined.is_empty() && faults.is_empty(), "{faults:?}");
+        // Read from the store's last answer alone, each copy is a quarantine in doubt.
+        let (_, quarantined, faults) = read_quarantines(&rig.disk, &rig.model, watermark, None);
+        assert_eq!(quarantined.len(), copied.len());
+        assert!(
+            faults
+                .iter()
+                .any(|fault| matches!(fault, QuarantineFault::InDoubt { table: t, .. } if *t == table.name())),
+            "{faults:?}"
+        );
         node.host.stop().await;
     });
+}
+
+/// The pairs that the `Quarantine` frames of the log name.
+async fn named_in(wal: &Wal) -> BTreeSet<(u64, TableId, PartitionId)> {
+    let mut replay = wal.replay(Lsn::FIRST);
+    let mut named = BTreeSet::new();
+    while let Some(frame) = replay.next().await.unwrap() {
+        named.extend(named_pairs(&frame));
+    }
+    named
 }
 
 /// Contract 5.6 as the quarantine check reads it: a pair in doubt that the shipper quarantines after an absent
@@ -955,10 +980,7 @@ fn a_copy_that_no_quarantine_frame_names_is_no_quarantine() {
 fn quarantined_after_data_errors(mutant: Option<Mutant>) -> (usize, Vec<QuarantineFault>) {
     directed_seeded(7, |rig| async move {
         poison_in_flight(&rig.model);
-        let config = ShipperConfig {
-            mutant,
-            ..config()
-        };
+        let config = ShipperConfig { mutant, ..config() };
         let retain = Duration::from_secs(3_600);
         let (node, _) = rig.boot_with(retain, config, Hooks::default()).await;
         let lsn = node.ingest(1, 2).await;
@@ -966,7 +988,10 @@ fn quarantined_after_data_errors(mutant: Option<Mutant>) -> (usize, Vec<Quaranti
         let watermark = node.watermark();
         assert!(watermark >= lsn.get());
         assert_eq!(node.snapshot().quarantined, TABLES.len() as u64);
-        let (_, quarantined, faults) = read_quarantines(&rig.disk, &rig.model, watermark);
+        let named = named_in(&node.wal).await;
+        assert_eq!(named.len(), TABLES.len());
+        let (_, quarantined, faults) =
+            read_quarantines(&rig.disk, &rig.model, watermark, Some(&named));
         node.host.stop().await;
         (quarantined.len(), faults)
     })
