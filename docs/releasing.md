@@ -72,7 +72,8 @@ sdk-release, choose Run workflow and pick the tag under "Use workflow from", or 
 `gh workflow run sdk-release.yml --repo elm-os/crucible --ref vX.Y.Z`. The run replaces the SDK packages on the
 release and leaves alone a version that a registry already has. Never push an `sdk/go/` tag by hand:
 `release.yml` starts on any tag that ends in a version, so it would publish a second release with the binaries. The
-workflow creates the tag with its own token, which starts no workflow.
+workflow creates the tag with its own token, which starts no workflow, once every build and check of the run has
+passed.
 
 Then confirm that each archive holds `crucible` (`crucible.exe` on Windows), `README.md`, `LICENSE`, `CHANGELOG.md`
 and `THIRD_PARTY_NOTICES`. cargo-dist adds the README, the license and the changelog by itself, and `include` in
@@ -83,6 +84,18 @@ curl -fsSL -o crucible.tar.xz \
   https://github.com/elm-os/crucible/releases/download/vX.Y.Z/crucible-x86_64-unknown-linux-gnu.tar.xz
 tar tf crucible.tar.xz
 ```
+
+A release tagged before `sdk-release.yml` existed has no SDK packages, and its tag cannot start the workflow. While
+the SDK files on `main` hold that release's version, which they do until the next release pull request, run the
+workflow from `main` with the tag as input:
+
+```sh
+gh workflow run sdk-release.yml --repo elm-os/crucible --ref main -f tag=vX.Y.Z
+```
+
+That run builds and checks the packages from the head of `main`, attaches them to the release, tags the Go module on
+that commit and publishes to each registry that is turned on. It refuses the input on another branch, for a tag
+without a release, and for a tag that holds the workflow, which runs from its own tag.
 
 ## 4. Point the docs at the new release
 
@@ -116,16 +129,21 @@ registry asks for the same values:
 A repository variable turns a registry's job on: set it under Settings, Secrets and variables, Actions, Variables, or
 with `gh variable set PUBLISH_PYPI --repo elm-os/crucible --body true`. GitHub creates the `npm`, `pypi` and
 `crates-io` environments the first time a job uses them; create one yourself under Settings, Environments to add a
-protection rule, such as limiting it to `v*` tags, or a secret.
+secret or a protection rule, such as a required reviewer. A rule that limits where deployments come from has to
+allow `v*` tags and the `main` branch, since a release tagged before the workflow existed publishes from `main`.
 
-To publish the current release after a step below, run the workflow from its tag:
+To publish the current release after a step below, run the workflow for it. When its tag holds `sdk-release.yml`,
+run it from the tag:
 
 ```sh
 gh workflow run sdk-release.yml --repo elm-os/crucible --ref vX.Y.Z
 ```
 
-The tag's commit has to hold `sdk-release.yml`: a release tagged before the workflow existed has no SDK packages to
-publish.
+Otherwise run it from `main` with the tag as input, as [step 3](#3-check-what-the-tag-built) describes:
+
+```sh
+gh workflow run sdk-release.yml --repo elm-os/crucible --ref main -f tag=vX.Y.Z
+```
 
 ### PyPI
 
@@ -137,8 +155,8 @@ PyPI creates the project on its first trusted publish, so no token is needed at 
    `sdk-release.yml`, environment name `pypi`. A pending publisher does not reserve the name; its first use creates
    the project.
 3. Set the repository variable `PUBLISH_PYPI` to `true`.
-4. Run the workflow from the current release's tag. The `pypi` job uploads the wheel and the source distribution with
-   their attestations to https://pypi.org/p/crucible-sdk.
+4. Run the workflow for the current release, as above. The `pypi` job uploads the wheel and the source distribution
+   with their attestations to https://pypi.org/p/crucible-sdk.
 
 ### npm
 
@@ -157,9 +175,16 @@ first version goes up by hand from the release, and the trusted publisher follow
 
 4. On the day of the next release, before you push its tag: on npmjs.com open `@elm-os/crucible`, Settings, Trusted
    publishing, and add a GitHub Actions publisher with organization `elm-os`, repository `crucible`, workflow filename
-   `sdk-release.yml` and environment name `npm`, and allow `npm publish` under Allowed actions. Then set the
-   repository variable `PUBLISH_NPM` to `true`. The tag publishes the new version with a provenance statement, and
-   that publish confirms the publisher. If the publisher lapses before a release uses it, delete it and add it again.
+   `sdk-release.yml` and environment name `npm`, and allow `npm publish` under Allowed actions. With npm 11.15 or
+   later, this command does the same:
+
+   ```sh
+   npm trust github @elm-os/crucible --file sdk-release.yml --repo elm-os/crucible --env npm --allow-publish
+   ```
+
+   Then set the repository variable `PUBLISH_NPM` to `true`. The tag publishes the new version with a provenance
+   statement, and that publish confirms the publisher. If the publisher lapses before a release uses it, delete it
+   and add it again.
 5. Once a trusted publish has succeeded, you can choose "Require two-factor authentication and disallow tokens" under
    the package's Settings, Publishing access; trusted publishing keeps working.
 
@@ -174,11 +199,12 @@ that you delete right after.
 3. In the repository's settings on GitHub, under Environments, create the environment `crates-io` and add the
    environment secret `CARGO_REGISTRY_TOKEN` holding the token. Set the repository variable `PUBLISH_CRATES` to
    `true`.
-4. Run the workflow from the current release's tag. With the secret present, the `crates` job publishes with it.
+4. Run the workflow for the current release, as above. With the secret present, the `crates` job publishes with it.
 5. When the crate is on https://crates.io/crates/crucible-sdk: open its Settings, Trusted Publishing, Add, GitHub, and
    enter owner `elm-os`, repository `crucible`, workflow filename `sdk-release.yml` and environment `crates-io`.
 6. Delete the `CARGO_REGISTRY_TOKEN` secret and revoke the token on crates.io. Later releases publish with trusted
-   publishing; the crate's settings can then refuse publishes made with a token.
+   publishing. To refuse publishes made with a token from then on, tick "Require trusted publishing for all new
+   versions" in the crate's Settings, under Trusted Publishing.
 
 ### Go
 
