@@ -104,6 +104,21 @@ pub fn parse_code(text: &str) -> Option<u32> {
     rest[..digits].parse().ok()
 }
 
+/// `NOTHING_TO_KILL`: from ClickHouse 26.11 a `KILL QUERY` that matches no running query fails with this code.
+pub const NOTHING_TO_KILL: u32 = 785;
+
+/// The answer of a `KILL QUERY`. A query that has ended counts as killed (contract 2.6), so the refusal of a kill
+/// that matched no running query is success.
+pub(crate) fn killed(answer: Result<(), Failure>) -> Result<(), Failure> {
+    match answer {
+        Err(Failure::Server {
+            code: NOTHING_TO_KILL,
+            ..
+        }) => Ok(()),
+        other => other,
+    }
+}
+
 /// Whether the server refused a statement because its user runs as many statements as its settings profile allows
 /// (`TOO_MANY_SIMULTANEOUS_QUERIES`): the statement never ran.
 pub(crate) fn too_many_queries(error: &clickhouse::error::Error) -> bool {
@@ -215,6 +230,20 @@ mod tests {
     use crucible_env::InsertClass;
 
     use super::*;
+
+    /// A kill that matched no running query killed a query that has ended (contract 2.6); 26.11 refuses it with
+    /// `NOTHING_TO_KILL`. Every other failure stays a failure.
+    #[test]
+    fn a_kill_of_a_query_that_has_ended_succeeds() {
+        let server = |code| Failure::Server {
+            code,
+            message: format!("Code: {code}. DB::Exception: x"),
+        };
+        assert_eq!(killed(Ok(())), Ok(()));
+        assert_eq!(killed(Err(server(NOTHING_TO_KILL))), Ok(()));
+        assert_eq!(killed(Err(server(497))), Err(server(497)));
+        assert_eq!(killed(Err(Failure::Timeout)), Err(Failure::Timeout));
+    }
 
     #[test]
     fn codes_are_parsed_from_bodies_and_from_the_header_form() {

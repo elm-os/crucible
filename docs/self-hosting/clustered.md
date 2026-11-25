@@ -1,8 +1,8 @@
 # Clustered ClickHouse
 
 Crucible stores its telemetry on a self-hosted ClickHouse cluster of one shard with two or more replicas, coordinated
-by ClickHouse Keeper. Every replica holds every table, so the telemetry survives the loss of a replica, and inserts
-continue while a majority of the replicas is up. ClickHouse Cloud is refused at startup.
+by ClickHouse Keeper. Every replica holds a copy of every table, and inserts continue while a majority of the
+replicas is up, with the limits in [failure behaviour](#failure-behaviour). ClickHouse Cloud is refused at startup.
 
 ## How it works
 
@@ -57,8 +57,9 @@ The file runs these services:
 - `ready`: reports Crucible's `/readyz` as its health, as in `compose.yaml`.
 
 With two replicas an insert needs both, so while one is down ClickHouse refuses inserts and Crucible keeps what it
-acknowledged in its write-ahead log until the replica is back. Three replicas keep inserts going with one down; add a
-`clickhouse-3` service and a third `<replica>` to the cluster definition in the file.
+acknowledged in its write-ahead log until the replica is back. With three replicas, inserts continue while one is
+down. To run three, add a `clickhouse-3` service and a third `<replica>` to the cluster definition in the file before
+the first start ([adding a replica](#adding-a-replica)).
 
 ## Point Crucible at a cluster you run
 
@@ -69,8 +70,10 @@ Set two settings ([configuration](configuration.md#clickhouse)):
 | `clickhouse.url` (`CRUCIBLE_CLICKHOUSE_URL`, `--clickhouse-url`) | The HTTP endpoint of one replica, for example `http://clickhouse-1.internal:8123` |
 | `clickhouse.cluster` (`CRUCIBLE_CLICKHOUSE_CLUSTER`, `--clickhouse-cluster`) | The cluster's name in `remote_servers` |
 
-The cluster needs the following. Before any statement runs on the cluster, Crucible checks each item on the replica it
-talks to and refuses to start with a message that names what to change.
+The cluster needs the following. Before any statement runs on the cluster, Crucible checks the shard, the secret,
+Keeper, the macros, the server setting and the tables on the replica it talks to, and refuses to start with a message
+that names what to change. It checks the version and the settings once it has migrated, as on a single server. A
+replica without the admin user fails the first `ON CLUSTER` statement with that replica's error.
 
 - **One shard.** The named cluster has one shard with two or more replicas. A cluster of several shards is refused.
 - **A cluster secret.** The cluster's entry in `remote_servers` holds a `<secret>` on every replica, so a query that
@@ -143,7 +146,7 @@ delete is followed by a read of the work it started, and a replica that lags beh
 
 | What fails | What happens |
 |---|---|
-| One of three replicas | Inserts land on the other two. Reads and the API work while the replica Crucible talks to is up. A deletion request reaches `applied` once the replica is back and has run its deletes; a retention partition drop is sent again until every replica has run it |
+| One of three replicas | Inserts land on the other two. Reads and the API work while the replica Crucible talks to is up. An insert whose outcome was unknown and that never landed, such as one that timed out before ClickHouse wrote it or a batch still in the write-ahead log when Crucible restarts, waits in the log until the replica is back: only then can every replica answer that it is missing. A deletion request reaches `applied` once the replica is back and has run its deletes; a retention partition drop is sent again until every replica has run it |
 | One of two replicas | An insert needs both replicas, so ClickHouse refuses it (`TOO_FEW_LIVE_REPLICAS`). Ingest continues into the write-ahead log, which is shipped once the replica is back. A server that starts meanwhile stays not ready, with the reason |
 | A replica, in the middle of an insert | The insert's outcome is unknown. Crucible sends it again only after every replica has answered without it, and counts it stored once a majority holds it |
 | The replica that `clickhouse.url` names | Crucible cannot reach ClickHouse, as with a single server that is down: ingest continues into the write-ahead log, the trace list and trace detail answer from memory and say the answer is partial, and other reads answer `telemetry_store_unavailable`. A balancer that fails over to another replica keeps Crucible connected |
@@ -166,6 +169,13 @@ memory for 10 seconds after ClickHouse holds it, which covers the usual replicat
 
 No ClickHouse setting closes this gap. `select_sequential_consistency` works only while quorum inserts run one at a
 time (`insert_quorum_parallel = 0`), and Crucible runs several inserts into one table at once.
+
+## Adding a replica
+
+Crucible creates its tables, users and row policies on the replicas that are in the cluster when each migration step
+applies, and the ledger in Postgres applies each step once. It does not create them on a replica added to the cluster
+later, or on one rebuilt from an empty disk, so give the cluster all its replicas before the first start. A replica
+that lacks Crucible's tables makes the checks that read every replica wait or fail, as a replica that is down does.
 
 ## Upgrades
 

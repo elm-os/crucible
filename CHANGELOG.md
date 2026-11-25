@@ -14,6 +14,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - With `clickhouse.cluster` set, a start refuses a cluster that cannot hold the tables (an unknown cluster, several
   shards, missing macros, no Keeper, no cluster secret, or tables created for a single server) with the fix, and a
   migration step while a replica is down fails without being recorded and names the replica.
+- On ClickHouse 26.11, which refuses to kill a query that has already ended, cancelling a finished SQL workspace
+  query and abandoning a finished read succeed again, as on earlier versions.
 
 ## [0.1.2] - 2026-11-25
 

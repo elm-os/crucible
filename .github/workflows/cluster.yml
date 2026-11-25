@@ -52,7 +52,8 @@ jobs:
   cluster:
     name: cluster on clickhouse ${{ matrix.tag }}
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Nightly, the isolation suite provisions ten times as many identities, each of them ON CLUSTER.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 180 || 75 }}
     strategy:
       fail-fast: false
       matrix:
