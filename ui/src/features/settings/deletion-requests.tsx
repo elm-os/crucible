@@ -121,7 +121,11 @@ const times = (count: number) => `${formatCount(count)} ${count === 1 ? "time" :
 // The server's own text about a failed step stays in its log.
 function retrying(request: DeletionRequest): string {
   if (done(request.state) || request.error === undefined) return "";
-  return `A step failed ${times(request.attempts ?? 1)}. The server tries again on its own, and its log says why.`;
+  const state =
+    request.attempts === undefined
+      ? "The request is waiting."
+      : `A step failed ${times(request.attempts)}.`;
+  return `${state} The server tries again on its own, and its log says why.`;
 }
 
 function late(request: DeletionRequest): string {

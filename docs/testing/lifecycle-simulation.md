@@ -1,7 +1,8 @@
 # Lifecycle simulation
 
 How retention and deletion (contract 13, invariant I9) are verified: the retention executor, the mask scheduler,
-the deletion executor and the per-node timer of `crucible-lifecycle`, and the `Service` behind the API. The method
+the deletion executor, the purge sweep and the per-node timer of `crucible-lifecycle`, and the `Service` behind the
+API. The method
 is in [`methodology.md`](methodology.md); the job runners below the executors are in
 [`jobs-simulation.md`](jobs-simulation.md) and the store models in [`control-store.md`](control-store.md).
 

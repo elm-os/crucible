@@ -411,6 +411,23 @@ describe("deletion requests", () => {
     expect(screen.queryByText(/raw text/)).toBeNull();
   });
 
+  test("a request that waits without a failed step says so, without counting failures", async () => {
+    signIn();
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({
+        data: [request({ id: "d-7", state: "logged", verified: false, error: "raw text" })],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByText(
+      "The request is waiting. The server tries again on its own, and its log says why.",
+    );
+    expect(screen.queryByText(/A step failed/)).toBeNull();
+    expect(screen.queryByText(/raw text/)).toBeNull();
+  });
+
   test("a completed project deletion says when it removed rows that arrived late", async () => {
     signIn();
     serve({
