@@ -12,7 +12,6 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SDK guides and READMEs install from the release: the package downloads, the Go module tag and, for Rust, a git
   dependency pinned to the release tag.
 - The SDK packages and the Go module carry the MIT license text.
-
 - MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
   rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
   minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
