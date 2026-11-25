@@ -1,8 +1,9 @@
 # Clustered ClickHouse
 
-Crucible stores its telemetry on a self-hosted ClickHouse cluster of one shard with two or more replicas, coordinated
-by ClickHouse Keeper. Every replica holds a copy of every table, and inserts continue while a majority of the
-replicas is up, with the limits in [failure behaviour](#failure-behaviour). ClickHouse Cloud is refused at startup.
+Crucible stores its telemetry on a self-hosted ClickHouse cluster of one shard with two or more replicas,
+coordinated by ClickHouse Keeper. Every replica holds a copy of every table, and inserts continue while a majority
+of the replicas is up, with the limits in [failure behaviour](#failure-behaviour). It needs Crucible 0.1.3 or newer;
+ClickHouse Cloud is refused at startup.
 
 ## How it works
 
@@ -35,7 +36,13 @@ flowchart LR
 `deploy/compose/compose.cluster.yaml` runs two ClickHouse 26.8 replicas and one ClickHouse Keeper beside Crucible and
 Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need.
 
-1. Copy `deploy/compose/compose.cluster.yaml` from the repository into a new folder, and work in that folder.
+1. Download the Compose file into a new folder, and work in that folder:
+
+   ```sh
+   mkdir crucible-cluster && cd crucible-cluster
+   curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.3/deploy/compose/compose.cluster.yaml
+   ```
+
 2. Make the `.env` file beside it, once:
 
    ```sh
