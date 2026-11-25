@@ -38,7 +38,7 @@ FRESHNESS_P95_LIMIT_S = 2.0
 # backlog that grows through the run cannot hide behind the earlier spans.
 TAIL_S = 30
 DRAIN_LIMIT_S = 180
-PHASES = ("read", "stage_a", "stage_b", "rows", "encode", "wal_append", "wait_inserts", "wait_frames")
+PHASES = ("read", "stage_a", "stage_b", "rows", "encode", "wal_append", "wait_inserts", "wait_frames", "wait_stage_a")
 
 
 def write(path, text):
