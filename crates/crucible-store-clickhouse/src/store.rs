@@ -905,7 +905,11 @@ impl ClickHouseStore {
 
     /// Whether each of the replicas in `cluster` answers with `table`: a read of their system tables lists nothing
     /// for a replica that is down or lacks the table, though it may hold parts that no other replica holds.
-    async fn on_every_replica_with(&self, cluster: &Ident, table: TableId) -> Result<(), StoreError> {
+    async fn on_every_replica_with(
+        &self,
+        cluster: &Ident,
+        table: TableId,
+    ) -> Result<(), StoreError> {
         let mut b = Binder::default();
         let database = b.string(DATABASE);
         let name = b.string(table.name());

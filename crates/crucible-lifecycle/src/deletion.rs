@@ -856,11 +856,11 @@ impl Executor<'_> {
                 .probed
                 .as_deref()
                 .and_then(|text| PartitionId::parse(text).ok());
-            let found =
-                match find(self.shared, table, request.project_id, after, &mut probes).await {
-                    Ok(found) => found,
-                    Err(error) => return self.unreadable(request, table, &error).await,
-                };
+            let found = match find(self.shared, table, request.project_id, after, &mut probes).await
+            {
+                Ok(found) => found,
+                Err(error) => return self.unreadable(request, table, &error).await,
+            };
             let now = self.ctx.env.clock.wall_now();
             let purges = found
                 .partitions

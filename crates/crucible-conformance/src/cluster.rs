@@ -639,7 +639,10 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         expect(partitions.is_err(), || {
             format!("the partitions of the table read {partitions:?} while a replica is down")
         })?;
-        let probe = ctx.store.holds_project(table, Some(partition), second).await;
+        let probe = ctx
+            .store
+            .holds_project(table, Some(partition), second)
+            .await;
         expect(probe.is_err(), || {
             format!("the probe of a project's rows answered {probe:?} while a replica is down")
         })?;
