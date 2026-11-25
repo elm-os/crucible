@@ -4,9 +4,9 @@
 //! A job takes a permit of its stage before it is spawned. One that finds none waits without a thread and runs
 //! on the thread of the job that passes its permit on, first come, first served. Each job's wait (from the offer
 //! to its start) and hold (its run) are recorded by stage. While ingest is busy, as in a burst, the work runs in
-//! place on the shipper's task instead, as it did before it moved off the task: the burst keeps the CPUs it had. The simulation's spawner runs a blocking job in place,
-//! so there every job has ended when its offer returns, at the point of the shipper's run where the work was done
-//! before it moved off the task.
+//! place on the shipper's task instead, as it did before it moved off the task: the burst keeps the CPUs it had.
+//! The simulation's spawner runs a blocking job in place, so there every job has ended when its offer returns, at
+//! the point of the shipper's run where the work was done before it moved off the task.
 
 use std::sync::Arc;
 use std::time::Duration;

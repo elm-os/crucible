@@ -191,8 +191,9 @@ its response carried in `X-Request-Id`.
 
 - **Memory.** The server's memory budgets are the recent-span index (`recent.max_bytes`, by default 10% of the
   memory it may use, at most 1 GiB), 512 MiB of request bytes in flight during ingest, 1 GiB of rows in the
-  shipper and 64 MiB of requests the shipper reads ahead of normalization. At startup it adds them up and logs a warning when they exceed 90% of the memory it may use, with the
-  amount to give it. With the defaults, give the container at least 2 GiB.
+  shipper and 64 MiB of requests the shipper reads ahead of normalization. At startup it adds them up and logs a
+  warning when they exceed 90% of the memory it may use, with the amount to give it. With the defaults, give the
+  container at least 2 GiB.
 - **Disk.** The write-ahead log lives in `data.dir`. It grows while ClickHouse is unreachable and shrinks as the
   shipper catches up. When the log is above its high-water mark or the disk is nearly full, ingest answers 503 with
   `Retry-After` instead of accepting what it might not keep.

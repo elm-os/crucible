@@ -5,7 +5,7 @@
 //!
 //! Stage A of the frames read ahead ([`Window`]) and the encoding of each sealed batch's blocks run as blocking
 //! jobs under their shares of the CPU budget ([`CpuStage`]); the task keeps reading, stage B, the rows and the
-//! WAL's records.
+//! WAL's records. A batch seals once the blocks of every batch before it are encoded.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
