@@ -97,6 +97,17 @@ impl Loaded {
     }
 }
 
+/// Whether `name` is a plain identifier, as a ClickHouse cluster name that Crucible prints unquoted must be:
+/// letters, digits and `_`, not starting with a digit, at most 64 bytes.
+fn plain_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && name.len() <= 64
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 /// A TOML basic string.
 fn quoted(value: &str) -> String {
     let mut out = String::from("\"");
@@ -325,6 +336,32 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         .parsed::<u64>("clickhouse.idle_timeout", "a whole number of seconds")
         .map(Duration::from_secs);
     let idle_ok = t.text("clickhouse.idle_timeout").is_none() || idle_timeout.is_some();
+    let cluster = t.text("clickhouse.cluster").map(str::to_owned);
+    let mut cluster_ok = true;
+    if let Some(name) = &cluster {
+        if !plain_name(name) {
+            cluster_ok = false;
+            let source = t
+                .values
+                .get("clickhouse.cluster")
+                .map(|(_, source)| source.to_string())
+                .unwrap_or_default();
+            t.errors.push(format!(
+                "`clickhouse.cluster` = {} is not a cluster name ({source}): use the name of the cluster in the \
+                 ClickHouse servers' remote_servers, letters, digits and _, not starting with a digit",
+                quoted(name)
+            ));
+        }
+        if t.text("clickhouse.url").is_none() {
+            cluster_ok = false;
+            t.errors.push(
+                "`clickhouse.cluster` is set without `clickhouse.url`: set the URL of one of the cluster's \
+                 replicas, or of a balancer in front of them (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL), or remove \
+                 the cluster for a server without ClickHouse"
+                    .to_owned(),
+            );
+        }
+    }
     let calls_per_second = t.parsed::<u32>("mcp.calls_per_second", "a whole number of calls");
     let burst = t.parsed::<u32>("mcp.burst", "a whole number of calls");
     if burst == Some(0) {
@@ -410,6 +447,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
                     password,
                     master_key: master_key.clone(),
                     idle_timeout,
+                    cluster: cluster.clone(),
                 }),
                 _ => {
                     clickhouse_ok = false;
@@ -619,6 +657,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     if !(recent_ok
         && cpu_ok
         && idle_ok
+        && cluster_ok
         && master_key_ok
         && clickhouse_ok
         && postgres_ok
@@ -1753,6 +1792,50 @@ max_bytes = 67108864  # default
         assert_eq!(
             errors,
             ["`clickhouse.idle_timeout` = \"soon\" is not a whole number of seconds (file)"]
+        );
+    }
+
+    /// `clickhouse.cluster` names the cluster of a replicated ClickHouse. A name that cannot be a cluster's, and a
+    /// cluster without the URL of the replica (or the balancer) Crucible talks to, are refused with the fix.
+    #[test]
+    fn a_clickhouse_cluster_needs_a_plain_name_and_the_url() {
+        let env = env(&[
+            ("CRUCIBLE_CLICKHOUSE_URL", "http://clickhouse-1:8123"),
+            ("CRUCIBLE_CLICKHOUSE_PASSWORD", "pw"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ]);
+        let clickhouse = load(None, &env, &[]).unwrap().config.clickhouse.unwrap();
+        assert_eq!(clickhouse.cluster, None);
+        let flag = [("clickhouse.cluster", "crucible".to_owned())];
+        let clickhouse = load(None, &env, &flag)
+            .unwrap()
+            .config
+            .clickhouse
+            .unwrap();
+        assert_eq!(clickhouse.cluster.as_deref(), Some("crucible"));
+        let file = "[clickhouse]\ncluster = \"main_cluster\"\n";
+        let clickhouse = load(Some(file), &env, &[]).unwrap().config.clickhouse.unwrap();
+        assert_eq!(clickhouse.cluster.as_deref(), Some("main_cluster"));
+
+        for bad in ["my-cluster", "1st", "a b", "c'x"] {
+            let ConfigErrors(errors) =
+                load(None, &env, &[("clickhouse.cluster", bad.to_owned())]).unwrap_err();
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].starts_with(&format!("`clickhouse.cluster` = \"{bad}\""))
+                    && errors[0].contains("remote_servers"),
+                "{errors:?}"
+            );
+        }
+
+        let ConfigErrors(errors) = load(None, &[], &flag).unwrap_err();
+        assert_eq!(
+            errors,
+            [
+                "`clickhouse.cluster` is set without `clickhouse.url`: set the URL of one of the cluster's \
+                 replicas, or of a balancer in front of them (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL), or remove \
+                 the cluster for a server without ClickHouse"
+            ]
         );
     }
 
