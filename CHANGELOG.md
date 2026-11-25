@@ -138,6 +138,12 @@ backup: read Upgrading below before you upgrade.
 - A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
   (`CRUCIBLE_SERVER_METRICS_LISTEN`).
 
+### Dependencies
+
+- The `url` crate is 2.5.9, which fixes RUSTSEC-2026-0592: in 2.5.8, `Url::origin()` could overflow the stack on a
+  nested `blob:` URL. Crucible calls it only on the object store endpoint from its own configuration, never on input
+  from a request.
+
 ### Help and feedback
 
 - The web UI's header has a Feedback menu whose two links open on GitHub in a new tab: "Ask a question or suggest an
