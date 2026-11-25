@@ -1218,6 +1218,12 @@ always well under half of the shortest deduplication window in section 6.2). Pas
 | Plain | `count()` restricted to `_partition_id = {partition}`, `wal_epoch = {epoch}`, `batch_seq = {batch_seq}`; pruned by the minmax skip index on `batch_seq` | count > 0 |
 | Aggregating | Primary-key lookup of the block's **marker row**: `project_id` = nil UUID, `marker_epoch = {epoch}`, `marker_batch_seq = {batch_seq}`, within `_partition_id = {partition}` | count > 0 |
 
+On a cluster (#186) the probe reads every replica (`clusterAllReplicas`). It answers present once a majority of the
+replicas holds the block, as an acknowledged insert with `insert_quorum = auto` leaves it, and absent only once
+every replica has answered without it; otherwise it has no answer and the shipper probes again. A block on fewer
+replicas may still reach its quorum, and a replica that did not answer may hold it, so with a replica down an insert
+whose outcome is unknown waits until that replica answers.
+
 Marker rows: every block for an aggregating table carries exactly one marker row. Its `project_id` is the nil UUID,
 its dimension columns hold type defaults, its time column holds the first instant of the partition, and
 `marker_epoch`, `marker_batch_seq` and `marker_at` are set. `marker_epoch` and `marker_batch_seq` are the last
@@ -1295,14 +1301,18 @@ Ingest is refused, loudly, when the version is below 26.3, the text index is una
 missing, or either self-test fails. All behaviour-affecting settings are sent per query, so a Cloud service's
 `compatibility` value cannot change behaviour.
 
-Settled in code: `crucible serve` also refuses ingest on a server whose flavour is not single node, saying to point
-`clickhouse.url` at a single-node server, and on one where not every table exists, saying to start once with
-`--migrate`. `--migrate` and `crucible migrate` render the single-node variant of every step. With Postgres, a
-server started without `--migrate` also refuses ingest until the migrations ledger records every step of
-`crucible_schema::LEDGER_ORDER` (section 6.6): `/readyz` and ingest answer 503 naming the missing steps, `crucible
-migrate` and `--migrate`, and the server checks again with the store's backoff (1 s doubling to 15 s), so it opens
-without a restart once the steps are recorded. Without Postgres there is no ledger, and the table check above gates
-such a server (#164).
+Settled in code: `crucible serve` refuses ingest on ClickHouse Cloud, on a clustered server unless
+`clickhouse.cluster` names its cluster (and on one whose tables are not replicated), and on one where not every
+table exists, saying to start once with `--migrate`. `--migrate` and `crucible migrate` render the single-node
+variant of every step, or with `clickhouse.cluster` the clustered one, after checks that refuse, each naming its
+fix: a cluster missing from `remote_servers`, a cluster of several shards, a replica without the `shard` and
+`replica` macros, no ClickHouse Keeper session, `distributed_ddl_use_initial_user_and_roles` off, tables created for
+a single server, and replicas that do not run each other's queries as the user who sent them (no cluster `<secret>`)
+(#186). With Postgres, a server started without `--migrate` also refuses ingest until the migrations ledger records
+every step of `crucible_schema::LEDGER_ORDER` (section 6.6): `/readyz` and ingest answer 503 naming the missing
+steps, `crucible migrate` and `--migrate`, and the server checks again with the store's backoff (1 s doubling to 15
+s), so it opens without a restart once the steps are recorded. Without Postgres there is no ledger, and the table
+check above gates such a server (#164).
 
 ### 5.9 Crash barriers
 
@@ -1576,8 +1586,12 @@ report(b) = lower(b) + width(b) / 2          (integer division)
 
 - The ledger `schema_migrations` lives in Postgres. Steps are forward-only and idempotent and are applied by
   `crucible migrate` or by the lease holder at startup, as `crucible_admin`.
-- There are two kinds of step: schema steps (this section) and access steps (section 7). Both render through one
-  flavour switch `clickhouse.flavor = auto | single | cluster | cloud`.
+- There are two kinds of step: schema steps (this section) and access steps (section 7). Both render for the flavour
+  that startup detection finds: a single server, or, with `clickhouse.cluster` (`--clickhouse-cluster`,
+  `CRUCIBLE_CLICKHOUSE_CLUSTER`) naming a cluster of one shard in `remote_servers`, that cluster with replicated
+  engines and `ON CLUSTER`; `clickhouse.url` names one of its replicas, or a balancer in front of them. A step
+  refuses at once when one of the cluster's replicas does not answer, so the ledger records nothing, and says to
+  start it and migrate again (#186).
 - A change to a sort key or partition expression means a new table and a backfill job, never a dual write.
 - A schema step that creates a base table must, in that same step, create the table's service-identity row policy
   (section 7.3).
@@ -1625,7 +1639,7 @@ Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper c
 | Topic | Rule |
 |---|---|
 | Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy`. Released steps render from the current table list, so a step that adds a table changes `0001` to `0003` too, and they apply once more on that upgrade (section 6.6) |
-| Clustered DDL | `ON CLUSTER` statements carry `distributed_ddl_entry_format_version = 8` or higher, and every host must set `distributed_ddl_use_initial_user_and_roles = 1` (text-index preprocessors need it); startup detection (5.8) checks the server setting on the clustered variant |
+| Clustered DDL | `ON CLUSTER` statements carry `distributed_ddl_entry_format_version = 8` or higher, `distributed_ddl_output_mode = throw` and `distributed_ddl_task_timeout = 180`, so a statement fails when a replica has not run it rather than returning before every replica has, and every host must set `distributed_ddl_use_initial_user_and_roles = 1` (text-index preprocessors need it); startup detection (5.8) checks the server setting on the clustered variant (#186) |
 | Replication path | `'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'` |
 | Profile ceilings | Constraints use `MIN 1`, because 0 means unlimited for these settings |
 | Codecs | `T64` on scalar `UInt32`, `UInt64` and `Int64` columns except hash-valued ones; arrays and `start_minute` use `ZSTD(1)` |
@@ -1658,6 +1672,11 @@ exist.
 
 The five identities in the first five rows are the **service identities**. `KILL QUERY` and all runtime
 maintenance belong to `crucible_maint`; DDL and access management belong to `crucible_admin` only.
+
+On a cluster, access step A1 also grants `REMOTE ON *.*` to `crucible_ingest`, `crucible_read_ui` and
+`crucible_maint`, and `SELECT ON system.clusters` to `crucible_ingest` and `crucible_maint`, for the reads of every
+replica (`clusterAllReplicas`): the existence probe, the maintenance reads and the verification of a delete. The
+workspace role gets neither (#186).
 
 Each node's adapter holds its `crucible_read_agent` reads to the `max_concurrent_queries_for_user` of
 `crucible_read_agent_profile`: a read waits, within its deadline, for one of 16 slots on its node before it is sent,
@@ -1948,7 +1967,9 @@ meta { as_of: Timestamp, partial: bool, partial_reason?: "store_unavailable" | "
 ```
 
 `strong` means the response reflects every span this node acknowledged before the request arrived. `lagging` means
-it may trail (barrier expired, peer fan-out incomplete, or replica lag beyond the grace).
+it may trail (barrier expired or peer fan-out incomplete). On a cluster, reads go to the address in
+`clickhouse.url`, the one inserts go to; lag of the replica behind it is not measured, so no answer carries
+`lagging` for replica lag (#186).
 
 ### 8.7 Endpoint plans
 
@@ -3158,6 +3179,12 @@ binding, cut-off day), so a rerun is safe.
 
 No table has a TTL and no table has projections, so a lightweight delete never throws for that reason.
 
+On a cluster (#186), deletes, partition drops and mask applications go to the one replica that `clickhouse.url`
+names, and the tables' replication runs them on every replica. The reads that must hold on every replica read each
+of them (`QueryPlan::on_every_replica`, `clusterAllReplicas`): a mutation's status, the parts that still carry a
+delete mask, the projects in a partition, and the verification of a deletion request (13.3, step 7). A replica that
+is down keeps a delete pending, makes a drop retry, and leaves those reads without an answer.
+
 ### 13.3 Deletion requests
 
 Kinds: `trace` (a list of trace ids, at most 10,000), `user` (`user_id`, optional `issuer`), `session`
@@ -3372,3 +3399,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-21 | Settled in code by #158: per-project metrics turns (2.14); the area chart form (11.10); search filters through the lists' conversion (12.5, 12.6); project deletion as built, with its object store prefix (13.4, 13.6) |
 | v2 | 2026-11-21 | Settled in code by #169: provider versions, issuer changes and configured providers (11.1); the `domains` parameter of `not_invited` (11.4); joining by allowed domain through providers only, and domains at every sign-in (11.5); the recovery command and the configuration sections (12.1); `conflict` for the last way to sign in (12.3); `crucible migrate` fails on deferred steps (6.6) |
 | v2 | 2026-11-21 | Settled in code by #179: agent reads refused with code 202 are sent again within their deadline (2.14, 7.1); the proxy's `max_bytes` ceiling and the oversized operation, and the scrubbers' guards (9.10); the export-object sweep as a `media_gc` leader job (11.7, 11.10) |
+| v2 | 2026-11-25 | Settled in code by #186: clustered ClickHouse with Keeper, through `clickhouse.cluster` in place of a flavour switch, with its startup refusals (5.8, 6.6); the distributed DDL settings (6.7); the REMOTE and `system.clusters` grants (7.1); the probe's majority and all-absent rule (5.5); lifecycle statements to one replica with reads of every replica (13.2); no `lagging` for replica lag (8.6) |
