@@ -25,6 +25,6 @@ mod store;
 pub use raw::{RawRead, RawReply};
 pub use sqlws::{ClickHouseSqlStore, SqlPasswords, SqlStoreConfig, classify_sql, parse_grid};
 pub use store::{
-    ClickHouseStore, Credentials, QUERY_SETTINGS, StoreConfig, TABLE_SETTINGS,
+    ClickHouseStore, ClusterFacts, Credentials, QUERY_SETTINGS, StoreConfig, TABLE_SETTINGS,
     TEXT_SEARCH_FUNCTIONS,
 };

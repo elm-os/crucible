@@ -377,6 +377,10 @@ pub struct ClusterFacts {
     pub missing_macros: Vec<String>,
     /// Why the server holds no Keeper session, when it holds none.
     pub keeper: Option<String>,
+    /// The server setting `distributed_ddl_use_initial_user_and_roles`, which `ON CLUSTER` text-index DDL needs.
+    pub ddl_initial_user_and_roles: bool,
+    /// The tables of database `crucible` whose engine is not replicated, by name.
+    pub unreplicated: Vec<String>,
     /// Why a statement sent to every replica failed, when it failed; a replica that is down does not fail it.
     pub fan_out: Option<String>,
     /// The replicas that did not answer a statement sent to every replica, as `host:port`.
@@ -926,6 +930,44 @@ impl ClickHouseStore {
             .await?
             .trim()
             == "1";
+        if cloud {
+            // A Cloud service is refused whatever else it says.
+            return Ok(ClusterFacts {
+                cloud,
+                shards: 0,
+                replicas: Vec::new(),
+                missing_macros: Vec::new(),
+                keeper: None,
+                ddl_initial_user_and_roles: false,
+                unreplicated: Vec::new(),
+                fan_out: None,
+                silent: Vec::new(),
+            });
+        }
+        let ddl_initial_user_and_roles = self
+            .setting_value_as(
+                admin,
+                "server_settings",
+                "distributed_ddl_use_initial_user_and_roles",
+            )
+            .await?
+            .trim()
+            == "1";
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let replicated = b.string("Replicated");
+        let unreplicated = self
+            .lookup(
+                admin,
+                &b.finish(format!(
+                    "SELECT name FROM system.tables WHERE database = {database} AND NOT startsWith(engine, \
+                     {replicated}) ORDER BY name"
+                )),
+            )
+            .await?
+            .lines()
+            .map(str::to_owned)
+            .collect();
         let replicas = self.cluster_replicas(cluster).await?;
         let mut shards: Vec<u64> = replicas.iter().map(|(shard, _)| *shard).collect();
         shards.dedup();
@@ -969,6 +1011,8 @@ impl ClickHouseStore {
             replicas: replicas.into_iter().map(|(_, host)| host).collect(),
             missing_macros,
             keeper,
+            ddl_initial_user_and_roles,
+            unreplicated,
             fan_out,
             silent,
         })
@@ -1831,10 +1875,10 @@ mod tests {
         ));
         // Two replicas: one holds the block while its quorum waits.
         assert!(probe_answer(1, 2, 2).is_err());
-        assert_eq!(probe_answer(2, 2, 2).unwrap(), true);
-        assert_eq!(probe_answer(0, 2, 2).unwrap(), false);
+        assert!(probe_answer(2, 2, 2).unwrap());
+        assert!(!probe_answer(0, 2, 2).unwrap());
         // Three replicas, one down: a majority still answers present, never absent.
-        assert_eq!(probe_answer(2, 2, 3).unwrap(), true);
+        assert!(probe_answer(2, 2, 3).unwrap());
         assert!(probe_answer(0, 2, 3).is_err());
     }
 
@@ -1883,28 +1927,9 @@ mod tests {
 
     #[test]
     fn one_row_answers_read_as_numbers() {
-        assert_eq!(
-            numbers::<3>(
-                "x", "1	2	3
-"
-            )
-            .unwrap(),
-            [1, 2, 3]
-        );
-        assert!(
-            numbers::<3>(
-                "x", "1	2
-"
-            )
-            .is_err()
-        );
-        assert!(
-            numbers::<2>(
-                "x", "1	z
-"
-            )
-            .is_err()
-        );
+        assert_eq!(numbers::<3>("x", "1\t2\t3\n").unwrap(), [1, 2, 3]);
+        assert!(numbers::<3>("x", "1\t2\n").is_err());
+        assert!(numbers::<2>("x", "1\tz\n").is_err());
     }
 
     #[test]

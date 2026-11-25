@@ -1807,14 +1807,14 @@ max_bytes = 67108864  # default
         let clickhouse = load(None, &env, &[]).unwrap().config.clickhouse.unwrap();
         assert_eq!(clickhouse.cluster, None);
         let flag = [("clickhouse.cluster", "crucible".to_owned())];
-        let clickhouse = load(None, &env, &flag)
+        let clickhouse = load(None, &env, &flag).unwrap().config.clickhouse.unwrap();
+        assert_eq!(clickhouse.cluster.as_deref(), Some("crucible"));
+        let file = "[clickhouse]\ncluster = \"main_cluster\"\n";
+        let clickhouse = load(Some(file), &env, &[])
             .unwrap()
             .config
             .clickhouse
             .unwrap();
-        assert_eq!(clickhouse.cluster.as_deref(), Some("crucible"));
-        let file = "[clickhouse]\ncluster = \"main_cluster\"\n";
-        let clickhouse = load(Some(file), &env, &[]).unwrap().config.clickhouse.unwrap();
         assert_eq!(clickhouse.cluster.as_deref(), Some("main_cluster"));
 
         for bad in ["my-cluster", "1st", "a b", "c'x"] {
