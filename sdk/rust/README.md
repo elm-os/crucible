@@ -13,7 +13,7 @@ Depend on it by git, pinned to the tag of a Crucible release, or by path from a 
 
 ```toml
 [dependencies]
-crucible-sdk = { git = "https://github.com/elm-os/crucible", tag = "v0.1.1", features = ["mcp"] }
+crucible-sdk = { git = "https://github.com/elm-os/crucible", tag = "v0.1.2", features = ["mcp"] }
 ```
 
 It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it never

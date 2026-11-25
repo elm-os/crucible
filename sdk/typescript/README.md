@@ -9,11 +9,11 @@ points:
 | `@elm-os/crucible/mcp`        | `instrument`, `instrumentHandler`, `annotateError`, `markValidation`, `markNotFound`, `identify` |
 | `@elm-os/crucible/mcp-client` | `instrumentClient`                                                                               |
 
-Install it from the GitHub release of Crucible 0.1.1; the SDK has the server's version, and
+Install it from the GitHub release of Crucible 0.1.2; the SDK has the server's version, and
 [the guide](../../docs/guides/sdk-typescript.md#install) has the details:
 
 ```sh
-npm install https://github.com/elm-os/crucible/releases/download/v0.1.1/elm-os-crucible-0.1.1.tgz
+npm install https://github.com/elm-os/crucible/releases/download/v0.1.2/elm-os-crucible-0.1.2.tgz
 ```
 
 It requires Node.js 24. The MCP entry points work with the 2.x line of the official TypeScript MCP SDK

@@ -22,7 +22,7 @@ import (
 )
 
 // Version is the SDK version, sent in the User-Agent of every export request.
-const Version = "0.1.1"
+const Version = "0.1.2"
 
 // ScopeName is the instrumentation scope of every span the SDK starts.
 const ScopeName = "github.com/elm-os/crucible/sdk/go"
