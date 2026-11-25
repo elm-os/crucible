@@ -4,18 +4,26 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-25
+
+Crucible stores telemetry on a self-hosted replicated cluster as well as on a single server, and the SDKs have the
+server's version and ship as packages with each release.
+
+### Clustered ClickHouse
+
 - Crucible runs on a self-hosted replicated ClickHouse cluster of one shard with several replicas and ClickHouse
   Keeper: `clickhouse.cluster` (`CRUCIBLE_CLICKHOUSE_CLUSTER`, `--clickhouse-cluster`) names the cluster, every
   table, user and row policy is created on every replica, each insert is stored on a majority of the replicas, and
   deletions count as applied and verified only once every replica has run them. ClickHouse Cloud is still refused at
-  startup ([clustered ClickHouse](docs/self-hosting/clustered.md)).
+  startup ([clustered ClickHouse](https://github.com/elm-os/crucible/blob/v0.1.3/docs/self-hosting/clustered.md)).
 - `deploy/compose/compose.cluster.yaml` runs Crucible with two ClickHouse replicas, ClickHouse Keeper and Postgres,
   and `compose.cloud.yaml` passes `CRUCIBLE_CLICKHOUSE_CLUSTER` to the server.
 - With `clickhouse.cluster` set, a start refuses a cluster that cannot hold the tables (an unknown cluster, several
   shards, missing macros, no Keeper, no cluster secret, or tables created for a single server) with the fix, and a
   migration step while a replica is down fails without being recorded and names the replica.
-- On ClickHouse 26.11, which refuses to kill a query that has already ended, cancelling a finished SQL workspace
-  query and abandoning a finished read succeed again, as on earlier versions.
+
+### SDKs
+
 - The four SDKs have the server's version (the TypeScript SDK said 0.0.0 and the others 0.1.0), so the version in an
   SDK's User-Agent names the Crucible release it shipped with.
 - Each release carries the SDK packages on its GitHub release: `elm-os-crucible-X.Y.Z.tgz` for TypeScript,
@@ -24,6 +32,35 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SDK guides and READMEs install from the release: the package downloads, the Go module tag and, for Rust, a git
   dependency pinned to the release tag.
 - The SDK packages and the Go module carry the MIT license text.
+
+### Compatibility
+
+- On ClickHouse 26.11, which refuses to kill a query that has already ended, cancelling a finished SQL workspace
+  query and abandoning a finished read succeed again, as on earlier versions.
+
+### Upgrading
+
+- A deployment on a single ClickHouse server upgrades with the new image and a restart, as
+  [operations](https://github.com/elm-os/crucible/blob/v0.1.3/docs/self-hosting/operations.md#upgrades) describes:
+  0.1.3 adds no Postgres migration and no ClickHouse migration step, changes none of the steps that 0.1.2 recorded,
+  and needs no new setting or grant, so its first start applies nothing. The `compose.cloud.yaml` of 0.1.3 passes
+  `CRUCIBLE_CLICKHOUSE_CLUSTER` from `.env`; left out or empty, it keeps Crucible on one server.
+- An existing single-server deployment cannot be switched to a cluster in place. Once its ClickHouse server is a
+  replica in a cluster, a start with `clickhouse.cluster` refuses the tables it holds, which were created for a
+  single server: it names them and says to unset `clickhouse.cluster` or to point `clickhouse.url` at a cluster
+  whose database `crucible` holds no tables. Crucible does not convert such tables or copy their rows.
+- To run on a cluster, start a new deployment, with a Postgres database of its own, on a cluster whose replicas hold
+  no tables in database `crucible` yet. With the single-server deployment's Postgres, which records the migration
+  steps applied to the single server, a start does not create the tables on the cluster. The single-server
+  deployment keeps its telemetry, projects and users.
+- Give a cluster all its replicas before Crucible's first start on it, as
+  [adding a replica](https://github.com/elm-os/crucible/blob/v0.1.3/docs/self-hosting/clustered.md#adding-a-replica)
+  says: Crucible creates its tables, users and row policies on the replicas in the cluster when each migration step
+  applies, and not on a replica added later or rebuilt from an empty disk. A migration step also needs every replica
+  up: a start with one down stays not ready, names it, and applies the step once it answers.
+- The SDK packages now carry the server's version. The SDKs of this release, from its package downloads, the Go
+  module tag `sdk/go/v0.1.3` or the git tag `v0.1.3` for Rust, are version 0.1.3 and send it in their User-Agent,
+  which Crucible records as the SDK version of the spans they export.
 
 ## [0.1.2] - 2026-11-25
 
