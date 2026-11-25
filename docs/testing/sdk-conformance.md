@@ -389,9 +389,12 @@ counts through a hook inside the SDK.
   four SDKs and of this crate guard the matcher with linear checks (a text shorter than any match is skipped, a rule
   whose required literal is absent is skipped, and a pattern that opens with a literal prefix, a class repetition
   and an anchor outside the class, as the email and jwt rules do, is tried once per anchor), so the steps stay
-  linear in the text; a differential property test in each holds the guarded scrubber to the plain one. The
-  TypeScript scrubber also skips a rule when the text lacks a class member followed by a literal that every match
-  holds (a hexadecimal digit followed by `:` for the ipv6 rule), one search it counts as a step per character.
+  linear in the text; a differential property test in each holds the guarded scrubber to the plain one. The four
+  SDKs' scrubbers also skip a rule when the text lacks a class member followed by a literal that every match holds
+  (a hexadecimal digit followed by `:` for the ipv6 rule), one search each counts as a step per character. The
+  Python scrubber also skips a rule when the text holds no run, as long as the rule's shortest match, of the
+  characters its matches are made of (14 digits, spaces and dashes for the card rule), found with a translation
+  and a substring search that take no matcher steps.
 - The latency gate: every run prints the added p99 and the gate per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to
   the laptop's round counts and fails a shape whose added p99 is above its gate: `gate_added_p99_ms` (1 ms), or,
   for a shape with `gate_relative_p99`, that share of the p99 of its calls without capture when that is larger.

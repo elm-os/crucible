@@ -1,9 +1,10 @@
 [project]
 name = "crucible-sdk"
-version = "0.1.0"
+version = "0.1.2"
 description = "Crucible SDK for Python: agent tracing helpers and MCP server instrumentation over OpenTelemetry."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",

@@ -166,7 +166,7 @@ def test_a_joined_check_leaves_alone_only_texts_the_rules_leave_alone() -> None:
     random = Random(20261123)
     for _ in range(3000):
         texts = [random.choice([*TEXTS, generated(random)]) for _ in range(random.randrange(8))]
-        alone = all(SCRUBBER.text(text) == text for text in texts)
+        alone = all(SCRUBBER.text_plain(text) == text for text in texts)
         if SCRUBBER.leaves_alone(texts):
             assert alone, texts
         elif "-----" not in "".join(texts):

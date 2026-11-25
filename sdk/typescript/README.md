@@ -9,8 +9,14 @@ points:
 | `@elm-os/crucible/mcp`        | `instrument`, `instrumentHandler`, `annotateError`, `markValidation`, `markNotFound`, `identify` |
 | `@elm-os/crucible/mcp-client` | `instrumentClient`                                                                               |
 
-The package builds from this directory ([the guide](../../docs/guides/sdk-typescript.md#install) shows how to
-install it). It requires Node.js 24. The MCP entry points work with the 2.x line of the official TypeScript MCP SDK
+Install it from the GitHub release of Crucible 0.1.2; the SDK has the server's version, and
+[the guide](../../docs/guides/sdk-typescript.md#install) has the details:
+
+```sh
+npm install https://github.com/elm-os/crucible/releases/download/v0.1.2/elm-os-crucible-0.1.2.tgz
+```
+
+It requires Node.js 24. The MCP entry points work with the 2.x line of the official TypeScript MCP SDK
 (`@modelcontextprotocol/server` and `@modelcontextprotocol/client` `>=2.0.0 <3`, optional peers). Servers on the 1.x
 line can use `crucible proxy` instead ([MCP proxy](../../docs/guides/mcp-proxy.md)).
 
@@ -243,4 +249,12 @@ pnpm --filter @elm-os/crucible test             # vitest against an in-process O
 pnpm --filter @elm-os/crucible run check:private
 pnpm --filter @elm-os/crucible build
 pnpm exec oxlint --deny-warnings sdk/typescript && pnpm exec biome format sdk/typescript
+```
+
+To use a build from a checkout in another project, pack it after the build, from the repository root, and install
+the packed file there:
+
+```sh
+pnpm --filter @elm-os/crucible pack --pack-destination ..   # writes elm-os-crucible-<version>.tgz next to the checkout
+npm install /path/to/elm-os-crucible-<version>.tgz         # in the other project
 ```

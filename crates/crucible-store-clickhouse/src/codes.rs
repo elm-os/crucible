@@ -104,6 +104,12 @@ pub fn parse_code(text: &str) -> Option<u32> {
     rest[..digits].parse().ok()
 }
 
+/// Whether the server refused a statement because its user runs as many statements as its settings profile allows
+/// (`TOO_MANY_SIMULTANEOUS_QUERIES`): the statement never ran.
+pub(crate) fn too_many_queries(error: &clickhouse::error::Error) -> bool {
+    matches!(error, clickhouse::error::Error::BadResponse(text) if parse_code(text) == Some(202))
+}
+
 /// Whether a statement failed before any byte of its request was sent: the connection could not be opened.
 pub(crate) fn not_sent(error: &clickhouse::error::Error) -> bool {
     match error {

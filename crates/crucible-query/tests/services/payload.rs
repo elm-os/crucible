@@ -1,14 +1,15 @@
-//! Payload byte ranges: from the store, from the WAL through the recent index for a span the store does not
-//! serve yet, `not_found` only for a whole and strong miss, and payload retention (contract 8.6, 8.7 and 8.9).
+//! Payload byte ranges, and the bodies the media of one span are found in: from the store, from the WAL through the
+//! recent index for a span the store does not serve yet, `not_found` only for a whole and strong miss, and payload
+//! retention (contract 8.6, 8.7, 8.9 and 14.2).
 
 use crucible_env::QueryError;
 use crucible_plan::{Caller, PayloadField};
 use crucible_query::{
-    PayloadBytes, PayloadQuery, QueryServiceError, ReadContext, RetentionSettings,
+    PayloadBytes, PayloadQuery, QueryServiceError, ReadContext, RetentionSettings, SpanBodies,
 };
 use crucible_recent::SpanEntry;
 use crucible_recent::test_support::span_record;
-use crucible_records::TableId;
+use crucible_records::{TableId, Timestamp};
 
 use crate::world::{DAY, NOW, World, ctx, run, scoped, span, span_payload_row};
 
@@ -86,6 +87,44 @@ fn a_span_the_store_does_not_serve_yet_is_read_from_its_frame() {
     let down = read(&world, query(&entry, None)).unwrap();
     assert_eq!(down.bytes, INPUT.as_bytes());
     assert!(down.meta.partial);
+}
+
+fn bodies(
+    world: &World,
+    entry: &SpanEntry,
+    start_time: Timestamp,
+) -> Result<SpanBodies, QueryServiceError> {
+    let span = &entry.summary;
+    run(world
+        .service
+        .span_bodies(&ctx(1), span.trace_id, span.span_id, start_time))
+}
+
+#[test]
+fn the_bodies_of_a_span_the_store_does_not_serve_yet_come_from_its_frame() {
+    let mut world = World::new(100);
+    let entry = span(1, 10, 0, NOW);
+    let lsn = world.ack(vec![entry.clone()]);
+    let mut record = span_record(&entry, lsn, NOW);
+    record.payload.input = INPUT.as_bytes().to_vec().into();
+    record.payload.output = b"{\"image\":\"media-1\"}".to_vec().into();
+    record.payload.metadata_keys = vec!["attachment".into()];
+    record.payload.metadata_values = vec!["media-2".into()];
+    world.wal.put(entry.locator, record);
+    let expected = SpanBodies {
+        input: INPUT.as_bytes().to_vec(),
+        output: b"{\"image\":\"media-1\"}".to_vec(),
+        metadata: vec![("attachment".to_owned(), "media-2".to_owned())],
+    };
+    assert_eq!(bodies(&world, &entry, NOW), Ok(expected.clone()));
+    // Another start time names another span.
+    assert_eq!(
+        bodies(&world, &entry, NOW.saturating_add_micros(1)),
+        Err(QueryServiceError::NotFound)
+    );
+    // With the store down the frame still answers.
+    world.store.set_unavailable(true);
+    assert_eq!(bodies(&world, &entry, NOW), Ok(expected));
 }
 
 #[test]

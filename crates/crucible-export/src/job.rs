@@ -1,5 +1,5 @@
-//! The export job (contracts 11.7 and 12.8): a consumer of the claimed queue `export_jobs`, and a per-node timer
-//! that sweeps the exports root.
+//! The export job (contracts 11.7 and 12.8): a consumer of the claimed queue `export_jobs`, a per-node timer that
+//! sweeps the exports root, and, with an object store, a leader job that sweeps the export objects.
 //!
 //! - **Idempotent.** A run first reads the row and stops when the export already has a file, an error or an
 //!   expiry. Every attempt writes its own temporary file and its own final name, and records its outcome only
@@ -15,9 +15,9 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use crucible_control::{Claim, ControlStore, ExportCommit, ExportJob, Queue};
+use crucible_control::{Claim, ControlStore, ExportCommit, ExportJob, LeaseName, Queue};
 use crucible_env::{ClockExt as _, QueryError};
-use crucible_jobs::{Cadence, ClaimCtx, ClaimPolicy, Job, JobError, JobResult, NodeCtx};
+use crucible_jobs::{Cadence, ClaimCtx, ClaimPolicy, Job, JobError, JobResult, LeaderCtx, NodeCtx};
 use crucible_plan::Caller;
 use crucible_query::{ExportLimits, QueryService, QueryServiceError, ReadContext};
 use crucible_records::{ExportJobId, Timestamp};
@@ -112,41 +112,53 @@ pub fn job(runtime: ExportRuntime) -> Job {
     )
 }
 
-/// The per-node sweep of the exports root: files no export needs, and files of expired exports; with an object
-/// store, the export objects of the same kinds too, which every node's sweep looks at. Without a control plane
-/// there are no exports and nothing to sweep.
-pub fn sweep_job(objects: Option<ExportObjects>) -> Job {
+/// The per-node sweep of the exports root: files no export needs, and files of expired exports. Without a control
+/// plane there are no exports and nothing to sweep.
+pub fn sweep_job() -> Job {
     Job::per_node(
         "exports-sweep",
         Cadence::every(SWEEP_EVERY),
-        move |ctx: NodeCtx| {
+        move |ctx: NodeCtx| async move {
+            let Some(store) = ctx.control else {
+                return Ok(());
+            };
+            let now = ctx.env.clock.wall_now();
+            let swept = sweep(store.as_ref(), ctx.env.disk.as_ref(), now)
+                .await
+                .map_err(failed)?;
+            if swept.files > 0 {
+                tracing::info!(
+                    job = "exports-sweep",
+                    files = swept.files,
+                    "removed export files that no export needs"
+                );
+            }
+            Ok(())
+        },
+    )
+}
+
+/// The sweep of the export objects on the object store, of the same kinds as the disk sweep's files. The objects
+/// are the deployment's, not a node's, so one node at a time sweeps them: the holder of the `media_gc` lease,
+/// beside the media collector.
+pub fn object_sweep_job(objects: ExportObjects) -> Job {
+    Job::leader(
+        "exports-object-sweep",
+        LeaseName::MediaGc,
+        Cadence::every(SWEEP_EVERY),
+        move |ctx: LeaderCtx| {
             let objects = objects.clone();
             async move {
-                let Some(store) = ctx.control else {
-                    return Ok(());
-                };
                 let now = ctx.env.clock.wall_now();
-                let swept = sweep(store.as_ref(), ctx.env.disk.as_ref(), now)
+                let removed = sweep_objects(ctx.store(), &objects, now)
                     .await
                     .map_err(failed)?;
-                if swept.files > 0 {
+                if removed > 0 {
                     tracing::info!(
-                        job = "exports-sweep",
-                        files = swept.files,
-                        "removed export files that no export needs"
+                        job = "exports-object-sweep",
+                        objects = removed,
+                        "removed export objects that no export needs"
                     );
-                }
-                if let Some(objects) = &objects {
-                    let removed = sweep_objects(store.as_ref(), objects, now)
-                        .await
-                        .map_err(failed)?;
-                    if removed > 0 {
-                        tracing::info!(
-                            job = "exports-sweep",
-                            objects = removed,
-                            "removed export objects that no export needs"
-                        );
-                    }
                 }
                 Ok(())
             }

@@ -137,9 +137,9 @@ Background work runs through `crucible-jobs` ([`adding-a-job.md`](adding-a-job.m
 
 | Kind | Runs on | Jobs |
 |---|---|---|
-| Leader job | The one node that holds the job's lease, with fencing tokens on every write | Housekeeping; the lifecycle leader (retention and deletion steps) |
+| Leader job | The one node that holds the job's lease, with fencing tokens on every write | Housekeeping; the lifecycle leader (retention and deletion steps); with an object store, the media collector and the export object sweep |
 | Queue consumer | Every node, claiming rows with a lease and an attempt counter | Export jobs; alert evaluations; the notification outbox |
-| Per-node timer | Every node | The alert scheduler; the lifecycle node timer (tombstones and heartbeats); the export sweep |
+| Per-node timer | Every node | The alert scheduler; the lifecycle node timer (tombstones and heartbeats); the export sweep of the node's disk |
 
 The SQL identity reconciler runs under the `sql_identities` lease, and the SQL self-probe, the key feed and the
 project salts run as per-node loops.

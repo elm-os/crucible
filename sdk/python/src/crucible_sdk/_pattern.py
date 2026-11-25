@@ -7,8 +7,10 @@ Patterns are in the shared subset of `conformance/scrub-rules.json` (literals, e
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 
 @dataclass(frozen=True)
@@ -48,15 +50,39 @@ class Lead:
 
 
 @dataclass(frozen=True)
+class Run:
+    """The characters every match of an alternative is made of, all of them ASCII, and the fewest it has: a text
+    holds a match of the alternative only where it holds that many of them in a row (`[0-9 -]` 14 times for the card
+    rule)."""
+
+    members: bytes
+    """256 bytes: 1 at the code of each of the characters, 0 elsewhere."""
+    needle: bytes
+    """A 1 for each character a match has at the fewest."""
+
+    def held_by(self, text: str) -> bool:
+        """Whether `text` holds such a run. Its UTF-8 bytes stand for its characters: an ASCII character is one byte,
+        and each byte of any other character is above 127, so outside the run, as the character is."""
+        return self.needle in text.encode("utf-8", "surrogatepass").translate(self.members)
+
+
+@dataclass(frozen=True)
 class Facts:
     min_length: int
     """The fewest characters a match has."""
     literals: tuple[str, ...] | None
     """For each top-level alternative, a literal every match of it contains; None when one has none."""
     lead: Lead | None
+    pairs: re.Pattern[str] | None
+    """A regular expression that finds, in any text that holds a match, a member of a class followed by a literal
+    character that a top-level alternative always holds (`[0-9A-Fa-f]:` for the ipv6 rule); None when an
+    alternative holds no such pair."""
+    runs: tuple[Run, ...] | None
+    """The runs of the top-level alternatives, one per set of characters; None when an alternative can hold any
+    character (a negated class)."""
 
 
-_NO_GUARD = Facts(0, None, None)
+_NO_GUARD = Facts(0, None, None, None, None)
 
 
 def facts(pattern: str) -> Facts:
@@ -66,10 +92,13 @@ def facts(pattern: str) -> Facts:
     except ValueError:
         return _NO_GUARD
     literals = [_literal_of(items) for items in branches]
+    pairs = [_pair_of(items) for items in branches]
     return Facts(
         min_length=_min_length(branches),
         literals=tuple(lit for lit in literals if lit is not None) if None not in literals else None,
         lead=_lead_of(branches, pattern),
+        pairs=re.compile("|".join(p for p in pairs if p is not None)) if None not in pairs else None,
+        runs=_runs_of(branches),
     )
 
 
@@ -212,6 +241,63 @@ def _literal_of(items: Sequence[_Item]) -> str | None:
         if r and (best is None or len(r) > len(best)):
             best = r
     return best
+
+
+def _escaped(char: str) -> str:
+    """The source of a pattern that finds one character, written as an escape so that no character is special."""
+    code = ord(char)
+    return f"\\x{code:02x}" if code < 256 else f"\\u{code:04x}"
+
+
+def _pair_of(items: Sequence[_Item]) -> str | None:
+    """A class item followed by a literal character item, both matched at least once, that every match of `items`
+    holds, as the source of a pattern that finds the pair: the last character the class item matches comes right
+    before the literal. A group matched at least once with one alternative holds the pairs of its items."""
+    for first, second in pairwise(items):
+        if isinstance(first.atom, _Class) and first.min >= 1 and isinstance(second.atom, str) and second.min >= 1:
+            members = "".join(_escaped(c) for c in sorted(first.atom.members))
+            return f"[{'^' if first.atom.negated else ''}{members}]{_escaped(second.atom)}"
+    for item in items:
+        if isinstance(item.atom, _Group) and item.min >= 1 and len(item.atom.branches) == 1:
+            inner = _pair_of(item.atom.branches[0])
+            if inner is not None:
+                return inner
+    return None
+
+
+def _chars_of(items: Sequence[_Item]) -> frozenset[str] | None:
+    """Every character a match of `items` can hold; None when a negated class lets it hold any other."""
+    chars: set[str] = set()
+    for item in items:
+        atom = item.atom
+        if isinstance(atom, str):
+            chars.add(atom)
+        elif isinstance(atom, _Class):
+            if atom.negated:
+                return None
+            chars |= atom.members
+        else:
+            for branch in atom.branches:
+                inner = _chars_of(branch)
+                if inner is None:
+                    return None
+                chars |= inner
+    return frozenset(chars)
+
+
+def _runs_of(branches: Sequence[Sequence[_Item]]) -> tuple[Run, ...] | None:
+    """The run of each alternative: every match of it is a run of at least its fewest characters, all of them
+    characters it can hold. Alternatives made of the same characters share the shorter run."""
+    fewest: dict[frozenset[str], int] = {}
+    for items in branches:
+        chars = _chars_of(items)
+        if not chars or not all(c.isascii() for c in chars):
+            return None
+        length = _min_length((items,))
+        fewest[chars] = min(length, fewest.get(chars, length))
+    return tuple(
+        Run(bytes(chr(code) in chars for code in range(256)), bytes([1]) * length) for chars, length in fewest.items()
+    )
 
 
 def _once(item: _Item | None) -> str | None:

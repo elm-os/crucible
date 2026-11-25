@@ -15,23 +15,15 @@ Servers on the 1.x line can use `crucible proxy` instead; see [MCP proxy](mcp-pr
 
 ## Install
 
-Build the package from a checkout of the repository and install the packed file. The build needs Node.js 24 and
-pnpm 11:
+Install the package from the GitHub release of Crucible 0.1.2; the SDK has the server's version. In your project:
 
 ```sh
-git clone https://github.com/elm-os/crucible.git
-cd crucible
-pnpm install --frozen-lockfile
-pnpm --filter @elm-os/crucible build
-pnpm --filter @elm-os/crucible pack --pack-destination ..
-```
-
-That writes `elm-os-crucible-0.0.0.tgz` next to the checkout. In your project:
-
-```sh
-npm install ../elm-os-crucible-0.0.0.tgz
+npm install https://github.com/elm-os/crucible/releases/download/v0.1.2/elm-os-crucible-0.1.2.tgz
 npm install @modelcontextprotocol/server@^2 @modelcontextprotocol/client@^2 zod@^4   # for the MCP examples
 ```
+
+To build the package from a checkout of the repository instead, see
+[Development](../../sdk/typescript/README.md#development) in the SDK's README.
 
 The examples on this page are complete ES module files. Each was run with `node <file>.ts` in such a project, with
 `"type": "module"` in its `package.json` and MCP SDK 2.4.0, and with only the endpoint changed to the SDK's test

@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { AccountControls, ConnectControl } from "./account";
 import { AuthGate } from "./auth-gate";
+import { FeedbackMenu } from "./feedback-menu";
 import { MobileNav } from "./mobile-nav";
 import { Nav } from "./nav";
 import { ProjectSwitcher } from "./project-switcher";
@@ -23,6 +24,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <ConnectControl />
           <div className="ms-auto flex flex-wrap items-center gap-x-3 gap-y-2">
             <TimeRangeControl />
+            <FeedbackMenu />
             <AccountControls />
           </div>
         </header>

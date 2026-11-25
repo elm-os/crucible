@@ -147,8 +147,8 @@ fn parse(json: &str) -> Result<Vec<Rule>, String> {
 
 impl Rule {
     /// The rule behind guards that take time linear in the text and change nothing: text shorter than any
-    /// match, or without the rule's required literal, is left alone, and a lead pattern is tried once per anchor.
-    /// `None` when nothing matched.
+    /// match, without the rule's required literal, or without the class and literal pair every match holds, is
+    /// left alone, and a lead pattern is tried once per anchor. `None` when nothing matched.
     fn apply(&self, text: &str) -> Option<String> {
         let f = &self.facts;
         if text.len() < f.min_length {
@@ -158,6 +158,13 @@ impl Rule {
             && !literals.iter().any(|l| text.contains(l.as_str()))
         {
             return None;
+        }
+        if f.pairs.is_some() {
+            // One search for the pair, which a matcher takes at most one step per start for.
+            self.searched_pair(text);
+            if !f.holds_pair(text) {
+                return None;
+            }
         }
         match (&f.lead, &self.rest) {
             (Some(lead), Some(rest)) => self.apply_lead(lead, rest, text),
@@ -227,6 +234,16 @@ impl Rule {
         }
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = (text, at, end);
+    }
+
+    /// Reports the search for the rule's pair to the matcher hook: one step per byte of the text.
+    fn searched_pair(&self, text: &str) {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = matcher_hook() {
+            hook(&self.name, text.len());
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = text;
     }
 
     /// Reports an unanchored search that tried the starts from `from` up to `to` to the matcher hook.
@@ -503,8 +520,15 @@ mod tests {
         parse(RULES_JSON).unwrap().len()
     }
 
-    /// A rule's name, shortest match, required literals and lead prefix and anchor.
-    type RuleFacts<'a> = (&'a str, usize, Option<Vec<String>>, Option<(String, char)>);
+    /// A rule's name, shortest match, required literals, lead prefix and anchor, and what its pair finds among a
+    /// few samples.
+    type RuleFacts<'a> = (
+        &'a str,
+        usize,
+        Option<Vec<String>>,
+        Option<(String, char)>,
+        Option<Vec<&'static str>>,
+    );
 
     #[test]
     fn the_rules_patterns_yield_the_facts_the_guards_use() {
@@ -520,6 +544,12 @@ mod tests {
                         .lead
                         .as_ref()
                         .map(|l| (l.prefix.clone(), char::from(l.anchor))),
+                    r.facts.pairs.as_ref().map(|_| {
+                        ["a:", "1.", "Z@", "0-", "x"]
+                            .into_iter()
+                            .filter(|sample| r.facts.holds_pair(sample))
+                            .collect()
+                    }),
                 )
             })
             .collect();
@@ -527,15 +557,27 @@ mod tests {
         assert_eq!(
             found,
             vec![
-                ("pem", 32, lit(&["-----BEGIN "]), None),
-                ("jwt", 7, lit(&["eyJ"]), Some(("eyJ".to_owned(), '.'))),
-                ("bearer", 23, None, None),
-                ("secret_key", 12, lit(&["csk_"]), None),
-                ("card", 14, None, None),
-                ("email", 6, lit(&["@"]), Some((String::new(), '@'))),
-                ("ipv6", 6, lit(&[":", ":"]), None),
-                ("ipv4", 7, lit(&["."]), None),
-                ("phone", 8, None, None),
+                ("pem", 32, lit(&["-----BEGIN "]), None, Some(vec!["0-"])),
+                (
+                    "jwt",
+                    7,
+                    lit(&["eyJ"]),
+                    Some(("eyJ".to_owned(), '.')),
+                    Some(vec!["1."])
+                ),
+                ("bearer", 23, None, None, None),
+                ("secret_key", 12, lit(&["csk_"]), None, None),
+                ("card", 14, None, None, None),
+                (
+                    "email",
+                    6,
+                    lit(&["@"]),
+                    Some((String::new(), '@')),
+                    Some(vec!["Z@"])
+                ),
+                ("ipv6", 6, lit(&[":", ":"]), None, Some(vec!["a:"])),
+                ("ipv4", 7, lit(&["."]), None, Some(vec!["1."])),
+                ("phone", 8, None, None, None),
             ]
         );
     }
@@ -660,6 +702,97 @@ mod tests {
             "{:?}",
             &mismatches[..mismatches.len().min(3)]
         );
+    }
+
+    /// The literals of the rules with a pair, after characters that make the pair and after ones that do not: at
+    /// the start of a text, after a space or a letter outside the pair's class, and after characters outside ASCII.
+    const PAIR_FRAGMENTS: &[&str] = &[
+        ":",
+        ".",
+        "@",
+        "-",
+        "a",
+        "1",
+        "Z",
+        "g",
+        "_",
+        "%",
+        "x",
+        " ",
+        "\n",
+        "é:",
+        "😀-",
+        "é.",
+        "😀@",
+        "g:",
+        "F:",
+        "_@",
+        "%@",
+        " -",
+        "A-",
+        "fe80",
+        "::1",
+        "1.2.3.4",
+        "203.0.113.42",
+        "2001:db8::1",
+        "a@b.co",
+        "eyJ",
+        "eyJa.b.c",
+        "-----BEGIN ",
+        "-----BEGIN é",
+        "-----BEGIN A-----",
+        "-----END A-----",
+    ];
+
+    #[test]
+    fn the_pair_guard_skips_only_text_its_rule_leaves_alone() {
+        let rules = parse(RULES_JSON).unwrap();
+        let mut random = Random(20_261_121);
+        let mut mismatches = Vec::new();
+        // Per rule, texts that pass the length and literal guards and lack the pair, so that the pair guard alone
+        // decides.
+        let mut decided = vec![0usize; rules.len()];
+        for _ in 0..5000 {
+            let text: String = (0..1 + random.below(11))
+                .map(|_| PAIR_FRAGMENTS[random.below(PAIR_FRAGMENTS.len())])
+                .collect();
+            let mut plain = text.clone();
+            for (rule, decided) in rules.iter().zip(&mut decided) {
+                let f = &rule.facts;
+                let literal = f
+                    .literals
+                    .as_ref()
+                    .is_none_or(|l| l.iter().any(|l| text.contains(l.as_str())));
+                if f.pairs.is_some()
+                    && text.len() >= f.min_length
+                    && literal
+                    && !f.holds_pair(&text)
+                {
+                    *decided += 1;
+                }
+                if rule.apply(&text) != rule.apply_plain(&text) {
+                    mismatches.push(format!("{}: {text:?}", rule.name));
+                }
+                if let Some(changed) = rule.apply_plain(&plain) {
+                    plain = changed;
+                }
+            }
+            if scrub(&text) != plain {
+                mismatches.push(format!("all rules: {text:?}"));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{:?}",
+            &mismatches[..mismatches.len().min(3)]
+        );
+        for (rule, decided) in rules.iter().zip(decided) {
+            assert!(
+                rule.facts.pairs.is_none() || decided >= 50,
+                "the pair guard alone decided {decided} texts of rule {}",
+                rule.name
+            );
+        }
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Reads of `crucible_read_agent` wait for one of the identity's statement slots. Its settings profile caps it at
 //! `AGENT_MAX_CONCURRENT_QUERIES` statements at a time (contract 7), and a request sends several reads together.
 //! With every slot held by a running statement, a typed agent read waits until one of them ends and then
-//! succeeds, where the server would have refused it.
+//! succeeds, where the server would have refused it: on the node whose statements hold the slots, which waits for
+//! one of its own, and on another node, whose own slots are free, so that the server refuses its read and the read
+//! is sent again within its deadline.
 
 use std::time::Duration;
 
@@ -11,12 +13,34 @@ use crucible_env::{QueryError, TelemetryStore};
 use crucible_plan::{Caller, RetentionClamp, trace_time_bounds};
 use crucible_records::{TimeWindow, TraceId};
 use crucible_schema::{AGENT_MAX_CONCURRENT_QUERIES, RetentionSettings, ServiceIdentity};
-use crucible_store_clickhouse::RawRead;
+use crucible_store_clickhouse::{ClickHouseStore, RawRead};
 use futures::future::join_all;
 
 use crate::{Ctx, T0, expect, with_settings};
 
 pub(crate) async fn agent_slots(ctx: &Ctx) -> Result<String> {
+    let waited = read_while_every_slot_is_held(ctx, &ctx.store).await?;
+    Ok(format!(
+        "with all {AGENT_MAX_CONCURRENT_QUERIES} statement slots of crucible_read_agent held by running statements, a \
+         typed agent read waited {} ms for one to end and then succeeded",
+        waited.as_millis()
+    ))
+}
+
+pub(crate) async fn agent_slots_across_nodes(ctx: &Ctx) -> Result<String> {
+    // Another node over the same server, whose own slots are all free.
+    let other = ClickHouseStore::new(ctx.env.clone(), ctx.config.clone());
+    let waited = read_while_every_slot_is_held(ctx, &other).await?;
+    Ok(format!(
+        "with all {AGENT_MAX_CONCURRENT_QUERIES} statement slots of crucible_read_agent held by another node's \
+         running statements, the server refused a typed agent read, which was sent again and succeeded after {} ms",
+        waited.as_millis()
+    ))
+}
+
+/// Holds every statement slot of the agent identity with statements of the suite's store, makes a typed agent read
+/// through `reader` meanwhile, and returns how long the read took.
+async fn read_while_every_slot_is_held(ctx: &Ctx, reader: &ClickHouseStore) -> Result<Duration> {
     // Statements that hold the slots for about two seconds, each sending its first row after half a second.
     let sleeper = with_settings(
         "SELECT sleepEachRow(0.5) FROM numbers(4)",
@@ -50,7 +74,7 @@ pub(crate) async fn agent_slots(ctx: &Ctx) -> Result<String> {
     let clock = &ctx.env.clock;
     let started = clock.now();
     let typed = async {
-        let rows = ctx.store.execute(plan).await?.rows().await?;
+        let rows = reader.execute(plan).await?.rows().await?;
         Ok::<_, QueryError>((rows.len(), clock.now()))
     };
     let (sleepers, typed) = futures::join!(join_all(held.into_iter().map(RawRead::drain)), typed);
@@ -70,9 +94,5 @@ pub(crate) async fn agent_slots(ctx: &Ctx) -> Result<String> {
             waited.as_millis()
         )
     })?;
-    Ok(format!(
-        "with all {AGENT_MAX_CONCURRENT_QUERIES} statement slots of crucible_read_agent held by running statements, a \
-         typed agent read waited {} ms for one to end and then succeeded",
-        waited.as_millis()
-    ))
+    Ok(waited)
 }

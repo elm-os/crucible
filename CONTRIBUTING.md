@@ -4,7 +4,8 @@ Crucible is MIT licensed, and contributions are made under the same license. Thi
 a change must pass, and how a pull request is merged. The ground rules every change follows are in
 [AGENTS.md](AGENTS.md): the naming rule, no AI attribution, determinism in product crates, and verification by tests
 rather than review. Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md), and vulnerabilities are
-reported privately as [SECURITY.md](SECURITY.md) describes, never in a public issue.
+reported privately as [SECURITY.md](SECURITY.md) describes, never in a public issue. Questions and ideas go to
+GitHub Discussions and bugs to issues, as [Getting help](docs/getting-help.md) describes.
 
 ## Setup
 
@@ -224,5 +225,5 @@ and proxy workflows run when the files they cover change. Pull requests are squa
 
 ## Releasing
 
-A release is a version bump and an annotated tag on `main`; the tag builds the binaries, the installers and the
-image. [docs/releasing.md](docs/releasing.md) has the steps and the checks after the tag.
+A release is a version bump and an annotated tag on `main`; the tag builds the binaries, the installers, the image
+and the SDK packages. [docs/releasing.md](docs/releasing.md) has the steps and the checks after the tag.

@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import type { ReadableSpan, SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, test } from "vitest";
+import pkg from "../package.json" with { type: "json" };
 import { flush, init, observe, shutdown, stats } from "../src/index.ts";
 import { QueueSpanProcessor, spanBytes } from "../src/queue.ts";
 import { startCollector } from "./support/collector.ts";
@@ -40,11 +41,13 @@ describe("init", () => {
     expect(request?.path).toBe("/v1/traces");
     expect(request?.headers["content-type"]).toBe("application/x-protobuf");
     expect(request?.headers.authorization).toBe(`Bearer ${collector.key}`);
-    expect(request?.headers["user-agent"]).toMatch(/^crucible-sdk-typescript\/0\.0\.0 /);
+    expect(request?.headers["user-agent"]?.split(" ")[0]).toBe(
+      `crucible-sdk-typescript/${pkg.version}`,
+    );
     const [span] = collector.spans;
     expect(span?.name).toBe("work");
     expect(span?.attributes["crucible.release"]).toBe("r-42");
-    expect(span?.scope).toEqual({ name: "@elm-os/crucible", version: "0.0.0" });
+    expect(span?.scope).toEqual({ name: "@elm-os/crucible", version: pkg.version });
     const { "service.instance.id": instance, ...resource } = span?.resource ?? {};
     expect(instance).toMatch(/^[0-9a-f-]{36}$/);
     expect(resource).toEqual({

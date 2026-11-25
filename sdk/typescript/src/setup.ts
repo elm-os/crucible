@@ -17,7 +17,7 @@ import { type Feedback, FeedbackSender, type FeedbackStats } from "./feedback.ts
 import { QueueSpanProcessor, type QueueStats } from "./queue.ts";
 
 export const SDK_NAME = "@elm-os/crucible";
-export const SDK_VERSION = "0.0.0";
+export const SDK_VERSION = "0.1.2";
 const USER_AGENT = `crucible-sdk-typescript/${SDK_VERSION}`;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
