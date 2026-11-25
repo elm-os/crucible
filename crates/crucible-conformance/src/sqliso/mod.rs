@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use crucible_auth::test_support::scope;
 use crucible_env::{Env, SqlError, SqlWorkspaceStore as _, TelemetryStore as _};
 use crucible_records::ProjectId;
 use crucible_schema::{
@@ -536,6 +537,17 @@ impl Iso {
         ))
     }
 
+    /// Cancelling a statement that is not running succeeds (contract 2.9), as when a run ends just before its
+    /// cancel lands. From 26.11 ClickHouse refuses a `KILL QUERY` that matches no statement, with code 785.
+    pub(crate) async fn cancel_ended(&self) -> Result<String> {
+        let scope = scope(self.a).map_err(|e| anyhow!("{e}"))?;
+        self.sql
+            .cancel(scope, self.ctx.env.new_id())
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok("cancelling a statement of project A that is not running succeeds".to_owned())
+    }
+
     /// One start with a wrong master key under `--migrate` (contracts 6.6 and 7.5). Access step A2 rendered under
     /// another key differs from the deployed one only in the probe identities' password digests, and its ledger
     /// form is the same, so the ledger does not apply it again. Applied anyway, as an earlier version did, it leaves
@@ -666,6 +678,10 @@ pub async fn run(env: &Env, target: &Target, options: &Options) -> Vec<Outcome> 
     }
     row!("W0 deployment as declared", iso.deployment());
     row!("Runtime self-probe (7.5)", iso.runtime_probe());
+    row!(
+        "Cancel of a statement that has ended (2.9)",
+        iso.cancel_ended()
+    );
     row!(
         "A start with a wrong master key (6.6, 7.5)",
         iso.wrong_master_key()
