@@ -6,8 +6,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [0.1.3] - 2026-11-25
 
-Crucible stores telemetry on a self-hosted replicated cluster as well as on a single server, and the SDKs have the
-server's version and ship as packages with each release.
+Crucible stores telemetry on a self-hosted replicated ClickHouse cluster as well as on a single server, and the SDKs
+have the server's version and ship as packages with each release.
 
 ### Clustered ClickHouse
 
@@ -19,8 +19,9 @@ server's version and ship as packages with each release.
 - `deploy/compose/compose.cluster.yaml` runs Crucible with two ClickHouse replicas, ClickHouse Keeper and Postgres,
   and `compose.cloud.yaml` passes `CRUCIBLE_CLICKHOUSE_CLUSTER` to the server.
 - With `clickhouse.cluster` set, a start refuses a cluster that cannot hold the tables (an unknown cluster, several
-  shards, missing macros, no Keeper, no cluster secret, or tables created for a single server) with the fix, and a
-  migration step while a replica is down fails without being recorded and names the replica.
+  shards, missing macros, no Keeper, `distributed_ddl_use_initial_user_and_roles` off, no cluster secret, or tables
+  created for a single server on the replica that `clickhouse.url` names) with the fix, and a migration step while a
+  replica is down fails without being recorded and names the replica.
 
 ### SDKs
 
@@ -35,24 +36,32 @@ server's version and ship as packages with each release.
 
 ### Compatibility
 
-- On ClickHouse 26.11, which refuses to kill a query that has already ended, cancelling a finished SQL workspace
-  query and abandoning a finished read succeed again, as on earlier versions.
+- On ClickHouse 26.11 and newer, which refuse to kill a query that has already ended, cancelling a finished SQL
+  workspace query succeeds again, as on earlier versions, and a read abandoned after its query ended no longer logs
+  a failed kill.
 
 ### Upgrading
 
-- A deployment on a single ClickHouse server upgrades with the new image and a restart, as
+- A deployment of 0.1.2 on a single ClickHouse server upgrades with the new image and a restart, as
   [operations](https://github.com/elm-os/crucible/blob/v0.1.3/docs/self-hosting/operations.md#upgrades) describes:
   0.1.3 adds no Postgres migration and no ClickHouse migration step, changes none of the steps that 0.1.2 recorded,
-  and needs no new setting or grant, so its first start applies nothing. The `compose.cloud.yaml` of 0.1.3 passes
-  `CRUCIBLE_CLICKHOUSE_CLUSTER` from `.env`; left out or empty, it keeps Crucible on one server.
+  and needs no new setting or grant, so its first start applies nothing. From an older version the Upgrading notes
+  of each version in between apply as well: from 0.1.1, the first migration runs the copy of migration step 0005
+  that the notes of [0.1.2](https://github.com/elm-os/crucible/blob/v0.1.3/CHANGELOG.md#012---2026-11-25) describe.
+  The `compose.cloud.yaml` of 0.1.3 passes `CRUCIBLE_CLICKHOUSE_CLUSTER` from `.env`; left out or empty, it keeps
+  Crucible on one server.
+- A single-server deployment goes back to 0.1.2 with the 0.1.2 image and a restart, since 0.1.3 migrates neither
+  Postgres nor ClickHouse.
 - An existing single-server deployment cannot be switched to a cluster in place. Once its ClickHouse server is a
   replica in a cluster, a start with `clickhouse.cluster` refuses the tables it holds, which were created for a
   single server: it names them and says to unset `clickhouse.cluster` or to point `clickhouse.url` at a cluster
   whose database `crucible` holds no tables. Crucible does not convert such tables or copy their rows.
 - To run on a cluster, start a new deployment, with a Postgres database of its own, on a cluster whose replicas hold
-  no tables in database `crucible` yet. With the single-server deployment's Postgres, which records the migration
-  steps applied to the single server, a start does not create the tables on the cluster. The single-server
-  deployment keeps its telemetry, projects and users.
+  no tables in database `crucible` yet; Crucible looks for such tables only on the replica that `clickhouse.url`
+  names. With the single-server deployment's Postgres, which records the migration steps applied to the single
+  server, a start does not create the tables on the cluster, and `crucible migrate` exits with 1 saying that the
+  ClickHouse service users refuse the master key. The new deployment starts without the single-server deployment's
+  telemetry, projects, users and API keys, which stay with that deployment.
 - Give a cluster all its replicas before Crucible's first start on it, as
   [adding a replica](https://github.com/elm-os/crucible/blob/v0.1.3/docs/self-hosting/clustered.md#adding-a-replica)
   says: Crucible creates its tables, users and row policies on the replicas in the cluster when each migration step
@@ -60,7 +69,8 @@ server's version and ship as packages with each release.
   up: a start with one down stays not ready, names it, and applies the step once it answers.
 - The SDK packages now carry the server's version. The SDKs of this release, from its package downloads, the Go
   module tag `sdk/go/v0.1.3` or the git tag `v0.1.3` for Rust, are version 0.1.3 and send it in their User-Agent,
-  which Crucible records as the SDK version of the spans they export.
+  which Crucible records as the SDK version of the spans they export. SDKs of earlier releases keep working with
+  0.1.3 and report the version they were built with.
 
 ## [0.1.2] - 2026-11-25
 
