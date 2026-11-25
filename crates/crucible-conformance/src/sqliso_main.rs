@@ -3,9 +3,12 @@
 //! ```text
 //! crucible-sqliso --url http://host:8123 [--user crucible_admin] [--password ...] [--label 26.3]
 //!                 [--switch strict|permissive] [--layers a,b,d] [--fuzz 5000] [--seed 1] [--identities 20]
+//!                 [--cluster name]
 //! ```
 //!
 //! `--switch` declares the server's `users_without_row_policies_can_read_rows` value; the suite checks it.
+//! `--cluster` names the cluster of a replicated target, one shard with several replicas, reached through one of
+//! its replicas: the workspace identities and policies are then provisioned `ON CLUSTER`.
 //! The admin user must hold access management. The exit code is 0 when every row passes.
 
 // The entry point reads its arguments and prints its report; product code does neither.
@@ -26,7 +29,7 @@ struct Args {
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
-    let (mut url, mut label) = (None, None);
+    let (mut url, mut label, mut cluster) = (None, None, None);
     let mut admin = Credentials {
         user: "crucible_admin".to_owned(),
         password: String::new(),
@@ -47,6 +50,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
             "--url" => url = Some(value),
             "--user" => admin.user = value,
             "--password" => admin.password = value,
+            "--cluster" => cluster = Some(value),
             "--label" => label = Some(value),
             "--switch" => {
                 options.switch = match value.as_str() {
@@ -77,7 +81,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
         target: Target {
             url,
             admin,
-            cluster: None,
+            cluster,
             replicas: Vec::new(),
         },
         options,

@@ -10,7 +10,7 @@
 //! shared prefix `cnry_`.
 
 use anyhow::Result;
-use crucible_schema::{CURATED_VIEWS, TableDef, sql_tables, workspace_user};
+use crucible_schema::{CURATED_VIEWS, TableDef, Variant, sql_tables, workspace_user};
 
 use super::{Iso, canary_column, window};
 use crate::expect;
@@ -202,6 +202,8 @@ struct Grammar<'a> {
     a: String,
     b: String,
     other_user: &'a str,
+    /// The cluster that the corpus's remote table functions name: the target's own, or `default`.
+    cluster: &'a str,
 }
 
 impl Grammar<'_> {
@@ -370,7 +372,8 @@ impl Grammar<'_> {
     /// A corpus statement, rewritten: the placeholder project replaced, and then a few random edits.
     fn mutation(&mut self) -> String {
         let base = CORPUS[self.rng.below(CORPUS.len())]
-            .replace("toUUID('B')", &format!("toUUID('{}')", self.b));
+            .replace("toUUID('B')", &format!("toUUID('{}')", self.b))
+            .replace("('default',", &format!("('{}',", self.cluster));
         let mut tokens: Vec<String> = base.split(' ').map(str::to_owned).collect();
         for _ in 0..self.rng.below(4) {
             let at = self.rng.below(tokens.len());
@@ -407,12 +410,17 @@ impl Grammar<'_> {
 pub(crate) async fn run(iso: &Iso, statements: u32, seed: u64) -> Result<String> {
     let before = iso.catalogue().await?;
     let other_user = workspace_user(iso.b);
+    let cluster = match &iso.ctx.variant {
+        Variant::Clustered { cluster } => cluster.as_str(),
+        Variant::SingleNode | Variant::Cloud => "default",
+    };
     let mut grammar = Grammar {
         rng: Prng::new(seed),
         tables: sql_tables().collect(),
         a: iso.a.uuid().to_string(),
         b: iso.b.uuid().to_string(),
         other_user: &other_user,
+        cluster,
     };
     let (mut answered, mut refused, mut rows) = (0u32, 0u32, 0usize);
     for n in 0..statements {
@@ -463,6 +471,7 @@ mod tests {
                 a: "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b".to_owned(),
                 b: "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1c".to_owned(),
                 other_user: "crucible_sql_x",
+                cluster: "default",
             };
             (0..200)
                 .map(|n| {

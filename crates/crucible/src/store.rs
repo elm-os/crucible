@@ -308,7 +308,7 @@ pub(crate) async fn apply_migrations(
     store: &ClickHouseStore,
     control: Option<&Control>,
 ) -> anyhow::Result<Option<Deferred>> {
-    config.check_cluster(store).await?;
+    let silent = config.check_cluster(store).await?;
     let sql = config.sql_store(store)?;
     let profile = sql
         .server_profile(SqlProfile::default())
@@ -318,7 +318,16 @@ pub(crate) async fn apply_migrations(
     match control {
         Some(control) => {
             let deferred = control.migrate(env, &steps, store).await?;
-            provision_probes(store, &sql).await?;
+            if silent.is_empty() {
+                provision_probes(store, &sql).await?;
+            } else {
+                // A step that was still to apply has refused above; the reconciler repairs the probe identities
+                // once every replica answers.
+                tracing::warn!(
+                    replicas = silent.join(", "),
+                    "the SQL workspace's probe users are provisioned again once every replica answers"
+                );
+            }
             Ok(deferred)
         }
         None => {
@@ -402,8 +411,8 @@ fn cluster_refusal(cluster: &Ident, facts: &ClusterFacts) -> Option<String> {
     }
     if let Some(reason) = &facts.fan_out {
         return Some(format!(
-            "a statement sent to every replica in cluster {cluster} failed ({reason}); every replica must accept \
-             the queries of the others"
+            "the replicas in cluster {cluster} do not run each other's queries as the user who sent them ({reason}); \
+             give the cluster a <secret> in remote_servers on every replica, and let every replica reach the others"
         ));
     }
     None
@@ -411,10 +420,11 @@ fn cluster_refusal(cluster: &Ident, facts: &ClusterFacts) -> Option<String> {
 
 impl ClickHouse {
     /// Refuses a configured cluster that cannot hold Crucible's tables, and ClickHouse Cloud, before any step
-    /// renders `ON CLUSTER`; warns about replicas that do not answer. Nothing happens without a cluster name.
-    async fn check_cluster(&self, store: &ClickHouseStore) -> anyhow::Result<()> {
+    /// renders `ON CLUSTER`; warns about the replicas that do not answer, and returns them. Nothing happens without
+    /// a cluster name.
+    async fn check_cluster(&self, store: &ClickHouseStore) -> anyhow::Result<Vec<String>> {
         let Some(cluster) = &self.cluster else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let facts = store
             .cluster_facts(cluster)
@@ -427,11 +437,11 @@ impl ClickHouse {
             tracing::warn!(
                 cluster = cluster.as_str(),
                 replicas = facts.silent.join(", "),
-                "replicas of the cluster do not answer: an insert waits for a majority of the replicas, and a \
+                "replicas in the cluster do not answer: an insert waits for a majority of the replicas, and a \
                  migration step for every one"
             );
         }
-        Ok(())
+        Ok(facts.silent)
     }
 }
 
@@ -523,7 +533,7 @@ pub(crate) async fn bring_up(
         // says why the key is refused.
         apply_migrations(env, config, store, control).await?;
     } else {
-        config.check_cluster(store).await?;
+        let _silent = config.check_cluster(store).await?;
         if let Some(control) = control {
             crate::control::ensure_migrated(&control.store).await?;
         }
@@ -969,7 +979,11 @@ mod tests {
             tables.contains("span_core") && tables.contains("not replicated"),
             "{tables}"
         );
-        assert!(refused(|f| f.fan_out = Some("Code: 279".to_owned())).contains("every replica"));
+        let fan_out = refused(|f| f.fan_out = Some("Code: 516".to_owned()));
+        assert!(
+            fan_out.contains("Code: 516") && fan_out.contains("<secret>"),
+            "{fan_out}"
+        );
     }
 
     /// With `clickhouse.cluster` set, every step renders for the cluster: replicated engines, `ON CLUSTER`.

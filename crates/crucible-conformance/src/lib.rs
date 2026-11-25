@@ -403,12 +403,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         "ChModel differential: MCP analytics plans over the hourly tier (3.10, 9.9)",
         mcp_hourly::reads(&ctx)
     );
-    if single {
-        row!(
-            "Hourly tier: the copy of the minute rollup (schema step 0005)",
-            mcp_hourly::backfill(&ctx)
-        );
-    }
+    row!(
+        "Hourly tier: the copy of the minute rollup (schema step 0005)",
+        mcp_hourly::backfill(&ctx)
+    );
     row!(
         "Service identities see all rows (7.3)",
         startup::visibility(&ctx)

@@ -358,6 +358,37 @@ fn table_present(database: &str, name: &str) -> String {
     format!("(SELECT count() FROM system.tables WHERE database = {database} AND name = {name})")
 }
 
+/// The replicas (`host:port`, in the order of `remote_servers`) that are not among those that `answered`, each of
+/// which is its place in `remote_servers` (1 for the first) and a user.
+fn silent(replicas: &[(u64, String)], answered: &[(usize, String)]) -> Vec<String> {
+    replicas
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| !answered.iter().any(|(place, _)| *place == n + 1))
+        .map(|(_, (_, host))| host.clone())
+        .collect()
+}
+
+/// When a replica ran a statement that `user` sent to every replica as another user, says so: queries that one
+/// replica sends to another then run as the user that `remote_servers` names, because the cluster has no
+/// `<secret>`, and that user's grants and row policies are not those of the identity that sent them.
+fn foreign_user(
+    user: &str,
+    replicas: &[(u64, String)],
+    answered: &[(usize, String)],
+) -> Option<String> {
+    answered
+        .iter()
+        .find(|(_, ran_as)| ran_as != user)
+        .map(|(place, ran_as)| {
+            let host = place
+                .checked_sub(1)
+                .and_then(|n| replicas.get(n))
+                .map_or("a replica", |(_, host)| host.as_str());
+            format!("{host} ran a statement that {user} sent as user {ran_as}")
+        })
+}
+
 /// `clusterAllReplicas('<cluster>', view(<select>))`: `select` on every replica, one answer row each.
 fn on_every_replica(cluster: &Ident, select: &str) -> String {
     format!("clusterAllReplicas('{cluster}', view({select}))")
@@ -381,7 +412,8 @@ pub struct ClusterFacts {
     pub ddl_initial_user_and_roles: bool,
     /// The tables of database `crucible` whose engine is not replicated, by name.
     pub unreplicated: Vec<String>,
-    /// Why a statement sent to every replica failed, when it failed; a replica that is down does not fail it.
+    /// Why the replicas cannot run a statement sent to all of them as the user who sent it: the statement failed,
+    /// or a replica ran it as another user. A replica that is down does not fail it.
     pub fan_out: Option<String>,
     /// The replicas that did not answer a statement sent to every replica, as `host:port`.
     pub silent: Vec<String>,
@@ -897,26 +929,60 @@ impl ClickHouseStore {
             .collect()
     }
 
+    /// The replicas of `cluster` that answer a statement sent to every replica as `crucible_admin`, each by its
+    /// place in `remote_servers` (1 for the first) with the user it ran the statement as.
+    async fn answering_replicas(
+        &self,
+        cluster: &Ident,
+    ) -> Result<Vec<(usize, String)>, StoreError> {
+        let statement = Binder::default().finish(format!(
+            "SELECT _shard_num, user FROM {}",
+            on_every_replica(cluster, "SELECT currentUser() AS user")
+        ));
+        let answer = self
+            .every_replica_lookup(ServiceIdentity::Admin, statement)
+            .await?;
+        lines(&answer)
+            .into_iter()
+            .filter(|line| line != &[""])
+            .map(|line| match line.as_slice() {
+                [place, user] => place
+                    .parse()
+                    .map(|place| (place, (*user).to_owned()))
+                    .map_err(|_| unexpected("the replicas that answered", &answer)),
+                _ => Err(unexpected("the replicas that answered", &answer)),
+            })
+            .collect()
+    }
+
+    /// Refuses at once when a replica in `cluster` does not answer. Every replica runs an `ON CLUSTER` statement,
+    /// which would otherwise wait `distributed_ddl_task_timeout` for one that is down and then fail; `then` says
+    /// what to do once it is back.
+    pub(crate) async fn every_replica_answers(
+        &self,
+        cluster: &Ident,
+        then: &str,
+    ) -> Result<(), StoreError> {
+        let replicas = self.cluster_replicas(cluster).await?;
+        let silent = self.silent_replicas(cluster, &replicas).await?;
+        if silent.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::Unavailable(format!(
+            "{} in cluster {cluster} did not answer, and every replica runs the ON CLUSTER statements: start it, \
+             then {then}",
+            silent.join(", ")
+        )))
+    }
+
     /// The replicas of `cluster` that do not answer a statement sent to every replica, as `host:port`.
     async fn silent_replicas(
         &self,
         cluster: &Ident,
         replicas: &[(u64, String)],
     ) -> Result<Vec<String>, StoreError> {
-        let statement = Binder::default().finish(format!(
-            "SELECT _shard_num FROM {}",
-            on_every_replica(cluster, "SELECT 1")
-        ));
-        let answer = self
-            .every_replica_lookup(ServiceIdentity::Admin, statement)
-            .await?;
-        let answered: Vec<&str> = answer.lines().collect();
-        Ok(replicas
-            .iter()
-            .enumerate()
-            .filter(|(n, _)| !answered.contains(&(n + 1).to_string().as_str()))
-            .map(|(_, (_, host))| host.clone())
-            .collect())
+        let answered = self.answering_replicas(cluster).await?;
+        Ok(silent(replicas, &answered))
     }
 
     /// What the startup checks of a replicated deployment need from the server (contract 5.8), read as
@@ -998,8 +1064,11 @@ impl ClickHouseStore {
             .err()
             .map(|failure| failure.into_store().to_string());
         let (fan_out, silent) = if shards.len() == 1 {
-            match self.silent_replicas(cluster, &replicas).await {
-                Ok(silent) => (None, silent),
+            match self.answering_replicas(cluster).await {
+                Ok(answered) => (
+                    foreign_user(&self.inner.config.admin.user, &replicas, &answered),
+                    silent(&replicas, &answered),
+                ),
                 Err(error) => (Some(error.to_string()), Vec::new()),
             }
         } else {
@@ -1583,16 +1652,27 @@ impl TelemetryStore for ClickHouseStore {
         let mut b = Binder::default();
         let partition = b.string(&partition.to_string());
         let nil = b.uuid(Uuid::NIL);
-        let answer = self
-            .lookup(
-                ServiceIdentity::Maint,
-                &b.finish(format!(
-                    "SELECT DISTINCT project_id FROM {DATABASE}.{} WHERE _partition_id = {partition} AND \
-                     project_id != {nil}",
-                    table.name()
-                )),
-            )
-            .await?;
+        let select = format!(
+            "SELECT DISTINCT project_id FROM {DATABASE}.{} WHERE _partition_id = {partition} AND project_id != \
+             {nil}",
+            table.name()
+        );
+        let statement = match self.replicated().await? {
+            // A replica that lags can lack a part that another holds, and a partition drop would then remove the
+            // rows of a project it did not list: every replica answers, or the listing fails.
+            Some(cluster) => {
+                let mut statement = b.finish(format!(
+                    "SELECT DISTINCT project_id FROM {}",
+                    on_every_replica(cluster, &select)
+                ));
+                statement
+                    .settings
+                    .push(("skip_unavailable_shards", "0".to_owned()));
+                statement
+            }
+            None => b.finish(select),
+        };
+        let answer = self.lookup(ServiceIdentity::Maint, &statement).await?;
         let mut projects = answer
             .lines()
             .map(|line| ProjectId::parse(line).map_err(|_| unexpected("project ids", &answer)))
@@ -1654,15 +1734,7 @@ impl TelemetryStore for ClickHouseStore {
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
         // Every replica runs a step's ON CLUSTER statements, so none may be down when it starts.
         if let Some(cluster) = &self.inner.config.cluster {
-            let replicas = self.cluster_replicas(cluster).await?;
-            let silent = self.silent_replicas(cluster, &replicas).await?;
-            if !silent.is_empty() {
-                return Err(StoreError::Unavailable(format!(
-                    "{} of cluster {cluster} did not answer, and every replica runs the migration's ON CLUSTER \
-                     statements: start it, then migrate again",
-                    silent.join(", ")
-                )));
-            }
+            self.every_replica_answers(cluster, "migrate again").await?;
         }
         let settings: Vec<(&str, String)> = step
             .settings
@@ -1922,6 +1994,38 @@ mod tests {
                 code: 241,
                 reason: failed.reason.to_owned()
             }
+        );
+    }
+
+    /// A replica that did not answer a statement sent to every replica is silent; one that ran it as another user
+    /// than the sender's runs the queries of other replicas without the cluster's secret.
+    #[test]
+    fn the_replicas_that_answer_say_who_is_silent_and_who_ran_as_another_user() {
+        let replicas = [
+            (1, "clickhouse-1:9000".to_owned()),
+            (1, "clickhouse-2:9000".to_owned()),
+            (1, "clickhouse-3:9000".to_owned()),
+        ];
+        let admin = |place: usize| (place, "crucible_admin".to_owned());
+        assert_eq!(
+            silent(&replicas, &[admin(1), admin(3)]),
+            ["clickhouse-2:9000"]
+        );
+        assert!(silent(&replicas, &[admin(3), admin(1), admin(2)]).is_empty());
+        assert_eq!(silent(&replicas, &[]).len(), 3);
+        assert_eq!(
+            foreign_user("crucible_admin", &replicas, &[admin(1), admin(2)]),
+            None
+        );
+        let foreign = foreign_user(
+            "crucible_admin",
+            &replicas,
+            &[admin(1), (2, "default".to_owned())],
+        )
+        .unwrap();
+        assert!(
+            foreign.contains("clickhouse-2:9000") && foreign.contains("default"),
+            "{foreign}"
         );
     }
 

@@ -38,7 +38,7 @@ fn others(ctx: &Ctx) -> Result<&[ClickHouseStore]> {
 }
 
 /// Runs a statement as `crucible_admin` on one replica.
-async fn admin_on(store: &ClickHouseStore, sql: impl Into<String>) -> Result<()> {
+pub(crate) async fn admin_on(store: &ClickHouseStore, sql: impl Into<String>) -> Result<()> {
     let sql = sql.into();
     store
         .raw_command(ServiceIdentity::Admin, &statement(sql.clone()))
@@ -47,7 +47,7 @@ async fn admin_on(store: &ClickHouseStore, sql: impl Into<String>) -> Result<()>
 }
 
 /// A number read as `crucible_admin` on one replica.
-async fn admin_count_on(store: &ClickHouseStore, sql: impl Into<String>) -> Result<u64> {
+pub(crate) async fn admin_count_on(store: &ClickHouseStore, sql: impl Into<String>) -> Result<u64> {
     let sql = sql.into();
     let answer = store
         .raw_text(ServiceIdentity::Admin, &statement(sql.clone()))
@@ -423,6 +423,35 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         Ok(lifecycle_oldest(scope, table, window, Pred::all())?.on_every_replica())
     };
 
+    // A part that only another replica holds keeps its project listed, so a partition drop never removes it.
+    let third = ctx.project();
+    let elsewhere = Timestamp::from_micros(day.micros() + 2 * DAY);
+    let held = route(table, Granularity::Day, elsewhere)?;
+    admin_on(&ctx.store, format!("SYSTEM STOP FETCHES crucible.{name}")).await?;
+    let listed = async {
+        let settings = InsertSettings::new(ctx.token(epoch, 4, table, elsewhere)?, ctx.flavour);
+        let rows = plain_rows(table, third, epoch, 4, elsewhere, 5, 5);
+        let sent = insert_waiting_briefly(&others[0], &rows, settings).await;
+        expect(
+            matches!(sent, Err(InsertError::UnknownOutcome { .. })),
+            || {
+                format!(
+                    "an insert whose quorum timed out answered {sent:?}, not an unknown outcome"
+                )
+            },
+        )?;
+        ctx.store
+            .partition_projects(table, held)
+            .await
+            .context("the projects of a partition")
+    }
+    .await;
+    admin_on(&ctx.store, format!("SYSTEM START FETCHES crucible.{name}")).await?;
+    let listed = listed?;
+    expect(listed == [third], || {
+        format!("the projects of a partition whose only part another replica holds read {listed:?}")
+    })?;
+
     // Every replica up: the delete, its mask and the verification hold on each.
     let delete = DeletePlan::project(
         scope(first).map_err(|e| anyhow!("{e}"))?,
@@ -491,6 +520,10 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         expect(matches!(masked, Err(StoreError::Unavailable(_))), || {
             format!("the masked parts answered {masked:?} while a replica is down")
         })?;
+        let listed = ctx.store.partition_projects(table, partition).await;
+        expect(listed.is_err(), || {
+            format!("the projects of a partition read {listed:?} while a replica is down")
+        })?;
         let read = match ctx.store.execute(leftover(second)?).await {
             Ok(stream) => stream.rows().await.map(|_| ()),
             Err(error) => Err(error),
@@ -522,9 +555,10 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         })?;
     }
     Ok(format!(
-        "a delete, its mask and a partition drop sent to one replica held on all {}; with one down, the delete \
-         was queued for it, its mutation stayed pending, the masked parts and the verification read had no answer \
-         and the drop was refused, until the replica came back and ran the delete",
+        "a part that only another replica held kept its project listed; a delete, its mask and a partition drop \
+         sent to one replica held on all {}; with one down, the delete was queued for it, its mutation stayed \
+         pending, the masked parts, the partition's projects and the verification read had no answer and the drop \
+         was refused, until the replica came back and ran the delete",
         others.len() + 1
     ))
 }
