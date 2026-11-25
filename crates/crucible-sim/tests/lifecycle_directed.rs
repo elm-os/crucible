@@ -990,6 +990,30 @@ fn a_row_that_lands_after_the_purge_is_removed_at_the_next_sweep() {
     });
 }
 
+/// Contract 13.4: no purge touches a live project. Nothing makes a request of kind `project` for a project that is not
+/// deleted, but should one exist, the executor fails it and the purge sweep passes it by, so every row of the project
+/// stays.
+#[test]
+fn a_project_deletion_of_a_live_project_removes_nothing() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..3).await;
+        node.sleep(Duration::from_secs(2)).await;
+        let request = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([0x08; 16]),
+            project,
+            node.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        node.pg.lifecycle().insert_request(&request).await.unwrap();
+        node.sleep(LifecycleConfig::default().sweep_every + Duration::from_secs(2 * 1_800 + 180))
+            .await;
+        let failed = node.request(request.id).await;
+        assert_eq!(failed.state, DeletionState::Failed, "{failed:?}");
+        assert_eq!(node.visible(project), 3);
+    });
+}
+
 /// Contract 13.4: a project that an older version deleted (its row marked deleted, without a project deletion
 /// request) gets that request from the deletion executor, made by `system:upgrade`, and is purged like a project
 /// deleted now. The executor runs every 30 s, and a second server's leader jobs take the lease in turn, yet the

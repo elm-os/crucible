@@ -903,6 +903,35 @@ impl ClickHouseStore {
         self.lookup(identity, &statement).await
     }
 
+    /// Whether each of the replicas in `cluster` answers with `table`: a read of their system tables lists nothing
+    /// for a replica that is down or lacks the table, though it may hold parts that no other replica holds.
+    async fn on_every_replica_with(&self, cluster: &Ident, table: TableId) -> Result<(), StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(table.name());
+        let cluster_name = b.string(cluster.as_str());
+        let present = table_present(&database, &name);
+        let replicas = on_every_replica(cluster, &format!("SELECT {present} AS present"));
+        let answer = self
+            .every_replica_lookup(
+                ServiceIdentity::Maint,
+                b.finish(format!(
+                    "SELECT countIf(present > 0), (SELECT count() FROM system.clusters WHERE cluster = \
+                     {cluster_name}) FROM {replicas}"
+                )),
+            )
+            .await?;
+        let [answered, replicas] = numbers("the replicas that hold the table", &answer)?;
+        if answered < replicas {
+            return Err(StoreError::Unavailable(format!(
+                "{answered} of the cluster's {replicas} replicas answered with {}, and one that did not may hold \
+                 parts that no other holds",
+                table.name()
+            )));
+        }
+        Ok(())
+    }
+
     /// The replicas of `cluster` as `host:port`, in the order of `remote_servers`, with their shard numbers.
     async fn cluster_replicas(&self, cluster: &Ident) -> Result<Vec<(u64, String)>, StoreError> {
         let mut b = Binder::default();
@@ -1740,8 +1769,9 @@ impl TelemetryStore for ClickHouseStore {
         );
         let statement = match self.replicated().await? {
             // A replica that lags can lack a part that another holds: the partitions of every replica together,
-            // and every replica answers, or the read fails.
+            // and every replica answers with the table, or the read fails.
             Some(cluster) => {
+                self.on_every_replica_with(cluster, table).await?;
                 let mut statement = b.finish(format!(
                     "SELECT DISTINCT partition_id FROM {} ORDER BY partition_id",
                     on_every_replica(cluster, &select)

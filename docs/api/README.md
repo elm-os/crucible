@@ -851,7 +851,9 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   `DELETE projects/{project_id}` answers `204` at once and makes a deletion request of kind `project`, which removes
   the rest of the project's data in the background; org owners and admins follow it with
   `GET projects/{project_id}/deletion-requests` under the deleted project's id, and `POST deletion-requests` refuses
-  the kind `project`. See [retention and deletion](../self-hosting/retention-and-deletion.md).
+  the kind `project`. A request carries `attempts` when a step of it failed, and a completed project deletion
+  `late_purges` and `late_purged_at` once the hourly sweep has deleted rows of the project that landed after the
+  purge. See [retention and deletion](../self-hosting/retention-and-deletion.md).
 - **Media**: `POST media` with the content type, length, SHA-256 and the trace that uses them answers a presigned
   upload link valid for 1 hour, whose content type, length and checksum headers must be sent exactly as given, or
   no link when the project already stores the same bytes. `PATCH media/{media_id}` confirms the upload once the

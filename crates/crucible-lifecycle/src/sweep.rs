@@ -120,7 +120,8 @@ pub(crate) async fn run(ctx: LeaderCtx, shared: Arc<Shared>) -> JobResult {
 }
 
 /// Looks for rows of the project of one project deletion and plans a purge of each partition that holds some. A
-/// request that is not planned yet is left to the executor, which finds the project's rows itself.
+/// request that is not planned yet is left to the executor, which finds the project's rows itself, and a project
+/// that is not deleted is never swept.
 async fn sweep(
     ctx: &LeaderCtx,
     shared: &Shared,
@@ -135,6 +136,16 @@ async fn sweep(
         return Ok(());
     }
     let project = request.project_id;
+    // Only a deleted project is swept. Deleting a project makes its request, and nothing clears a deletion.
+    let deleted = ctx
+        .store()
+        .projects()
+        .get(project)
+        .await?
+        .is_some_and(|row| row.deleted_at.is_some());
+    if !deleted {
+        return Ok(());
+    }
     let mut found: Vec<(TableId, PartitionId)> = Vec::new();
     for table in project_reach() {
         // The tables of one project are looked at in one wake.
