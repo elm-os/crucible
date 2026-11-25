@@ -822,6 +822,7 @@ mod tests {
             master_key: MasterKey::parse(key).unwrap(),
             sql_statements_per_hour: 1_800,
             idle_timeout: None,
+            cluster: None,
         }
         .steps(SqlProfile::default())
         .unwrap()

@@ -4,6 +4,18 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- Crucible runs on a self-hosted replicated ClickHouse cluster of one shard with several replicas and ClickHouse
+  Keeper: `clickhouse.cluster` (`CRUCIBLE_CLICKHOUSE_CLUSTER`, `--clickhouse-cluster`) names the cluster, every
+  table, user and row policy is created on every replica, each insert is stored on a majority of the replicas, and
+  deletions count as applied and verified only once every replica has run them. ClickHouse Cloud is still refused at
+  startup ([clustered ClickHouse](docs/self-hosting/clustered.md)).
+- `deploy/compose/compose.cluster.yaml` runs Crucible with two ClickHouse replicas, ClickHouse Keeper and Postgres,
+  and `compose.cloud.yaml` passes `CRUCIBLE_CLICKHOUSE_CLUSTER` to the server.
+- With `clickhouse.cluster` set, a start refuses a cluster that cannot hold the tables (an unknown cluster, several
+  shards, missing macros, no Keeper, no cluster secret, or tables created for a single server) with the fix, and a
+  migration step while a replica is down fails without being recorded and names the replica.
+- On ClickHouse 26.11, which refuses to kill a query that has already ended, cancelling a finished SQL workspace
+  query and abandoning a finished read succeed again, as on earlier versions.
 - The four SDKs have the server's version (the TypeScript SDK said 0.0.0 and the others 0.1.0), so the version in an
   SDK's User-Agent names the Crucible release it shipped with.
 - Each release carries the SDK packages on its GitHub release: `elm-os-crucible-X.Y.Z.tgz` for TypeScript,

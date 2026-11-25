@@ -189,7 +189,8 @@ Startup, in order:
    `0003_access_workspace`, `0004_span_usage_aggregate`, `0005_mcp_tool_rollup_hourly`) are applied as the admin
    user. Each is idempotent, so the flag can stay on. Without Postgres nothing records which steps ran and all are
    applied each time; with Postgres the ledger decides (see above), and without `--migrate` it must record every
-   step. Crucible migrates a single-node ClickHouse server.
+   step. With `clickhouse.cluster` set, the steps render for that cluster (replicated engines, `ON CLUSTER`), after
+   checks that refuse a cluster that cannot hold the tables; without it they render for a single server.
 3. Startup detection and the self-tests run (ClickHouse 26.3 or newer, every setting and function Crucible uses,
    one block inserted twice with one token leaves one row, every service identity sees a known row). A failure is
    logged and retried with a pause that grows from 1 s to 15 s, so Crucible can start before ClickHouse does.

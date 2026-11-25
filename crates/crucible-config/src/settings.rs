@@ -149,6 +149,13 @@ pub const SETTINGS: &[Setting] = &[
          of a balancer in front of the store (default: a margin below the server's keep_alive_timeout)",
     ),
     plain(
+        "clickhouse.cluster",
+        None,
+        "the cluster in the ClickHouse servers' remote_servers that holds Crucible's replicas, one shard with \
+         several replicas: Crucible creates its tables and users on every replica and inserts with a majority \
+         (default: one server)",
+    ),
+    plain(
         "postgres.url",
         None,
         "postgres://user@host:port/database of the control plane; add ?sslmode=require for TLS",

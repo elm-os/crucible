@@ -13,6 +13,7 @@
 
 pub use crucible_sim::blocks;
 mod cancel;
+mod cluster;
 mod codes;
 pub mod control;
 pub mod control_pg;
@@ -62,6 +63,9 @@ pub struct Target {
     pub admin: Credentials,
     /// The cluster name for a one-shard replicated target; `None` for a single node.
     pub cluster: Option<String>,
+    /// The HTTP endpoints of the cluster's other replicas. The rows that need every replica reach each one
+    /// directly.
+    pub replicas: Vec<String>,
 }
 
 /// The result of one conformance row.
@@ -81,6 +85,8 @@ pub(crate) struct Ctx {
     pub env: Env,
     pub store: ClickHouseStore,
     pub config: StoreConfig,
+    /// The cluster's other replicas, each at its own address, with the same identities.
+    pub replicas: Vec<ClickHouseStore>,
     pub flavour: StoreFlavour,
     pub variant: Variant,
     /// The simulation's store model, which the differential rows feed the same blocks and plans.
@@ -126,11 +132,12 @@ impl Ctx {
             user: identity.name().to_owned(),
             password: password(identity),
         };
-        let (flavour, variant) = match &target.cluster {
+        let cluster = target.cluster.as_deref().map(Ident::new).transpose()?;
+        let (flavour, variant) = match &cluster {
             Some(cluster) => (
                 StoreFlavour::Clustered,
                 Variant::Clustered {
-                    cluster: Ident::new(cluster)?,
+                    cluster: cluster.clone(),
                 },
             ),
             None => (StoreFlavour::SingleNode, Variant::SingleNode),
@@ -144,14 +151,29 @@ impl Ctx {
             read_agent: generated(ServiceIdentity::ReadAgent),
             maint: generated(ServiceIdentity::Maint),
             flavour: Some(flavour),
+            cluster,
             tls_roots: TlsRoots::WebPki,
             connect_timeout: Duration::from_secs(10),
             idle_timeout: None,
         };
+        let replicas = target
+            .replicas
+            .iter()
+            .map(|url| {
+                ClickHouseStore::new(
+                    env.clone(),
+                    StoreConfig {
+                        url: url.clone(),
+                        ..config.clone()
+                    },
+                )
+            })
+            .collect();
         Ok(Self {
             env: env.clone(),
             store: ClickHouseStore::new(env.clone(), config.clone()),
             config,
+            replicas,
             flavour,
             variant,
             model: ChModel::new(
@@ -381,16 +403,34 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         "ChModel differential: MCP analytics plans over the hourly tier (3.10, 9.9)",
         mcp_hourly::reads(&ctx)
     );
-    if single {
+    row!(
+        "Hourly tier: the copy of the minute rollup (schema step 0005)",
+        mcp_hourly::backfill(&ctx)
+    );
+    row!(
+        "Service identities see all rows (7.3)",
+        startup::visibility(&ctx)
+    );
+    if !single {
         row!(
-            "Hourly tier: the copy of the minute rollup (schema step 0005)",
-            mcp_hourly::backfill(&ctx)
+            "C1 across replicas: one token, one copy on every replica (5.2, 6.2)",
+            cluster::dedup_across_replicas(&ctx)
         );
-    }
-    if single {
         row!(
-            "Service identities see all rows (7.3)",
-            startup::visibility(&ctx)
+            "C11 read-after-write on the inserting replica; replica lag against the visibility grace (8.6)",
+            cluster::read_after_write(&ctx)
+        );
+        row!(
+            "Probe after a one-replica acknowledgement (5.5)",
+            cluster::probe_before_quorum(&ctx)
+        );
+        row!(
+            "A replica down mid-insert: no acknowledged block is lost (5.4 to 5.6)",
+            cluster::failed_quorum(&ctx)
+        );
+        row!(
+            "Retention and deletion on every replica (13.2 to 13.4)",
+            cluster::lifecycle(&ctx)
         );
     }
     row!(

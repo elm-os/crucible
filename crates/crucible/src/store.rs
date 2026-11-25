@@ -9,7 +9,9 @@
 //! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, the access steps
 //!   `0002_access_service` and `0003_access_workspace` (the SQL workspace's role, profile, quota, static
 //!   policies, views and probe identities) and schema steps `0004_span_usage_aggregate` and
-//!   `0005_mcp_tool_rollup_hourly` for a single-node server ([`apply_migrations`]). All are idempotent. With
+//!   `0005_mcp_tool_rollup_hourly` ([`apply_migrations`]), rendered for a single server, or with `clickhouse.cluster`
+//!   for that cluster (replicated engines, `ON CLUSTER`) after checks that refuse a cluster that cannot hold the
+//!   tables, and ClickHouse Cloud. All are idempotent. With
 //!   Postgres configured they are recorded in the ledger of contract 6.6 and applied once, and once more after
 //!   their content changes, and the probe identities are provisioned again at every run with the passwords of the
 //!   current master key; without Postgres there is no ledger and all are applied each time.
@@ -21,8 +23,8 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use crucible_env::{
-    Env, SqlWorkspaceStore as _, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
-    TelemetryStore, TlsRoots,
+    EngineFamily, Env, SqlWorkspaceStore as _, StoreError, StoreFacts, StoreFlavour, StoreHealth,
+    StoreVersion, TelemetryStore, TlsRoots,
 };
 use crucible_plan::profile_caps;
 use crucible_schema::{
@@ -34,7 +36,8 @@ use crucible_schema::{
 
 use crate::control::{ApplyStep, Applying, Control, Deferred, Refusal};
 use crucible_store_clickhouse::{
-    ClickHouseSqlStore, ClickHouseStore, Credentials, SqlPasswords, SqlStoreConfig, StoreConfig,
+    ClickHouseSqlStore, ClickHouseStore, ClusterFacts, Credentials, SqlPasswords, SqlStoreConfig,
+    StoreConfig,
 };
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
@@ -142,6 +145,9 @@ pub(crate) struct ClickHouse {
     pub(crate) sql_statements_per_hour: u64,
     /// `clickhouse.idle_timeout`; `None` lets detection derive it from the server.
     pub(crate) idle_timeout: Option<Duration>,
+    /// `clickhouse.cluster`: the cluster of a replicated ClickHouse, one shard with several replicas; `None` for
+    /// one server.
+    pub(crate) cluster: Option<Ident>,
 }
 
 impl ClickHouse {
@@ -159,7 +165,23 @@ impl ClickHouse {
             master_key: MasterKey::parse(config.master_key.expose())?,
             sql_statements_per_hour: sql.statements_per_hour,
             idle_timeout: config.idle_timeout,
+            cluster: config
+                .cluster
+                .as_deref()
+                .map(Ident::new)
+                .transpose()
+                .context("clickhouse.cluster is not a plain identifier")?,
         })
+    }
+
+    /// The variant every step and every workspace identity renders for: the cluster's when one is configured.
+    pub(crate) fn variant(&self) -> Variant {
+        match &self.cluster {
+            Some(cluster) => Variant::Clustered {
+                cluster: cluster.clone(),
+            },
+            None => Variant::SingleNode,
+        }
     }
 
     fn generated(&self, identity: ServiceIdentity) -> Credentials {
@@ -185,6 +207,7 @@ impl ClickHouse {
                 maint: self.generated(ServiceIdentity::Maint),
                 // `clickhouse.flavor = auto`: detection reads it from the server.
                 flavour: None,
+                cluster: self.cluster.clone(),
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: CONNECT_TIMEOUT,
                 idle_timeout: self.idle_timeout,
@@ -216,7 +239,7 @@ impl ClickHouse {
             store.clone(),
             SqlStoreConfig {
                 passwords: Arc::new(WorkspacePasswords(self.master_key.clone())),
-                variant: Variant::SingleNode,
+                variant: self.variant(),
                 admin_user: Ident::new(&self.admin.user)
                     .context("the ClickHouse admin user is not a plain identifier")?,
                 statements_per_hour: self.sql_statements_per_hour,
@@ -241,10 +264,10 @@ impl ClickHouse {
         })
     }
 
-    /// The steps `--migrate` applies, in ledger order, for a single-node server. `profile` is the SQL
+    /// The steps `--migrate` applies, in ledger order, for the configured variant. `profile` is the SQL
     /// workspace's settings profile, fitted to the server.
     pub(crate) fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 5]> {
-        let variant = Variant::SingleNode;
+        let variant = self.variant();
         let admin = Ident::new(&self.admin.user)
             .context("the ClickHouse admin user is not a plain identifier")?;
         Ok([
@@ -287,6 +310,7 @@ pub(crate) async fn apply_migrations(
     store: &ClickHouseStore,
     control: Option<&Control>,
 ) -> anyhow::Result<Option<Deferred>> {
+    let silent = config.check_cluster(store).await?;
     let sql = config.sql_store(store)?;
     let profile = sql
         .server_profile(SqlProfile::default())
@@ -296,7 +320,16 @@ pub(crate) async fn apply_migrations(
     match control {
         Some(control) => {
             let deferred = control.migrate(env, &steps, store).await?;
-            provision_probes(store, &sql).await?;
+            if silent.is_empty() {
+                provision_probes(store, &sql).await?;
+            } else {
+                // A step that was still to apply has refused above; the reconciler repairs the probe identities
+                // once every replica answers.
+                tracing::warn!(
+                    replicas = silent.join(", "),
+                    "the SQL workspace's probe users are provisioned again once every replica answers"
+                );
+            }
             Ok(deferred)
         }
         None => {
@@ -332,20 +365,141 @@ async fn provision_probes(store: &ClickHouseStore, sql: &ClickHouseSqlStore) -> 
     Ok(())
 }
 
-/// Why a server cannot take ingest although detection ran (contract 5.8); `None` when it can.
-fn refusal(facts: &StoreFacts) -> Option<String> {
+/// The refusal of a cluster whose replica lacks the server setting that `ON CLUSTER` text-index DDL needs.
+const DDL_USER_REFUSAL: &str = "the server setting distributed_ddl_use_initial_user_and_roles is 0; set it to 1 on \
+                                every replica in the cluster, because the ON CLUSTER statements that create the text \
+                                indexes need it";
+
+/// Why the configured cluster cannot hold Crucible's tables (contract 5.8), from what the replica that
+/// `clickhouse.url` names says before any `ON CLUSTER` statement runs; `None` when it can. A replica that is down
+/// is not a refusal: an insert needs a majority of the replicas, and a migration step says which replica it needs.
+fn cluster_refusal(cluster: &Ident, facts: &ClusterFacts) -> Option<String> {
+    if facts.cloud {
+        return Some(CLOUD_REFUSAL.to_owned());
+    }
+    if facts.shards == 0 {
+        return Some(format!(
+            "the server's remote_servers defines no cluster named {cluster}; set clickhouse.cluster \
+             (--clickhouse-cluster or CRUCIBLE_CLICKHOUSE_CLUSTER) to the name of the cluster this server belongs to, \
+             or define {cluster} in remote_servers on every replica"
+        ));
+    }
+    if facts.shards > 1 {
+        return Some(format!(
+            "cluster {cluster} has {} shards, and Crucible keeps its tables on one shard with several replicas; \
+             name a cluster of one shard in clickhouse.cluster",
+            facts.shards
+        ));
+    }
+    if !facts.missing_macros.is_empty() {
+        return Some(format!(
+            "the server defines no macro {}, which places each replica in the replication path; define the macros \
+             shard and replica under <macros> on every replica",
+            facts.missing_macros.join(" or ")
+        ));
+    }
+    if let Some(reason) = &facts.keeper {
+        return Some(format!(
+            "the server reaches no ClickHouse Keeper, which replicated tables need ({reason}); configure \
+             <zookeeper> on every replica and check that Keeper answers"
+        ));
+    }
+    if !facts.ddl_initial_user_and_roles {
+        return Some(DDL_USER_REFUSAL.to_owned());
+    }
+    if !facts.unreplicated.is_empty() {
+        let tables: Vec<&str> = facts.unreplicated.iter().map(String::as_str).collect();
+        return Some(unreplicated_refusal(cluster, &tables));
+    }
+    if let Some(reason) = &facts.fan_out {
+        return Some(format!(
+            "the replicas in cluster {cluster} do not run each other's queries as the user who sent them ({reason}); \
+             give the cluster a <secret> in remote_servers on every replica, and let every replica reach the others"
+        ));
+    }
+    None
+}
+
+impl ClickHouse {
+    /// Refuses a configured cluster that cannot hold Crucible's tables, and ClickHouse Cloud, before any step
+    /// renders `ON CLUSTER`; warns about the replicas that do not answer, and returns them. Nothing happens without
+    /// a cluster name.
+    async fn check_cluster(&self, store: &ClickHouseStore) -> anyhow::Result<Vec<String>> {
+        let Some(cluster) = &self.cluster else {
+            return Ok(Vec::new());
+        };
+        let facts = store
+            .cluster_facts(cluster)
+            .await
+            .with_context(|| format!("reading cluster {cluster} from the server"))?;
+        if let Some(reason) = cluster_refusal(cluster, &facts) {
+            anyhow::bail!(reason);
+        }
+        if !facts.silent.is_empty() {
+            tracing::warn!(
+                cluster = cluster.as_str(),
+                replicas = facts.silent.join(", "),
+                "replicas in the cluster do not answer: an insert waits for a majority of the replicas, and a \
+                 migration step for every one"
+            );
+        }
+        Ok(facts.silent)
+    }
+}
+
+/// The refusal of a ClickHouse Cloud service, which Crucible does not support.
+const CLOUD_REFUSAL: &str = "this server is a ClickHouse Cloud service, which Crucible does not support; point \
+                             clickhouse.url (--clickhouse-url or CRUCIBLE_CLICKHOUSE_URL) at a self-hosted ClickHouse: \
+                             a single server, or one of the replicas in the cluster that clickhouse.cluster names";
+
+/// The tables in `engines` that are not replicated, by name.
+fn unreplicated(engines: &[(crucible_records::TableId, EngineFamily)]) -> Vec<&'static str> {
+    engines
+        .iter()
+        .filter(|(_, family)| *family != EngineFamily::Replicated)
+        .map(|(id, _)| id.name())
+        .collect()
+}
+
+/// The refusal of a cluster name over tables that were created for a single server.
+fn unreplicated_refusal(cluster: &Ident, tables: &[&str]) -> String {
+    format!(
+        "clickhouse.cluster names cluster {cluster}, but the tables {} in database crucible are not replicated: they \
+         were created for a single server. Unset clickhouse.cluster to use this server alone, or point \
+         clickhouse.url at a replica in a cluster whose database crucible holds no tables yet",
+        tables.join(", ")
+    )
+}
+
+/// Why a server cannot take ingest although detection ran (contract 5.8); `None` when it can. `cluster` is the
+/// configured `clickhouse.cluster`.
+fn refusal(facts: &StoreFacts, cluster: Option<&Ident>) -> Option<String> {
     let StoreVersion { major, minor } = facts.version;
     if facts.version < StoreVersion::MINIMUM {
         return Some(format!(
             "ClickHouse {major}.{minor} is older than the minimum, 26.3"
         ));
     }
-    if facts.flavour != StoreFlavour::SingleNode {
-        return Some(format!(
-            "Crucible stores telemetry on a single-node ClickHouse server, and this server is {:?}; point \
-             clickhouse.url (--clickhouse-url or CRUCIBLE_CLICKHOUSE_URL) at a single-node server",
-            facts.flavour
-        ));
+    match (facts.flavour, cluster) {
+        (StoreFlavour::Cloud, _) => return Some(CLOUD_REFUSAL.to_owned()),
+        (StoreFlavour::Clustered, None) => {
+            return Some(
+                "the tables in database crucible are replicated, so this server belongs to a cluster; set \
+                 clickhouse.cluster (--clickhouse-cluster or CRUCIBLE_CLICKHOUSE_CLUSTER) to the cluster's name in \
+                 the servers' remote_servers"
+                    .to_owned(),
+            );
+        }
+        (StoreFlavour::Clustered, Some(cluster)) => {
+            let tables = unreplicated(&facts.engines);
+            if !tables.is_empty() {
+                return Some(unreplicated_refusal(cluster, &tables));
+            }
+            if facts.ddl_initial_user_and_roles == Some(false) {
+                return Some(DDL_USER_REFUSAL.to_owned());
+            }
+        }
+        (StoreFlavour::SingleNode, _) => {}
     }
     if facts.engines.len() < TABLES.len() {
         return Some(format!(
@@ -380,8 +534,11 @@ pub(crate) async fn bring_up(
         // A changed step that waits for the right master key was logged when it was passed over; detection below
         // says why the key is refused.
         apply_migrations(env, config, store, control).await?;
-    } else if let Some(control) = control {
-        crate::control::ensure_migrated(&control.store).await?;
+    } else {
+        let _silent = config.check_cluster(store).await?;
+        if let Some(control) = control {
+            crate::control::ensure_migrated(&control.store).await?;
+        }
     }
     // `detect` includes the check that every service identity sees a known row.
     let facts = store.detect().await.map_err(|error| {
@@ -395,7 +552,7 @@ pub(crate) async fn bring_up(
         };
         anyhow::anyhow!("startup detection{hint}: {error}")
     })?;
-    if let Some(reason) = refusal(&facts) {
+    if let Some(reason) = refusal(&facts, config.cluster.as_ref()) {
         anyhow::bail!(reason);
     }
     store
@@ -489,6 +646,7 @@ mod tests {
                     read_agent: user(),
                     maint: user(),
                     flavour: Some(StoreFlavour::SingleNode),
+                    cluster: None,
                     tls_roots: TlsRoots::WebPki,
                     connect_timeout: CONNECT_TIMEOUT,
                     idle_timeout: None,
@@ -599,6 +757,7 @@ mod tests {
             master_key: MasterKey::parse(KEY).unwrap(),
             sql_statements_per_hour: 90,
             idle_timeout: None,
+            cluster: None,
         };
         let steps = config.steps(SqlProfile::default()).unwrap();
         // `sql.statements_per_hour` reaches the quota of access step A2.
@@ -650,6 +809,7 @@ mod tests {
             master_key: MasterKey::parse(key).unwrap(),
             sql_statements_per_hour: 1_800,
             idle_timeout: None,
+            cluster: None,
         };
         let right = config(KEY).steps(SqlProfile::default()).unwrap();
         let wrong = config(&KEY.replace("00", "ff"))
@@ -685,23 +845,185 @@ mod tests {
             text_index: true,
             ddl_initial_user_and_roles: None,
         };
-        assert_eq!(refusal(&fits), None);
+        assert_eq!(refusal(&fits, None), None);
         let refused = |change: fn(&mut StoreFacts)| {
             let mut facts = fits.clone();
             change(&mut facts);
-            refusal(&facts).unwrap()
+            refusal(&facts, None).unwrap()
         };
         assert!(refused(|f| f.version.minor = 2).contains("older than the minimum"));
-        // The refusal states the limit and the setting that fixes it (contract 1.7).
-        let clustered = refused(|f| f.flavour = StoreFlavour::Clustered);
-        assert!(
-            clustered.contains("single-node")
-                && clustered.contains("clickhouse.url")
-                && !clustered.contains("preview"),
-            "{clustered}"
-        );
         assert!(refused(|f| f.engines.clear()).contains("--migrate"));
         assert!(refused(|f| f.missing_settings.push("x".to_owned())).contains("settings x"));
         assert!(refused(|f| f.text_index = false).contains("text index"));
+
+        // A cluster of replicated tables, with its name configured, fits.
+        let cluster = Ident::new("crucible").unwrap();
+        let replicated = StoreFacts {
+            flavour: StoreFlavour::Clustered,
+            engines: TABLES
+                .iter()
+                .map(|def| (def.id, EngineFamily::Replicated))
+                .collect(),
+            ddl_initial_user_and_roles: Some(true),
+            ..fits.clone()
+        };
+        assert_eq!(refusal(&replicated, Some(&cluster)), None);
+        // Each refusal states what is wrong and the setting that fixes it (contract 1.7).
+        let unnamed = refusal(&replicated, None).unwrap();
+        assert!(
+            unnamed.contains("replicated")
+                && unnamed.contains("clickhouse.cluster")
+                && unnamed.contains("--clickhouse-cluster")
+                && unnamed.contains("CRUCIBLE_CLICKHOUSE_CLUSTER"),
+            "{unnamed}"
+        );
+        let single_tables = refusal(
+            &StoreFacts {
+                flavour: StoreFlavour::Clustered,
+                ..fits.clone()
+            },
+            Some(&cluster),
+        )
+        .unwrap();
+        assert!(
+            single_tables.contains("not replicated")
+                && single_tables.contains("clickhouse.cluster"),
+            "{single_tables}"
+        );
+        let ddl = refusal(
+            &StoreFacts {
+                ddl_initial_user_and_roles: Some(false),
+                ..replicated.clone()
+            },
+            Some(&cluster),
+        )
+        .unwrap();
+        assert!(
+            ddl.contains("distributed_ddl_use_initial_user_and_roles"),
+            "{ddl}"
+        );
+        // ClickHouse Cloud stays refused, with or without a cluster name.
+        for named in [None, Some(&cluster)] {
+            let cloud = refusal(
+                &StoreFacts {
+                    flavour: StoreFlavour::Cloud,
+                    ..fits.clone()
+                },
+                named,
+            )
+            .unwrap();
+            assert!(
+                cloud.contains("ClickHouse Cloud")
+                    && cloud.contains("clickhouse.url")
+                    && !cloud.contains("preview"),
+                "{cloud}"
+            );
+        }
+    }
+
+    /// A configured cluster that cannot hold the tables is refused before any `ON CLUSTER` statement runs, each
+    /// refusal naming the fix (contract 1.7); a replica that does not answer is not a refusal.
+    #[test]
+    fn a_cluster_is_refused_until_it_can_hold_the_tables() {
+        let cluster = Ident::new("crucible").unwrap();
+        let fits = ClusterFacts {
+            cloud: false,
+            shards: 1,
+            replicas: vec![
+                "clickhouse-1:9000".to_owned(),
+                "clickhouse-2:9000".to_owned(),
+            ],
+            missing_macros: Vec::new(),
+            keeper: None,
+            ddl_initial_user_and_roles: true,
+            unreplicated: Vec::new(),
+            fan_out: None,
+            silent: Vec::new(),
+        };
+        assert_eq!(cluster_refusal(&cluster, &fits), None);
+        let one_down = ClusterFacts {
+            silent: vec!["clickhouse-2:9000".to_owned()],
+            ..fits.clone()
+        };
+        assert_eq!(cluster_refusal(&cluster, &one_down), None);
+        let refused = |change: fn(&mut ClusterFacts)| {
+            let mut facts = fits.clone();
+            change(&mut facts);
+            cluster_refusal(&cluster, &facts).unwrap()
+        };
+        let cloud = refused(|f| f.cloud = true);
+        assert!(
+            cloud.contains("ClickHouse Cloud") && cloud.contains("clickhouse.url"),
+            "{cloud}"
+        );
+        let undefined = refused(|f| f.shards = 0);
+        assert!(
+            undefined.contains("remote_servers") && undefined.contains("--clickhouse-cluster"),
+            "{undefined}"
+        );
+        assert!(refused(|f| f.shards = 2).contains("one shard"));
+        let macros = refused(|f| f.missing_macros = vec!["replica".to_owned()]);
+        assert!(
+            macros.contains("replica") && macros.contains("<macros>"),
+            "{macros}"
+        );
+        let keeper = refused(|f| f.keeper = Some("Code: 999".to_owned()));
+        assert!(
+            keeper.contains("Keeper") && keeper.contains("<zookeeper>"),
+            "{keeper}"
+        );
+        assert!(
+            refused(|f| f.ddl_initial_user_and_roles = false)
+                .contains("distributed_ddl_use_initial_user_and_roles")
+        );
+        let tables = refused(|f| f.unreplicated = vec!["span_core".to_owned()]);
+        assert!(
+            tables.contains("span_core") && tables.contains("not replicated"),
+            "{tables}"
+        );
+        let fan_out = refused(|f| f.fan_out = Some("Code: 516".to_owned()));
+        assert!(
+            fan_out.contains("Code: 516") && fan_out.contains("<secret>"),
+            "{fan_out}"
+        );
+    }
+
+    /// With `clickhouse.cluster` set, every step renders for the cluster: replicated engines, `ON CLUSTER`.
+    #[test]
+    fn a_cluster_name_renders_every_step_for_the_cluster() {
+        let cluster = Ident::new("crucible").unwrap();
+        let config = ClickHouse {
+            url: "http://clickhouse-1:8123".to_owned(),
+            admin: Credentials {
+                user: "crucible_admin".to_owned(),
+                password: "admin-secret".to_owned(),
+            },
+            master_key: MasterKey::parse(KEY).unwrap(),
+            sql_statements_per_hour: 1_800,
+            idle_timeout: None,
+            cluster: Some(cluster.clone()),
+        };
+        let variant = Variant::Clustered { cluster };
+        assert_eq!(config.variant(), variant);
+        let steps = config.steps(SqlProfile::default()).unwrap();
+        assert_eq!(
+            steps[0].statements,
+            schema_base(&variant, Granularity::Day).statements
+        );
+        assert_eq!(steps[3], schema_span_usage_aggregate(&variant));
+        for step in &steps {
+            assert!(
+                step.statements
+                    .iter()
+                    .any(|statement| statement.contains(" ON CLUSTER crucible")),
+                "step {} has no ON CLUSTER statement",
+                step.id
+            );
+        }
+        let single = ClickHouse {
+            cluster: None,
+            ..config
+        };
+        assert_eq!(single.variant(), Variant::SingleNode);
     }
 }

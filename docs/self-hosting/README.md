@@ -4,8 +4,9 @@ A Crucible deployment is one `crucible` server, one ClickHouse and one Postgres:
 
 - **The server** is one binary. It ingests OTLP, keeps every acknowledged request in a write-ahead log on its own
   disk until ClickHouse has it, and serves the UI, the REST API and the MCP server.
-- **ClickHouse** stores the telemetry. Crucible needs a single-node ClickHouse server, version 26.3 or newer, and an
-  admin user that may manage access, which it uses to create its own service users.
+- **ClickHouse** stores the telemetry. Crucible needs ClickHouse 26.3 or newer, as a single server or as a cluster of
+  one shard with several replicas ([clustered ClickHouse](clustered.md)), and an admin user that may manage access,
+  which it uses to create its own service users. ClickHouse Cloud is refused at startup.
 - **Postgres** holds the control plane: sign-in, the organization, projects, members, API keys, alert rules and
   channels, saved queries, retention settings, deletion requests, export jobs and the migrations ledger. Crucible
   needs Postgres 15 or newer. A server without Postgres takes its project keys from a file instead and has no
@@ -25,6 +26,7 @@ To get a server running, follow the [quickstart](quickstart.md).
 | [SQL workspace](sql-workspace.md) | The per-project ClickHouse users behind the SQL workspace, and its quota |
 | [Troubleshooting](troubleshooting.md) | Each common refusal, what it means and how to fix it |
 | [Media](media.md) | Images, audio and files on S3-compatible object storage, with the bundled gateway or a bucket of your own |
+| [Clustered ClickHouse](clustered.md) | A replicated ClickHouse cluster with Keeper: the bundled two-replica Compose file, pointing Crucible at your own cluster, and what happens when a replica is down |
 
 ## Ways to run it
 
@@ -32,6 +34,7 @@ To get a server running, follow the [quickstart](quickstart.md).
 |---|---|
 | Docker Compose with a bundled ClickHouse 26.8 and Postgres 18 | `deploy/compose/compose.yaml`, in the [quickstart](quickstart.md) |
 | Docker Compose against a ClickHouse and a Postgres you run elsewhere | `deploy/compose/compose.cloud.yaml`, [below](#your-own-clickhouse-and-postgres) |
+| Docker Compose with two ClickHouse replicas, ClickHouse Keeper and Postgres 18 | `deploy/compose/compose.cluster.yaml`, in [clustered ClickHouse](clustered.md) |
 | Docker Compose with a binary you built, without Postgres, for development | `deploy/compose/compose.dev.yaml`, in [development.md](../development.md#a-local-build-in-compose) |
 | The binary on its own | [below](#the-binary) |
 
@@ -42,7 +45,7 @@ attestations. A version such as `v0.1.0` is tagged `0.1.0`, `0.1` and `latest`; 
 unless `CRUCIBLE_IMAGE` in `.env` names another tag.
 
 ```sh
-docker pull ghcr.io/elm-os/crucible:0.1.1
+docker pull ghcr.io/elm-os/crucible:0.1.2
 ```
 
 To build the image yourself from a checkout of this repository, which needs only Docker:
@@ -99,13 +102,16 @@ CRUCIBLE_MASTER_KEY=<openssl rand -hex 32>
 ```
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.1/deploy/compose/compose.cloud.yaml
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.2/deploy/compose/compose.cloud.yaml
 docker compose -f compose.cloud.yaml up -d --wait
 ```
 
 - The ClickHouse user needs access management, because Crucible creates its service users and their row policies
   with it. With the official ClickHouse image, `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1` gives it to the user the
   image creates, as `compose.yaml` does.
+- For a replicated cluster, point `CRUCIBLE_CLICKHOUSE_URL` at one replica and add
+  `CRUCIBLE_CLICKHOUSE_CLUSTER=<the cluster's name in remote_servers>`; [clustered ClickHouse](clustered.md) lists
+  what the cluster needs.
 - `https://<host>:8443` connects to ClickHouse over TLS, and `?sslmode=require` at the end of the Postgres URL
   connects to Postgres over TLS. `crucible config print` shows the URL with the password redacted.
 - Create the owner the same way as with `compose.yaml` ([quickstart](quickstart.md#3-create-the-organization-and-its-owner)),
@@ -149,11 +155,11 @@ for Linux (x86_64 and aarch64, glibc and musl), macOS (x86_64 and Apple silicon)
 with checksums, and installers for a shell and for PowerShell:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/elm-os/crucible/releases/download/v0.1.1/crucible-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/elm-os/crucible/releases/download/v0.1.2/crucible-installer.sh | sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/elm-os/crucible/releases/download/v0.1.1/crucible-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/elm-os/crucible/releases/download/v0.1.2/crucible-installer.ps1 | iex"
 ```
 
 The shell installer needs `curl`, and `tar` with xz support (`xz-utils` on Debian and Ubuntu). It installs `crucible`

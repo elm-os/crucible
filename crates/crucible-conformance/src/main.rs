@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! crucible-conformance --url http://host:8123 [--user crucible_admin] [--password ...] [--cluster name]
-//!                      [--label 26.3]
+//!                      [--replica-url http://other-replica:8123 ...] [--label 26.3]
 //! ```
 //!
 //! The admin user must hold access management. The exit code is 0 when every row passes.
@@ -24,6 +24,7 @@ struct Args {
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
     let (mut url, mut cluster, mut label) = (None, None, None);
+    let mut replicas = Vec::new();
     let mut admin = Credentials {
         user: "crucible_admin".to_owned(),
         password: String::new(),
@@ -37,6 +38,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
             "--user" => admin.user = value,
             "--password" => admin.password = value,
             "--cluster" => cluster = Some(value),
+            "--replica-url" => replicas.push(value),
             "--label" => label = Some(value),
             other => bail!("unknown argument {other}"),
         }
@@ -48,6 +50,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
             url,
             admin,
             cluster,
+            replicas,
         },
     })
 }

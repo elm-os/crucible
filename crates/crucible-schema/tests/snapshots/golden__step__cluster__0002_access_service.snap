@@ -118,6 +118,10 @@ GRANT ON CLUSTER crucible SELECT ON system.processes TO crucible_maint;
 
 GRANT ON CLUSTER crucible SELECT ON system.tables TO crucible_maint;
 
+GRANT ON CLUSTER crucible REMOTE ON *.* TO crucible_ingest, crucible_read_ui, crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.clusters TO crucible_ingest, crucible_maint;
+
 CREATE ROW POLICY IF NOT EXISTS crucible_service_span_core ON CLUSTER crucible ON crucible.span_core AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
 
 CREATE ROW POLICY IF NOT EXISTS crucible_service_span_payload ON CLUSTER crucible ON crucible.span_payload AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;

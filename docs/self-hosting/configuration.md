@@ -143,6 +143,7 @@ in Postgres stop working under another key.
 | `clickhouse.password` | `CRUCIBLE_CLICKHOUSE_PASSWORD` | | none | That user's password |
 | `clickhouse.password_file` | `CRUCIBLE_CLICKHOUSE_PASSWORD_FILE` | `--clickhouse-password-file` | none | A file that holds it |
 | `clickhouse.idle_timeout` | `CRUCIBLE_CLICKHOUSE_IDLE_TIMEOUT` | | 1 s below the server's `keep_alive_timeout` | Seconds an idle connection to ClickHouse is kept for the next statement. Set it below the idle timeout of a balancer between Crucible and ClickHouse that drops idle connections sooner than ClickHouse does |
+| `clickhouse.cluster` | `CRUCIBLE_CLICKHOUSE_CLUSTER` | `--clickhouse-cluster` | none (one server) | The name, in the servers' `remote_servers`, of the replicated cluster that holds the replica `clickhouse.url` names: one shard with several replicas. Crucible then creates its tables and users on every replica and stores each insert on a majority of them ([clustered ClickHouse](clustered.md)). Letters, digits and `_`, not starting with a digit; it needs `clickhouse.url` |
 
 ### `[postgres]`
 

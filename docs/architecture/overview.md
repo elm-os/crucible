@@ -49,8 +49,8 @@ Crucible is one Rust binary, `crucible`, with these roles:
 | MCP proxy | `crucible proxy stdio -- <cmd>`, `crucible proxy http` | MCP instrumentation without code changes |
 | Metrics | `127.0.0.1:9464/metrics` | Prometheus |
 
-A deployment is the binary plus **Postgres** (the control plane) plus **ClickHouse** (telemetry): a single-node
-server, 26.3 or newer. Without Postgres the server takes its project keys from a file and runs no control-plane
+A deployment is the binary plus **Postgres** (the control plane) plus **ClickHouse** (telemetry): a single server,
+or a cluster of one shard with several replicas, 26.3 or newer. Without Postgres the server takes its project keys from a file and runs no control-plane
 features.
 
 ## Write path
