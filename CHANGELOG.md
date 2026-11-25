@@ -4,6 +4,15 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- The four SDKs have the server's version (the TypeScript SDK said 0.0.0 and the others 0.1.0), so the version in an
+  SDK's User-Agent names the Crucible release it shipped with.
+- Each release carries the SDK packages on its GitHub release: `elm-os-crucible-X.Y.Z.tgz` for TypeScript,
+  `crucible_sdk-X.Y.Z-py3-none-any.whl` and `crucible_sdk-X.Y.Z.tar.gz` for Python and `crucible-sdk-X.Y.Z.crate`
+  for Rust, and tags the Go module as `sdk/go/vX.Y.Z`.
+- The SDK guides and READMEs install from the release: the package downloads, the Go module tag and, for Rust, a git
+  dependency pinned to the release tag.
+- The SDK packages and the Go module carry the MIT license text.
+
 ## [0.1.2] - 2026-11-25
 
 MCP analytics over long windows read an hourly rollup, the web UI manages the organization and its sign-in
