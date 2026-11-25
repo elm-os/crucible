@@ -1012,6 +1012,19 @@ impl TelemetryStore for FakeStore {
         no_writes()
     }
 
+    async fn partitions(&self, _: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        no_writes()
+    }
+
+    async fn holds_project(
+        &self,
+        _: TableId,
+        _: Option<PartitionId>,
+        _: ProjectId,
+    ) -> Result<bool, StoreError> {
+        no_writes()
+    }
+
     async fn apply_migration(&self, _: &MigrationStep) -> Result<(), StoreError> {
         no_writes()
     }

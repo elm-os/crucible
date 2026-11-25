@@ -684,6 +684,19 @@ impl TelemetryStore for Audited {
         self.ch.masked_parts(table_id, partition).await
     }
 
+    async fn partitions(&self, table_id: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        self.ch.partitions(table_id).await
+    }
+
+    async fn holds_project(
+        &self,
+        table_id: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> Result<bool, StoreError> {
+        self.ch.holds_project(table_id, partition, project).await
+    }
+
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
         self.ch.apply_migration(step).await
     }

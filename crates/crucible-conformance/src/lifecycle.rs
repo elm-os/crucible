@@ -3,17 +3,18 @@
 //! pending-deletion set, the delete of a request in a partition, the retention delete in a partition that
 //! straddles the cut-off, the read that verifies a delete, the mask application, the partition drop, a deletion
 //! by user on the MCP operations by `user_id` and subject hash with the issuers it hashes under, and a project
-//! deletion: the days of its rows and the delete of every row of it in an aggregating and an unpartitioned table.
+//! deletion: the partitions of a table, probes of the project's rows, and the delete of every row of it in an
+//! aggregating and an unpartitioned table.
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_env::TelemetryStore;
 use crucible_plan::{
     CmpOp, DeletePlan, Hidden, HiddenSelector, Literal, Pred, QueryPlan, Row, TRACE_ID_LIST_CHUNK,
-    TraceSelector, Value, deletion_issuers, deletion_traces, expired_before, lifecycle_days,
-    lifecycle_oldest, mcp_user,
+    TraceSelector, Value, deletion_issuers, deletion_traces, expired_before, lifecycle_oldest,
+    mcp_user,
 };
-use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
+use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
 use crucible_schema::{Column, Granularity, McpOpsCol, SpanPayloadCol, route};
 
 use crate::blocks::Rows;
@@ -530,58 +531,63 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         expect(!kept.is_empty(), || format!("the delete removed {what}"))?;
     }
 
-    // 13.4, a project deletion: the UTC days in which a table holds the project's rows, read over every instant,
-    // then a delete of every row of the project in a partition of an aggregating table and in the one partition
-    // of an unpartitioned table, verified by the project's presence there, and the mask. The other project keeps
-    // its rows, and the project its rows of another partition.
-    let day = |t: Timestamp| {
-        Value::Time(Timestamp::from_micros(
-            t.micros() - t.micros().rem_euclid(DAY),
-        ))
-    };
-    let days = |found: &[Row]| -> Vec<Value> {
-        let mut days: Vec<Timestamp> = found
-            .iter()
-            .filter_map(|row| match row.values().first() {
-                Some(Value::Time(bucket)) => Some(*bucket),
-                _ => None,
-            })
-            .collect();
-        days.sort();
-        days.into_iter().map(Value::Time).collect()
-    };
-    let of_spans = read(
-        lifecycle_days(scope, table)?,
-        "the days of the project's spans",
-    )
-    .await?;
-    same(
-        "the days of the project's spans",
-        &days(&of_spans),
-        &vec![day(T0)],
-    )?;
+    // 13.4, a project deletion: the partitions of a table from the store's catalogue, and probes of at most one row
+    // of the project in a partition or anywhere in a table, then a delete of every row of the project in a partition
+    // of an aggregating table and in the one partition of an unpartitioned table, verified by the project's presence
+    // there, and the mask. The other project keeps its rows, and the project its rows of another partition.
     let metrics = TableId::SpanMetrics;
     let earlier = T0.saturating_add_micros(-40 * DAY);
     for (seq, whose, time) in [(31, project, T0), (32, project, earlier), (33, other, T0)] {
         let block = rollup_rows(whose, epoch, seq, time, 2);
         insert(ctx, block, ctx.token(epoch, seq, metrics, time)?).await?;
     }
-    let of_metrics = read(
-        lifecycle_days(scope, metrics)?,
-        "the days of the project's minute rollup",
-    )
-    .await?;
-    same(
-        "the days of the project's minute rollup",
-        &days(&of_metrics),
-        &vec![day(earlier), day(T0)],
-    )?;
     let deploys = TableId::McpDeploys;
     for (seq, whose) in [(34, project), (35, other)] {
         let block = rollup(deploys, whose, epoch, seq, 1)
             .all("server_name", Value::String("files".to_owned()))
             .all("deploy_id", Value::String(format!("d{seq}")));
         insert(ctx, block, ctx.token(epoch, seq, deploys, T0)?).await?;
+    }
+    let (now, before) = (
+        route(metrics, Granularity::Day, T0)?,
+        route(metrics, Granularity::Day, earlier)?,
+    );
+    let stranger = ctx.project();
+    let holds = async |store: &dyn TelemetryStore,
+                       table: TableId,
+                       partition: Option<PartitionId>,
+                       whose: ProjectId,
+                       wanted: bool|
+           -> Result<()> {
+        let held = store
+            .holds_project(table, partition, whose)
+            .await
+            .context("the probe of a project's rows")?;
+        expect(held == wanted, || {
+            format!(
+                "the probe of {} {partition:?} for {whose} answered {held}, {wanted} expected",
+                table.name()
+            )
+        })
+    };
+    for store in both {
+        let listed = store.partitions(metrics).await?;
+        expect(listed.contains(&now) && listed.contains(&before), || {
+            format!("the partitions of the minute rollup are {listed:?}")
+        })?;
+        expect(listed.windows(2).all(|pair| pair[0] < pair[1]), || {
+            format!("the partitions of the minute rollup are not ascending: {listed:?}")
+        })?;
+        let listed = store.partitions(deploys).await?;
+        expect(listed.contains(&PartitionId::UNPARTITIONED), || {
+            format!("the partitions of mcp_deploys are {listed:?}")
+        })?;
+        holds(store, metrics, None, project, true).await?;
+        holds(store, metrics, Some(before), project, true).await?;
+        holds(store, metrics, Some(now), other, true).await?;
+        holds(store, metrics, None, stranger, false).await?;
+        holds(store, metrics, Some(before), other, false).await?;
+        holds(store, deploys, Some(PartitionId::UNPARTITIONED), project, true).await?;
     }
     for purged in [metrics, deploys] {
         let partition = route(purged, Granularity::Day, T0)?;
@@ -602,6 +608,8 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
                     )
                 },
             )?;
+            holds(store, purged, Some(partition), project, false).await?;
+            holds(store, purged, Some(partition), other, true).await?;
             let mask = store
                 .apply_deleted_mask(purged, partition)
                 .await
@@ -613,24 +621,20 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
             })?;
         }
     }
-    let left = read(
-        lifecycle_days(scope, metrics)?,
-        "the days of the minute rollup after the delete",
-    )
-    .await?;
-    same(
-        "the days of the minute rollup after the delete",
-        &days(&left),
-        &vec![day(earlier)],
-    )?;
+    // The project's rows of the earlier partition are still there, and found.
+    for store in both {
+        holds(store, metrics, None, project, true).await?;
+        holds(store, metrics, Some(before), project, true).await?;
+        holds(store, metrics, Some(now), project, false).await?;
+    }
 
     Ok(format!(
         "{reads} reads agree between the model and the server through the resolution of a request's traces, \
          reads under the pending-deletion set, the delete of a request in a partition with its verification, \
          the mask application, the retention delete in a partition that straddles the cut-off, the \
          partition drop, a deletion by user on the MCP operations by `user_id` and a full chunk of \
-         subject hashes, with the issuers it hashes under, and a project deletion: the days of its rows in a \
-         plain and an aggregating table, and the delete of every row of it in a partition of the minute rollup \
-         and in the one partition of `mcp_deploys`, with the mask"
+         subject hashes, with the issuers it hashes under, and a project deletion: the partitions of a table, \
+         probes of the project's rows in a partition and in a table, and the delete of every row of it in a \
+         partition of the minute rollup and in the one partition of `mcp_deploys`, with the mask"
     ))
 }

@@ -1220,6 +1220,55 @@ impl TelemetryStore for ClickHouseStore {
         count("the masked part count", &answer)
     }
 
+    async fn partitions(&self, table: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(table.name());
+        let answer = self
+            .lookup(
+                ServiceIdentity::Maint,
+                &b.finish(format!(
+                    "SELECT DISTINCT partition_id FROM system.parts WHERE database = {database} AND table = \
+                     {name} AND active ORDER BY partition_id"
+                )),
+            )
+            .await?;
+        answer
+            .lines()
+            .map(|line| PartitionId::parse(line).map_err(|_| unexpected("partition ids", &answer)))
+            .collect()
+    }
+
+    async fn holds_project(
+        &self,
+        table: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> Result<bool, StoreError> {
+        if !crucible_schema::table(table).is_scoped() {
+            return Err(StoreError::Internal(format!(
+                "{} has no project column",
+                table.name()
+            )));
+        }
+        let mut b = Binder::default();
+        let project = b.uuid(project.uuid());
+        let within = match partition {
+            Some(partition) => format!(" AND _partition_id = {}", b.string(&partition.to_string())),
+            None => String::new(),
+        };
+        let answer = self
+            .lookup(
+                ServiceIdentity::Maint,
+                &b.finish(format!(
+                    "SELECT 1 FROM {DATABASE}.{} WHERE project_id = {project}{within} LIMIT 1",
+                    table.name()
+                )),
+            )
+            .await?;
+        Ok(!answer.trim().is_empty())
+    }
+
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
         let settings: Vec<(&str, String)> = step
             .settings

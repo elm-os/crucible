@@ -16,7 +16,7 @@ use crucible_schema::{
 use crate::class::QueryClass;
 use crate::error::PlanError;
 use crate::literal::Literal;
-use crate::node::{AggOutput, Aggregate, Direction, Fill, Measure, Node, Step, TimeSeries};
+use crate::node::{AggOutput, Aggregate, Direction, Measure, Node};
 use crate::plan::QueryPlan;
 use crate::pred::{CmpOp, Pred};
 
@@ -113,27 +113,6 @@ pub fn lifecycle_oldest(
         window,
         QueryClass::AnalyticsRaw,
         Node::Aggregate(aggregate),
-    ))
-}
-
-/// The UTC days in which a table holds rows of the project, retention or not: one row per day with rows, its
-/// outputs `bucket` (the day's first instant) and the minimum of the table's time column in that day. A project
-/// deletion finds the partitions it reaches with it (contract 13.4), since a table's partition is a function of
-/// that column's day. Refused for the two unpartitioned tables, whose time column no predicate can name.
-pub fn lifecycle_days(scope: ProjectScope, table_id: TableId) -> Result<QueryPlan, PlanError> {
-    let column = lifecycle_time_column(table_id).ok_or(PlanError::Table(table_id))?;
-    let aggregate = Aggregate::new(
-        table_id,
-        Pred::all(),
-        None::<ColumnRef>,
-        vec![Measure::Min(column)],
-    )?;
-    let series = TimeSeries::new(aggregate, column, Step::Day, Fill::None)?;
-    Ok(QueryPlan::new(
-        scope,
-        every_instant()?,
-        QueryClass::AnalyticsRaw,
-        Node::TimeSeries(series),
     ))
 }
 
@@ -258,42 +237,4 @@ pub fn deletion_issuers(
         QueryClass::AnalyticsRaw,
         Node::Aggregate(aggregate),
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use crucible_auth::test_support::scope;
-    use crucible_records::ProjectId;
-
-    use super::*;
-
-    /// Contract 13.4: the days of a project's rows are read from every partitioned table of the project, over
-    /// every instant, by the column its partitions are cut on; the two unpartitioned tables are refused.
-    #[test]
-    fn the_days_of_a_project_are_read_by_the_partition_column() {
-        let scope = scope(ProjectId::from_bytes([2; 16])).unwrap();
-        for table_id in TableId::ALL {
-            let def = table(table_id);
-            let plan = lifecycle_days(scope, table_id);
-            if !def.is_scoped() || lifecycle_time_column(table_id).is_none() {
-                assert!(plan.is_err(), "{table_id:?}");
-                continue;
-            }
-            let plan = plan.unwrap();
-            assert_eq!(plan.window(), every_instant().unwrap());
-            let Node::TimeSeries(series) = plan.root() else {
-                panic!("{table_id:?}: not a time series");
-            };
-            assert_eq!(series.step(), Step::Day);
-            assert_eq!(series.fill(), Fill::None);
-            assert_eq!(
-                series.time().name(),
-                def.retention.time_column,
-                "{table_id:?}"
-            );
-        }
-        for unpartitioned in [TableId::McpDeploys, TableId::McpToolInventory] {
-            assert!(lifecycle_days(scope, unpartitioned).is_err());
-        }
-    }
 }

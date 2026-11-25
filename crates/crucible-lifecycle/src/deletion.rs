@@ -33,23 +33,23 @@ use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
     TxError, duration_micros,
 };
+use crucible_env::StoreError;
 use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
     DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value,
-    deletion_issuers, deletion_traces, lifecycle_column, lifecycle_days,
+    deletion_issuers, deletion_traces, lifecycle_column,
 };
 use crucible_records::{
     DeletionRequestId, DeletionState, PartitionId, ProjectId, ProjectScope, TableId, Timestamp,
     TraceId, WalEpoch,
 };
-use crucible_schema::PartitionExpr;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{self, Place, Shared, advance, planned};
 use crate::config::LifecycleConfig;
 use crate::detail::{Detail, subject_hash, subject_hex};
-use crate::partitions::{day_of, days_spanned, partition_window, partitions_of_days};
+use crate::partitions::{days_spanned, partition_window, partitions_of_days};
 use crate::reach::{
     CONTROL_PLANE, EXPORT_FILES, MEDIA, OTHER_PLACES, Reach, final_reach, identity_reach,
     page_reach, project_reach,
@@ -57,6 +57,9 @@ use crate::reach::{
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
+/// The most probes one run sends to find where a deleted project's rows are. Each reads at most one row, so a run
+/// stays short whatever the project holds; the next run goes on after the last partition probed.
+pub(crate) const MAX_PROBES_PER_RUN: usize = 1_000;
 
 /// Where one reach-list table of a request stands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -104,6 +107,9 @@ pub struct Progress {
     /// [`project_reach`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub purged: Vec<String>,
+    /// For a project deletion: the last partition probed of the next table, when a run's probes ran out in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probed: Option<String>,
     /// Whether every action of the request is planned.
     #[serde(default)]
     pub planned: bool,
@@ -302,6 +308,57 @@ impl Purges {
         self.gone.insert(project_id, gone);
         Ok(gone)
     }
+}
+
+/// Where a table holds rows of a project, as far as one run's probes went.
+#[derive(Debug, Default)]
+pub(crate) struct Found {
+    /// The partitions that hold rows of the project, ascending.
+    pub(crate) partitions: Vec<PartitionId>,
+    /// The last partition probed, when the probes ran out before the table's last partition.
+    pub(crate) stopped_after: Option<PartitionId>,
+}
+
+/// The partitions of `table` that hold visible rows of `project`, after the partition `after`, with at most about
+/// `probes` probes, each of which reads at most one row (contract 13.4). Without `after`, one probe first asks whether
+/// the table holds any row of the project. Then each partition that the store's catalogue lists is probed in order,
+/// and the probes that are left are counted down; when they run out, [`Found::stopped_after`] says where to go on.
+/// No read scans the project's rows, so a project of any size is found within the limits of the store's reads.
+pub(crate) async fn find(
+    shared: &Shared,
+    table: TableId,
+    project: ProjectId,
+    after: Option<PartitionId>,
+    probes: &mut usize,
+) -> Result<Found, StoreError> {
+    let telemetry = &shared.telemetry;
+    if after.is_none() {
+        *probes = probes.saturating_sub(1);
+        if !telemetry.holds_project(table, None, project).await? {
+            return Ok(Found::default());
+        }
+    }
+    let mut found = Found::default();
+    let mut last = None;
+    let partitions = telemetry.partitions(table).await?;
+    for partition in partitions
+        .into_iter()
+        .filter(|partition| after.is_none_or(|after| *partition > after))
+    {
+        if *probes == 0 && last.is_some() {
+            found.stopped_after = last;
+            return Ok(found);
+        }
+        *probes = probes.saturating_sub(1);
+        if telemetry
+            .holds_project(table, Some(partition), project)
+            .await?
+        {
+            found.partitions.push(partition);
+        }
+        last = Some(partition);
+    }
+    Ok(found)
 }
 
 struct Executor<'a> {
@@ -761,26 +818,38 @@ impl Executor<'_> {
     }
 
     /// Plans a project deletion (contract 13.4), a table of [`project_reach`] at a time: one purge for each
-    /// partition that holds the project's rows, as the table reads them. A purge is planned as a delete of the
-    /// project's rows, and each time it is sent it becomes the drop of its partition instead when nothing in the
-    /// partition is kept or can still arrive ([`Purges::kind`]). A table's purges are recorded in transactions
-    /// of a bounded size, then the table joins the request's progress, so a later run or another leader goes on
-    /// from the next one; a purge planned again has the key of the first and is not recorded twice.
+    /// partition that holds the project's rows ([`find`]). A purge is planned as a delete of the project's rows, and
+    /// each time it is sent it becomes the drop of its partition instead when no project can write there any more and
+    /// nothing in it is kept ([`Purges::kind`]). A table's purges are recorded in transactions of a bounded size,
+    /// then the table joins the request's progress, so a later run or another leader goes on from the next one; a
+    /// purge planned again has the key of the first and is not recorded twice. A run sends at most
+    /// [`MAX_PROBES_PER_RUN`] probes and records where it stopped.
     async fn plan_project(
         &self,
         request: &mut DeletionRequest,
-        scope: ProjectScope,
         progress: &mut Progress,
     ) -> JobResult {
+        let mut probes = MAX_PROBES_PER_RUN;
         for table in project_reach() {
             if progress.purged.iter().any(|name| name == table.name()) {
                 continue;
             }
+            if probes == 0 {
+                return Ok(());
+            }
+            let after = progress
+                .probed
+                .as_deref()
+                .and_then(|text| PartitionId::parse(text).ok());
+            let found =
+                match find(&self.shared, table, request.project_id, after, &mut probes).await {
+                    Ok(found) => found,
+                    Err(error) => return self.unreadable(request, table, &error).await,
+                };
             let now = self.ctx.env.clock.wall_now();
-            let purges = self
-                .partitions_of(scope, table)
-                .await?
-                .into_iter()
+            let purges = found
+                .partitions
+                .iter()
                 .map(|partition| {
                     planned(
                         self.ctx.env.new_id(),
@@ -789,7 +858,7 @@ impl Executor<'_> {
                         ActionKind::Delete,
                         Place {
                             table,
-                            partition,
+                            partition: *partition,
                             project_id: Some(request.project_id),
                             request_id: Some(request.id),
                         },
@@ -798,8 +867,18 @@ impl Executor<'_> {
                 })
                 .collect();
             actions::plan(self.ctx, purges).await?;
-            progress.purged.push(table.name().to_owned());
+            match found.stopped_after {
+                Some(last) => progress.probed = Some(last.to_string()),
+                None => {
+                    progress.purged.push(table.name().to_owned());
+                    progress.probed = None;
+                }
+            }
+            request.error = None;
             self.record(request, progress, Vec::new(), &[]).await?;
+            if found.stopped_after.is_some() {
+                return Ok(());
+            }
         }
         progress.resolved = true;
         progress.planned = true;
@@ -807,48 +886,26 @@ impl Executor<'_> {
         self.record(request, progress, Vec::new(), &[]).await
     }
 
-    /// The partitions of a table that hold rows of the project: those of the UTC days its rows fall in, or the
-    /// one partition of an unpartitioned table when its projects include this one.
-    async fn partitions_of(
+    /// A read that finds where a deleted project's rows are failed. The request records why and how many of its
+    /// steps failed, so the list of deletion requests shows it, and the next run reads again.
+    async fn unreadable(
         &self,
-        scope: ProjectScope,
+        request: &mut DeletionRequest,
         table: TableId,
-    ) -> Result<BTreeSet<PartitionId>, JobError> {
-        if crucible_schema::table(table).partition == PartitionExpr::None {
-            let partition = PartitionId::UNPARTITIONED;
-            let listed = self
-                .shared
-                .telemetry
-                .partition_projects(table, partition)
-                .await
-                .map_err(|error| {
-                    JobError::Failed(format!(
-                        "the read of a partition's projects failed: {error}"
-                    ))
-                })?;
-            return Ok(if listed.contains(&scope.project_id()) {
-                BTreeSet::from([partition])
-            } else {
-                BTreeSet::new()
-            });
-        }
-        let plan = lifecycle_days(scope, table).map_err(|error| {
-            JobError::Failed(format!("the read of a table's days was refused: {error}"))
-        })?;
-        let rows = match self.shared.telemetry.execute(plan).await {
-            Ok(stream) => stream.rows().await,
-            Err(error) => Err(error),
-        }
-        .map_err(|error| JobError::Failed(format!("the read of a table's days failed: {error}")))?;
-        let days = rows.iter().filter_map(|row| match row.values().first() {
-            Some(Value::Time(bucket)) => day_of(*bucket),
-            _ => None,
-        });
-        Ok(partitions_of_days(
-            table,
-            self.shared.config.granularity,
-            days,
-        ))
+        error: &StoreError,
+    ) -> JobResult {
+        request.attempts = request.attempts.saturating_add(1);
+        tracing::warn!(
+            request = %request.id, project = %request.project_id, table = table.name(), %error,
+            attempts = request.attempts,
+            "a read that finds a deleted project's rows failed; the next run of the deletion executor reads again"
+        );
+        request.error = Some(format!(
+            "finding the project's rows in {} failed ({error}); the server tries again every {} s",
+            table.name(),
+            self.shared.config.deletion_every.as_secs()
+        ));
+        self.save(request).await
     }
 
     /// The control-plane side of a project deletion, once every place of its telemetry is verified (contract
@@ -928,8 +985,7 @@ impl Executor<'_> {
                     let why = "a project deletion names a project that is not deleted".to_owned();
                     return self.fail(&mut request, why).await;
                 }
-                self.plan_project(&mut request, scope, &mut progress)
-                    .await?;
+                self.plan_project(&mut request, &mut progress).await?;
             } else {
                 self.plan(&mut request, scope, &mut progress).await?;
             }

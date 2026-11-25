@@ -6,7 +6,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -72,6 +72,9 @@ struct Hooked {
     /// The reads over every instant of a table, and the reads that find where a project's rows are, that are
     /// still to fail.
     failing: Arc<AtomicU32>,
+    /// Whether a read over every instant of a table is refused as too broad, as a server refuses a read of more
+    /// rows than its class allows.
+    refuse_wide: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Hooked {
@@ -113,6 +116,9 @@ impl TelemetryStore for Hooked {
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
         let every_instant = plan.window().from() == Timestamp::EPOCH
             && plan.window().to() == Timestamp::MAX_EXCLUSIVE;
+        if every_instant && self.refuse_wide.load(Ordering::SeqCst) {
+            return Err(QueryError::TooBroad);
+        }
         if every_instant && self.fails() {
             return Err(QueryError::Timeout);
         }
@@ -163,6 +169,25 @@ impl TelemetryStore for Hooked {
         partition: PartitionId,
     ) -> Result<u64, StoreError> {
         self.ch.masked_parts(table_id, partition).await
+    }
+
+    async fn partitions(&self, table_id: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        if self.fails() {
+            return Err(StoreError::Unavailable("the read timed out".to_owned()));
+        }
+        self.ch.partitions(table_id).await
+    }
+
+    async fn holds_project(
+        &self,
+        table_id: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> Result<bool, StoreError> {
+        if self.fails() {
+            return Err(StoreError::Unavailable("the read timed out".to_owned()));
+        }
+        self.ch.holds_project(table_id, partition, project).await
     }
 
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
@@ -465,6 +490,7 @@ where
             ch: ch.clone(),
             hook: Arc::default(),
             failing: Arc::default(),
+            refuse_wide: Arc::default(),
         };
         let stores = LeaderStores {
             telemetry: Arc::new(hooked.clone()),
@@ -815,6 +841,65 @@ fn a_project_made_while_a_deletion_runs_keeps_its_rows() {
             BTreeMap::from([(day(10), ActionKind::Drop), (day(0), ActionKind::Delete)])
         );
         assert_eq!(node.visible(id), 1, "the new project's row is gone");
+    });
+}
+
+/// Contract 13.4: a project with more rows than one read may scan is still purged. The executor finds the partitions
+/// that hold its rows from the partitions of each table and a probe of at most one row in each, never by a read over
+/// all of the project's rows, which a server refuses past the limits of the read's class.
+#[test]
+fn a_project_too_large_for_one_read_is_purged() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..3).await;
+        node.ingest_at(2, 0..2, SIM_EPOCH_MICROS - 3 * DAY).await;
+        node.sleep(Duration::from_secs(2)).await;
+        node.hooked.refuse_wide.store(true, Ordering::SeqCst);
+        let done = node.delete_and_purge(project, 0x0a).await;
+        assert_eq!(done.error, None);
+        assert_eq!(node.held(1) + node.held(2), 0);
+    });
+}
+
+/// A read that finds where a deleted project's rows are and keeps failing is recorded on the request, with how many
+/// times it failed, so the Settings list shows it rather than a line in a debug log. Once the reads answer, the
+/// request goes on, completes, and the error goes.
+#[test]
+fn a_failing_read_of_a_project_deletion_is_recorded_on_the_request() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..3).await;
+        node.sleep(Duration::from_secs(2)).await;
+        node.hooked.failing.store(3, Ordering::SeqCst);
+        let request = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([0x09; 16]),
+            project,
+            node.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        node.mark_deleted(project, Some(request.clone())).await;
+        let mut waiting = node.request(request.id).await;
+        for _ in 0..40 {
+            if waiting.attempts > 0 {
+                break;
+            }
+            node.sleep(Duration::from_secs(5)).await;
+            waiting = node.request(request.id).await;
+        }
+        assert_eq!(waiting.state, DeletionState::Logged, "{waiting:?}");
+        assert!(waiting.attempts > 0, "{waiting:?}");
+        assert!(
+            waiting
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("tries again")),
+            "{waiting:?}"
+        );
+        node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
+        let done = node.request(request.id).await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        assert_eq!((done.attempts, done.error.as_deref()), (3, None), "{done:?}");
+        node.assert_purged(project);
     });
 }
 

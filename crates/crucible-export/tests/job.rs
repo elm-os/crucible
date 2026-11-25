@@ -174,6 +174,17 @@ impl TelemetryStore for Spans {
     async fn masked_parts(&self, _: TableId, _: PartitionId) -> Result<u64, StoreError> {
         unsupported()
     }
+    async fn partitions(&self, _: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        unsupported()
+    }
+    async fn holds_project(
+        &self,
+        _: TableId,
+        _: Option<PartitionId>,
+        _: ProjectId,
+    ) -> Result<bool, StoreError> {
+        unsupported()
+    }
     async fn apply_migration(&self, _: &MigrationStep) -> Result<(), StoreError> {
         unsupported()
     }
