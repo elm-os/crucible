@@ -24,7 +24,8 @@ flowchart LR
    replica after a lost answer is stored once.
 4. When the answer to an insert is lost, Crucible asks every replica whether the insert landed before it sends it
    again. The insert is stored once a majority holds it, and missing once every replica has answered without it; in
-   between Crucible asks again.
+   between Crucible asks again. So while a replica is down, an insert whose answer was lost waits until that
+   replica answers.
 5. Retention and deletion requests send their deletes to the replica Crucible talks to, and replication runs them on
    every replica. A deletion request is `applied` once every replica has run its deletes, and `verified` once no
    replica returns a deleted row or holds a part that still carries deleted rows.
@@ -32,18 +33,28 @@ flowchart LR
 ## Run it with Docker Compose
 
 `deploy/compose/compose.cluster.yaml` runs two ClickHouse 26.8 replicas and one ClickHouse Keeper beside Crucible and
-Postgres 18. Make the `.env` file beside it once, then start it:
+Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need.
 
-```sh
-printf 'CLICKHOUSE_PASSWORD=%s\nCLICKHOUSE_CLUSTER_SECRET=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' \
-  "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
-docker compose -f compose.cluster.yaml up -d --wait
-```
+1. Copy `deploy/compose/compose.cluster.yaml` from the repository into a new folder, and work in that folder.
+2. Make the `.env` file beside it, once:
 
-Create the organization and its owner as in the [quickstart](quickstart.md#3-create-the-organization-and-its-owner),
-with `docker compose -f compose.cluster.yaml exec crucible crucible admin init ...`. The optional settings of
-`compose.yaml` (`CRUCIBLE_IMAGE`, `CRUCIBLE_BIND_ADDRESS`, `CRUCIBLE_HTTP_PORT`, `CRUCIBLE_OTLP_HTTP_PORT`) work the
-same way here.
+   ```sh
+   printf 'CLICKHOUSE_PASSWORD=%s\nCLICKHOUSE_CLUSTER_SECRET=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' \
+     "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+   ```
+
+3. Start it:
+
+   ```sh
+   docker compose -f compose.cluster.yaml up -d --wait
+   ```
+
+4. Create the organization and its owner as in the
+   [quickstart](quickstart.md#3-create-the-organization-and-its-owner), with
+   `docker compose -f compose.cluster.yaml exec crucible crucible admin init ...`.
+
+The optional settings of `compose.yaml` (`CRUCIBLE_IMAGE`, `CRUCIBLE_BIND_ADDRESS`, `CRUCIBLE_HTTP_PORT`,
+`CRUCIBLE_OTLP_HTTP_PORT`) work the same way here.
 
 The file runs these services:
 
@@ -63,7 +74,15 @@ the first start ([adding a replica](#adding-a-replica)).
 
 ## Point Crucible at a cluster you run
 
-Set two settings ([configuration](configuration.md#clickhouse)):
+1. Set up every replica the cluster will have, each as the list below says. Crucible creates its tables, users and
+   row policies only on the replicas that are in the cluster when it first migrates, and nothing on a replica added
+   later ([adding a replica](#adding-a-replica)).
+2. Set `clickhouse.url` and `clickhouse.cluster`, as the table below says.
+3. Start Crucible once with `--migrate`, or run `crucible migrate`. It checks the cluster first and, when something is
+   missing, refuses with a message that names what to change; otherwise it creates its databases, tables, users and
+   row policies on every replica.
+
+The two settings ([configuration](configuration.md#clickhouse)):
 
 | Setting | Value |
 |---|---|
