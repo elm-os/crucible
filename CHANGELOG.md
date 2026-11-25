@@ -38,8 +38,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and within a day after that. The request stays completed and reports `late_purges` and `late_purged_at`, which
   the Settings list shows as late rows removed.
 - A project deletion finds the partitions that hold the project's rows from ClickHouse's list of partitions and a
-  check of at most one row in each, so a project of any size is purged. A read that keeps failing shows on the
-  request as `error` with `attempts`, and the Settings list says that the server keeps trying.
+  check that stops at the first row of the project in each, so a project of any size is found. A read that keeps
+  failing shows on the request as `error` with `attempts`, and the Settings list says that the server keeps trying.
 - A project deleted on an earlier version gets the same purge after the upgrade: the server that holds the
   `lifecycle` lease makes its deletion request of kind `project`, with `requested_by` set to `system:upgrade`.
 - From the moment a project is deleted, the notification outbox sends nothing to its channels.

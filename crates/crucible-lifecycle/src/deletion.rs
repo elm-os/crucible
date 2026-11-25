@@ -57,8 +57,9 @@ use crate::reach::{
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
-/// The most probes one run sends to find where a deleted project's rows are. Each reads at most one row, so a run
-/// stays short whatever the project holds; the next run goes on after the last partition probed.
+/// The most probes one run sends to find where a deleted project's rows are. Each stops at the first row of the
+/// project it finds, so a run stays short whatever the project holds; the next run goes on after the last partition
+/// probed.
 pub(crate) const MAX_PROBES_PER_RUN: usize = 1_000;
 
 /// Where one reach-list table of a request stands.
@@ -335,10 +336,13 @@ pub(crate) struct Found {
 }
 
 /// The partitions of `table` that hold visible rows of `project`, after the partition `after`, with at most about
-/// `probes` probes, each of which reads at most one row (contract 13.4). Without `after`, one probe first asks whether
-/// the table holds any row of the project. Then each partition that the store's catalogue lists is probed in order,
-/// and the probes that are left are counted down; when they run out, [`Found::stopped_after`] says where to go on.
-/// No read scans the project's rows, so a project of any size is found within the limits of the store's reads.
+/// `probes` probes, each of which stops at the first visible row of the project (contract 13.4). Without `after`, one
+/// probe first asks whether the table holds any row of the project. Then each partition that the store's catalogue
+/// lists is probed in order, and the probes that are left are counted down; when they run out,
+/// [`Found::stopped_after`] says where to go on.
+/// Before a table's purges have run, no probe reads past a row of the project, so a project of any size is found
+/// within the limits of the store's reads. Once they have run, a probe reads past the rows they hide until the mask
+/// cycle removes them.
 pub(crate) async fn find(
     shared: &Shared,
     table: TableId,

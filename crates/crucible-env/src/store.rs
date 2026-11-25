@@ -490,8 +490,9 @@ pub trait TelemetryStore: fmt::Debug + Send + Sync {
     async fn partitions(&self, table: TableId) -> Result<Vec<PartitionId>, StoreError>;
 
     /// Whether a project has a visible row in one partition of a table, or anywhere in the table when `partition`
-    /// is `None`. Runs as `crucible_maint`. Reads at most the first such row, which the sort key finds: its first
-    /// column is `project_id` in every table, so the cost does not grow with the project's rows.
+    /// is `None`. Runs as `crucible_maint`. It stops at the first such row, which the sort key finds: its first column
+    /// is `project_id` in every table. Rows of the project that a lightweight delete hides are read past until a mask
+    /// application removes them.
     async fn holds_project(
         &self,
         table: TableId,

@@ -848,8 +848,8 @@ fn a_project_made_while_a_deletion_runs_keeps_its_rows() {
 }
 
 /// Contract 13.4: a project with more rows than one read may scan is still purged. The executor finds the partitions
-/// that hold its rows from the partitions of each table and a probe of at most one row in each, never by a read over
-/// all of the project's rows, which a server refuses past the limits of the read's class.
+/// that hold its rows from the partitions of each table and a probe that stops at the first row in each, never by a
+/// read over all of the project's rows, which a server refuses past the limits of the read's class.
 #[test]
 fn a_project_too_large_for_one_read_is_purged() {
     directed(|node| async move {

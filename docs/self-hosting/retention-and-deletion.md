@@ -105,8 +105,9 @@ deletion makes in the same transaction:
    their payloads, trace heads and trace statistics, MCP operations with their arguments and results, the four fact
    tables, the session and user rollups, the minute rollups, the hourly rollup of MCP calls, the MCP deploys and the
    tool inventory. The server finds the partitions that hold the project's rows from ClickHouse's list of
-   partitions and a check of at most one row in each, so a project of any size is found. If ClickHouse does not
-   answer, the request shows the error and how many attempts failed, and the server tries again every 30 seconds.
+   partitions and a check that stops at the first row of the project in each, so a project of any size is found. If
+   ClickHouse does not answer, the request shows the error and how many attempts failed, and the server tries again
+   every 30 seconds.
 3. A partition is dropped whole only when no project can write there any more and every project with rows in it is
    deleted. Ingest takes no span that started more than `ingest.max_event_age` (400 days) before it arrived, and a
    fact takes the start time of a span its project sent, so no project writes into a partition that ends more than
