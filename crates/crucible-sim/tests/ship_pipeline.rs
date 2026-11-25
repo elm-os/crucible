@@ -3,7 +3,9 @@
 //! place, which is the sequential path. The spawner here keeps them instead and runs them later, from runner tasks,
 //! in an order drawn from a seeded stream and each after a draw of virtual time, so they end out of order and
 //! after the shipper task has moved on. For random sequences of frames the shipper must insert the same blocks,
-//! token for token and byte for byte, either way.
+//! token for token and byte for byte, either way: also when it reads frames again because the control store's
+//! deletion requests did not answer, and when it starts on a log that an earlier node shipped in part and crashed
+//! on, so that it rebuilds stage B from the retained prefix with its jobs ahead.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(clippy::disallowed_methods)]
@@ -11,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,11 +23,14 @@ use crucible_env::{
     TaskAbort,
 };
 use crucible_records::{
-    ApiKeyId, AuthorKind, DeletionRequestId, FactId, FactTargetKind, Lsn, ProjectId, SpanId, TagOp,
-    Timestamp, TraceId, Uuid,
+    ApiKeyId, AuthorKind, DeletionRequestId, FactId, FactTargetKind, Lsn, ProjectId, SpanId,
+    TableId, TagOp, Timestamp, TraceId, Uuid,
 };
 use crucible_schema::Granularity;
-use crucible_shipper::{Hooks, IngestLoad, ShipError, Shipper, ShipperConfig, StatsSnapshot};
+use crucible_shipper::{
+    DeletionRequests, DeletionsUnavailable, Hooks, IngestLoad, KnownDeletion, NoDeletions,
+    ShipError, Shipper, ShipperConfig, StatsSnapshot,
+};
 use crucible_sim::ch_model::{Call, ChModel, Script};
 use crucible_sim::{SIM_EPOCH_MICROS, run};
 use crucible_wal::{Wal, WalConfig};
@@ -112,6 +118,58 @@ impl Deferred {
     }
 }
 
+/// Blocking jobs held back, or `None` once they are let go.
+type Held = Arc<Mutex<Option<Vec<Box<dyn FnOnce() + Send>>>>>;
+
+/// A spawner that runs tasks and blocking jobs in place, as the simulation's does, except the encoding jobs,
+/// which it holds until it lets them go.
+struct HoldEncodes {
+    inner: Arc<dyn Spawner>,
+    held: Held,
+}
+
+impl fmt::Debug for HoldEncodes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HoldEncodes").finish_non_exhaustive()
+    }
+}
+
+impl HoldEncodes {
+    /// Runs the jobs held so far, and from now on every job at once.
+    fn release(&self) {
+        let held = self.held.lock().unwrap().take();
+        for job in held.into_iter().flatten() {
+            job();
+        }
+    }
+}
+
+impl Spawner for HoldEncodes {
+    fn spawn_boxed(&self, name: &'static str, fut: BoxFuture<'static, ()>) -> Box<dyn TaskAbort> {
+        self.inner.spawn_boxed(name, fut)
+    }
+
+    fn spawn_blocking_boxed(
+        &self,
+        name: &'static str,
+        f: Box<dyn FnOnce() + Send>,
+    ) -> Box<dyn TaskAbort> {
+        let mut held = self.held.lock().unwrap();
+        match held.as_mut() {
+            Some(jobs) if name == "shipper-encode" => jobs.push(f),
+            _ => {
+                drop(held);
+                f();
+            }
+        }
+        Box::new(Kept)
+    }
+
+    fn shutdown(&self) -> ShutdownSignal {
+        self.inner.shutdown()
+    }
+}
+
 /// Ingest's load: busy or not, for the whole run.
 #[derive(Debug)]
 struct Ingest(bool);
@@ -119,6 +177,43 @@ struct Ingest(bool);
 impl IngestLoad for Ingest {
     fn busy(&self) -> bool {
         self.0
+    }
+}
+
+/// A control store that holds no deletion request and fails its first `fails` reads of them. Before stage B admits
+/// the first frame that carries rows, the shipper reads the requests, and after each failure it reads the log again
+/// from that frame, dropping the frames it read ahead.
+#[derive(Debug)]
+struct Deletions {
+    fails: u32,
+    reads: AtomicU32,
+}
+
+impl DeletionRequests for Deletions {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn requested_after(
+        &self,
+        _received_at: Timestamp,
+    ) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+        let read = self.reads.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            if read < self.fails {
+                Err(DeletionsUnavailable("the control store is down".to_owned()))
+            } else {
+                Ok(Vec::new())
+            }
+        })
+    }
+
+    fn request(
+        &self,
+        _project: ProjectId,
+        _id: DeletionRequestId,
+    ) -> BoxFuture<'_, Result<Option<KnownDeletion>, DeletionsUnavailable>> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -333,6 +428,15 @@ struct Setup {
     retry_first: bool,
     /// Ingest is busy for the whole run.
     ingest_busy: bool,
+    /// A control store whose deletion requests fail this many reads, in each node, before they answer; `None` for
+    /// no control store.
+    deletion_failures: Option<u32>,
+    /// A first node appends this many frames of the log and ships them with its jobs in place, then crashes after
+    /// the given microseconds. The node that runs as the rest of the setup says then recovers the WAL, appends the
+    /// other frames and rebuilds stage B from the retained prefix. `None` runs one node.
+    restart: Option<(usize, u64)>,
+    /// With jobs otherwise in place, the encoding jobs are held for this many microseconds of the run.
+    hold_encodes: Option<u64>,
 }
 
 impl Setup {
@@ -343,6 +447,9 @@ impl Setup {
             cache_bytes: crucible_shipper::DEFAULT_CACHE_BYTES,
             retry_first: false,
             ingest_busy: false,
+            deletion_failures: None,
+            restart: None,
+            hold_encodes: None,
         }
     }
 
@@ -352,6 +459,22 @@ impl Setup {
             ..Self::in_place(seal_rows)
         }
     }
+
+    /// The hooks of each node: its own deletion requests, which fail their first reads anew.
+    fn hooks(&self) -> Hooks {
+        let deletions: Arc<dyn DeletionRequests> = match self.deletion_failures {
+            Some(fails) => Arc::new(Deletions {
+                fails,
+                reads: AtomicU32::new(0),
+            }),
+            None => Arc::new(NoDeletions),
+        };
+        Hooks {
+            ingest: Some(Arc::new(Ingest(self.ingest_busy))),
+            deletions,
+            ..Hooks::default()
+        }
+    }
 }
 
 /// What one run of the shipper did.
@@ -359,8 +482,12 @@ impl Setup {
 struct Shipped {
     /// Every insert, in token order: its token, the last LSN of its batch, and the BLAKE3 of its body.
     inserts: Vec<(String, u64, [u8; 32])>,
-    /// The LSN of the log's last frame, before the shipper's own records.
+    /// The LSN of the log's last frame. The shipper's own records after it are appended at other times in each run.
     last: Lsn,
+    /// The rows `span_core` holds at the end.
+    span_rows: usize,
+    /// The batches sealed when the held encoding jobs were let go.
+    sealed_while_held: u64,
     stats: StatsSnapshot,
     /// The microseconds of each phase of the shipper task, and of its whole run.
     phases: Vec<(&'static str, u64)>,
@@ -400,8 +527,18 @@ impl Shipped {
     }
 }
 
+/// Appends the frames to the WAL and returns the LSN of the last, or zero for none.
+async fn append(wal: &Wal, frames: &[(RecordType, Vec<u8>)]) -> Lsn {
+    let mut last = Lsn::ZERO;
+    for (record_type, payload) in frames {
+        let frame = PreparedFrame::new(*record_type, payload.clone(), Compression::Lz4);
+        last = wal.append(frame.unwrap()).await.unwrap();
+    }
+    last
+}
+
 /// Appends the frames, then runs a shipper over them until every batch has sealed at the latest at its linger and
-/// landed, and stops it.
+/// landed, and stops it. With a restart, a first node ships the first frames in place and crashes before that.
 fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
     run(seed, |sim| async move {
         let disk = sim.disk("disk");
@@ -418,31 +555,14 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
                 message: "busy".to_owned(),
             })
         }));
-        let host = sim.host("node", &disk, 0);
-        let mut env = host.env.clone();
-        if let Some(max_micros) = setup.deferred {
-            let deferred = Deferred::new(Arc::clone(&host.env.spawner));
-            for n in 0..3 {
-                let rng = sim.rng(&format!("runner/{n}"));
-                drop(host.env.spawn(
-                    "runner",
-                    deferred.runner(rng, Arc::clone(&host.env.clock), max_micros),
-                ));
-            }
-            env.spawner = Arc::new(deferred);
-        }
+        let stores = Stores::new(Arc::new(model.clone()));
+        // One segment holds the whole log, so garbage collection keeps every frame for a restart's rebuild.
         let wal_config = WalConfig {
             segment_bytes: 1 << 20,
             max_bytes: 64 << 20,
             min_free_bytes: 0,
             ..WalConfig::default()
         };
-        let (wal, report) = Box::pin(Wal::open(&env, wal_config)).await.unwrap();
-        let mut last = Lsn::ZERO;
-        for (record_type, payload) in frames {
-            let frame = PreparedFrame::new(*record_type, payload.clone(), Compression::Lz4);
-            last = wal.append(frame.unwrap()).await.unwrap();
-        }
         // Batches seal by rows, which the frames decide; the linger only seals the last one, after every job.
         let config = ShipperConfig {
             linger: Duration::from_secs(10),
@@ -456,12 +576,66 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
             cache_bytes: setup.cache_bytes,
             ..ShipperConfig::default()
         };
-        let stores = Stores::new(Arc::new(model.clone()));
-        let hooks = Hooks {
-            ingest: Some(Arc::new(Ingest(setup.ingest_busy))),
-            ..Hooks::default()
-        };
-        let shipper = Shipper::new(&env, &stores, wal.clone(), &report, config, hooks).unwrap();
+        let (first, rest) = frames.split_at(
+            setup
+                .restart
+                .map_or(0, |(count, _)| count.min(frames.len())),
+        );
+        let mut last = Lsn::ZERO;
+        if let Some((_, crash_after)) = setup.restart {
+            // The first node runs the same way in both runs compared, so the second recovers the same log.
+            let host = sim.host("node/first", &disk, 0);
+            let (wal, report) = Box::pin(Wal::open(&host.env, wal_config.clone()))
+                .await
+                .unwrap();
+            last = append(&wal, first).await;
+            let shipper = Shipper::new(
+                &host.env,
+                &stores,
+                wal.clone(),
+                &report,
+                config.clone(),
+                setup.hooks(),
+            )
+            .unwrap();
+            drop(host.env.spawn("shipper", async move {
+                // The crash ends the run.
+                let _ended = Box::pin(shipper.run()).await;
+            }));
+            host.env
+                .clock
+                .sleep(Duration::from_micros(crash_after))
+                .await;
+            drop(wal);
+            host.crash().await;
+        }
+        let host = sim.host("node", &disk, 0);
+        let mut env = host.env.clone();
+        let mut hold = None;
+        if let Some(max_micros) = setup.deferred {
+            let deferred = Deferred::new(Arc::clone(&host.env.spawner));
+            for n in 0..3 {
+                let rng = sim.rng(&format!("runner/{n}"));
+                drop(host.env.spawn(
+                    "runner",
+                    deferred.runner(rng, Arc::clone(&host.env.clock), max_micros),
+                ));
+            }
+            env.spawner = Arc::new(deferred);
+        } else if setup.hold_encodes.is_some() {
+            let spawner = Arc::new(HoldEncodes {
+                inner: Arc::clone(&host.env.spawner),
+                held: Arc::new(Mutex::new(Some(Vec::new()))),
+            });
+            hold = Some(Arc::clone(&spawner));
+            env.spawner = spawner;
+        }
+        let (wal, report) = Box::pin(Wal::open(&env, wal_config)).await.unwrap();
+        if !rest.is_empty() {
+            last = append(&wal, rest).await;
+        }
+        let shipper =
+            Shipper::new(&env, &stores, wal.clone(), &report, config, setup.hooks()).unwrap();
         let stats = shipper.stats();
         let ended: Ended = Arc::default();
         let (slot, clock) = (Arc::clone(&ended), Arc::clone(&env.clock));
@@ -470,6 +644,12 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
             let result = Box::pin(shipper.run()).await;
             *slot.lock().unwrap() = Some((result, started, clock.now()));
         }));
+        let mut sealed_while_held = 0;
+        if let (Some(micros), Some(hold)) = (setup.hold_encodes, &hold) {
+            env.clock.sleep(Duration::from_micros(micros)).await;
+            sealed_while_held = stats.snapshot().sealed;
+            hold.release();
+        }
         env.clock.sleep(Duration::from_secs(30)).await;
         let early = ended.lock().unwrap().take();
         assert!(early.is_none(), "the shipper stopped: {early:?}");
@@ -505,6 +685,12 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
         let shipped = Shipped {
             inserts,
             last,
+            span_rows: model
+                .parts(TableId::SpanCore)
+                .iter()
+                .map(|part| part.block.rows)
+                .sum(),
+            sealed_while_held,
             stats: stats.snapshot(),
             phases: PHASES
                 .iter()
@@ -528,18 +714,22 @@ proptest! {
 
     /// For any log, the shipper inserts the same pairs with the same bytes whether its jobs run in place or end
     /// out of order: stage B takes the frames in LSN order with the records their stage A made, and each block is
-    /// the one its rows make.
+    /// the one its rows make. That holds when it drops the frames it read ahead to read them again, and when it
+    /// starts on a log that a node before it shipped in part, mid-batch or all of it, and crashed on.
     #[test]
     fn the_pipeline_inserts_what_the_sequential_path_inserts(
         items in proptest::collection::vec(item(), 1..40),
         seal_rows in prop_oneof![Just(1usize), Just(8), Just(40), Just(400)],
         max_micros in prop_oneof![Just(50u64), Just(2_000)],
         retry_first in any::<bool>(),
+        deletion_failures in proptest::option::of(0u32..3),
+        restart in proptest::option::of((0usize..40, prop_oneof![0u64..60_000, Just(30_000_000)])),
         seed in 0u64..1_000,
     ) {
         let log = frames(&items);
-        let in_place = ship(seed, &log, Setup { retry_first, ..Setup::in_place(seal_rows) });
-        let deferred = ship(seed, &log, Setup { retry_first, ..Setup::deferred(seal_rows, max_micros) });
+        let setup = |base: Setup| Setup { retry_first, deletion_failures, restart, ..base };
+        let in_place = ship(seed, &log, setup(Setup::in_place(seal_rows)));
+        let deferred = ship(seed, &log, setup(Setup::deferred(seal_rows, max_micros)));
         prop_assert!(in_place.one_body_per_token() && deferred.one_body_per_token());
         prop_assert_eq!(in_place.tokens(), deferred.tokens());
         prop_assert_eq!(in_place.within_log(), deferred.within_log());
@@ -551,12 +741,19 @@ proptest! {
 
 /// Requests of 20 spans with notes of 1,500 bytes, large enough for their stage A to run as jobs.
 fn large_requests(count: u8) -> Vec<(RecordType, Vec<u8>)> {
+    requests(count, 20)
+}
+
+/// `count` requests of `spans` spans with notes of 1,500 bytes. Request `r` carries the spans 0 to `spans - 1` of
+/// trace `r % 6 + 1`, the same in every request of that trace, so a later request repeats an earlier one's spans.
+/// Trace 0 would have the all-zero id, which stage A rejects.
+fn requests(count: u8, spans: u8) -> Vec<(RecordType, Vec<u8>)> {
     let items: Vec<Item> = (0..count)
         .map(|r| {
             Item::Request(
-                (0..20)
+                (0..spans)
                     .map(|s| SpanGen {
-                        trace: r % 6,
+                        trace: r % 6 + 1,
                         span: s,
                         parent: s.checked_sub(1),
                         days_back: s % 2,
@@ -590,6 +787,66 @@ fn stage_a_runs_ahead_of_stage_b_and_the_phases_add_up() {
     let (stage_a, encode) = deferred.jobs;
     assert_eq!(stage_a, 24);
     assert_eq!(encode, deferred.inserts.len() as u64);
+}
+
+/// A node that starts on a log a node before it shipped rebuilds stage B from the retained prefix with stage A of
+/// those frames running ahead as jobs, hands the frames it read past the watermark to the shipping that follows,
+/// and drops the repeats of earlier spans there as it does in place.
+#[test]
+fn a_restart_rebuilds_stage_b_with_its_jobs_ahead() {
+    // The first node ships 24 requests and has checkpointed them when it crashes; 4 requests follow whose first
+    // 20 spans repeat spans of the first ones.
+    let mut log = large_requests(24);
+    log.extend(requests(4, 40));
+    let restart = Some((24, 30_000_000));
+    let in_place = ship(
+        11,
+        &log,
+        Setup {
+            restart,
+            ..Setup::in_place(40)
+        },
+    );
+    let deferred = ship(
+        11,
+        &log,
+        Setup {
+            restart,
+            ..Setup::deferred(40, 2_000)
+        },
+    );
+    assert_eq!(in_place.tokens(), deferred.tokens());
+    assert_eq!(in_place.within_log(), deferred.within_log());
+    // 20 spans in each of 6 traces from the first node, and 20 new spans in each of 4 traces after the restart:
+    // the rebuilt duplicate window drops the 80 repeats, which would make 280 rows without it.
+    assert_eq!((in_place.span_rows, deferred.span_rows), (200, 200));
+    assert_eq!(in_place.stats.frames_ahead_peak, 1);
+    // Two frames per stage A permit, and stage A of every request, the 24 the rebuild replays included, ran as a
+    // job.
+    assert_eq!(deferred.stats.frames_ahead_peak, 8, "{:?}", deferred.stats);
+    assert_eq!(deferred.jobs.0, 28);
+}
+
+/// A batch seals only once the blocks of every batch before it are encoded, so that besides the open batch only the
+/// batch being encoded holds rows: while the encoding of the first batch is held back, the second, full already,
+/// waits to seal, though a second batch may be in flight. Let go, the jobs end and the shipper inserts what it
+/// inserts in place.
+#[test]
+fn a_batch_seals_once_the_batch_before_it_is_encoded() {
+    // Two requests of 20 spans fill a batch of 40 rows.
+    let log = large_requests(12);
+    let in_place = ship(13, &log, Setup::in_place(40));
+    let held = ship(
+        13,
+        &log,
+        Setup {
+            hold_encodes: Some(1_000_000),
+            ..Setup::in_place(40)
+        },
+    );
+    assert_eq!(held.sealed_while_held, 1, "{:?}", held.stats);
+    assert_eq!(in_place.tokens(), held.tokens());
+    assert_eq!(in_place.within_log(), held.within_log());
 }
 
 /// A budget of no bytes still reads one frame into the empty window, so the shipper progresses one frame at a

@@ -8,10 +8,11 @@
 //! WAL's records.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crucible_chfmt::EncodedBlock;
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Gauge, Instant, JoinHandle, Metrics, Rng, Stores};
 use crucible_normalize::{
@@ -19,8 +20,8 @@ use crucible_normalize::{
     StageB, Tombstone, TombstoneSelector, Tombstones,
 };
 use crucible_records::{
-    DeletionRequestId, DeletionState, DetMap, Fact, Lsn, PartitionId, ProjectId, TableId,
-    Timestamp, det_map,
+    BatchToken, DeletionRequestId, DeletionState, DetMap, Fact, Lsn, PartitionId, ProjectId,
+    TableId, Timestamp, det_map,
 };
 use crucible_wal::{AppendError, RecoveryReport, Replay, ReplayError, Wal, WalFrame};
 use crucible_wal_codec::{
@@ -28,11 +29,11 @@ use crucible_wal_codec::{
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{FutureExt, select_biased};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 use crate::batch::{BatchId, OpenBatch, block, pair_token};
 use crate::config::ShipperConfig;
-use crate::cpu::{CpuStage, ENCODE, STAGE_A};
+use crate::cpu::{CpuStage, ENCODE, Pending, STAGE_A};
 use crate::error::ShipError;
 use crate::frames::Content;
 use crate::hooks::{
@@ -44,6 +45,7 @@ use crate::pair::{PairEnd, PairJob, ship_pair};
 use crate::phase::{Laps, Phase};
 use crate::quarantine::quarantine_frame;
 use crate::tables::{Defects, RoutedRow, derive_facts, derive_rows};
+use crate::value::BuildError;
 use crate::window::{Read, Ready, Window};
 
 /// What the shipper takes besides `Env`, `Stores` and the WAL.
@@ -284,6 +286,8 @@ pub(crate) struct Ctx {
     pub(crate) stage_a: CpuStage,
     /// The CPU budget's share for encoding the blocks of sealed batches.
     pub(crate) encode: CpuStage,
+    /// Woken when a job has encoded the last block of a sealed batch.
+    encoded: Arc<Notify>,
 }
 
 impl Ctx {
@@ -396,6 +400,15 @@ struct InFlight {
     /// What the batch holds of the `shipper.encoded_bytes` budget until its task ends.
     row_bytes: u64,
     released: bool,
+    /// The pairs whose block no job has encoded yet. Until then the batch still holds their rows.
+    unencoded: Arc<AtomicUsize>,
+}
+
+/// A pair of a sealed batch, with the job that encodes its block.
+#[derive(Debug)]
+struct Encoding {
+    token: BatchToken,
+    block: Pending<Result<EncodedBlock, BuildError>>,
 }
 
 type BatchDone = (Lsn, Result<BatchState, ShipError>);
@@ -623,6 +636,7 @@ impl Shipper {
                 config.encode_permits,
                 hooks.ingest,
             ),
+            encoded: Arc::new(Notify::new()),
             wal,
             config,
         });
@@ -958,6 +972,14 @@ impl Shipper {
         self.in_flight.iter().all(|batch| batch.released)
     }
 
+    /// Whether every batch in flight has its blocks encoded, so that only the open batch holds rows. Where the
+    /// jobs run in place, as the simulation's spawner runs blocking work, a batch is encoded when it seals.
+    fn all_encoded(&self) -> bool {
+        self.in_flight
+            .iter()
+            .all(|batch| batch.unencoded.load(Ordering::Acquire) == 0)
+    }
+
     /// Whether the budget of `shipper.encoded_bytes` has room for `bytes` more.
     fn budget_admits(&self, bytes: u64) -> bool {
         self.ctx.stats.held_bytes().saturating_add(bytes) <= self.ctx.config.encoded_bytes
@@ -1130,16 +1152,25 @@ impl Shipper {
                     && (self.all_released() || self.budget_admits(1))
             }
             None => {
+                let (limits, seal_bytes) = (self.ctx.limits(), self.ctx.config.seal_bytes);
+                // While a batch in flight still holds the rows of blocks to encode, a due batch takes no further
+                // frame and waits to seal, so that besides the open batch only the batch being encoded holds
+                // rows, and the frames wait in the log (contract 4.8).
                 self.held.is_none()
-                    && !self
-                        .open
-                        .is_full(&self.ctx.limits(), self.ctx.config.seal_bytes)
+                    && !self.open.is_full(&limits, seal_bytes)
+                    && (self.all_encoded()
+                        || !self
+                            .open
+                            .is_due(&limits, seal_bytes, self.ctx.env.clock.now()))
             }
         }
     }
 
     fn seal_due(&self) -> bool {
-        if self.in_flight.len() >= self.ctx.config.max_batches_in_flight.max(1) {
+        // A batch seals once the blocks of every batch before it are encoded.
+        if self.in_flight.len() >= self.ctx.config.max_batches_in_flight.max(1)
+            || !self.all_encoded()
+        {
             return false;
         }
         match self.seals.front() {
@@ -1202,7 +1233,8 @@ impl Shipper {
         self.lap(Phase::WalAppend);
         let marker_at = batch.marker_at();
         let compression = ctx.config.compression;
-        let mut jobs = Vec::new();
+        let unencoded = Arc::new(AtomicUsize::new(0));
+        let mut pairs = Vec::new();
         for (pair, mut rows) in batch.into_pairs() {
             if self
                 .quarantined
@@ -1219,21 +1251,24 @@ impl Shipper {
             }
             let marker = !(pair.0 == TableId::McpToolRollup && ctx.config.drops_rollup_marker());
             let token = pair_token(&id, pair)?;
+            unencoded.fetch_add(1, Ordering::AcqRel);
+            let (left, encoded) = (Arc::clone(&unencoded), Arc::clone(&ctx.encoded));
             // The block is encoded once, by a job that owns the rows and frees them, and every attempt of the
             // pair sends those bytes (contract 5.2).
-            let encoded = ctx.encode.run(&ctx.env, move || {
-                block(&id, pair, rows, marker_at, compression, marker)
+            let block = ctx.encode.run(&ctx.env, move || {
+                let block = block(&id, pair, rows, marker_at, compression, marker);
+                if left.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    encoded.notify_one();
+                }
+                block
             });
-            jobs.push(PairJob {
-                token,
-                block: encoded,
-                in_doubt: recovered.is_some(),
-            });
+            pairs.push(Encoding { token, block });
         }
+        let in_doubt = recovered.is_some();
         let done = self.done_tx.clone();
         let task_ctx = Arc::clone(&ctx);
         let task = ctx.env.spawn("shipper-batch", async move {
-            let result = ship_batch(&task_ctx, &id, jobs).await;
+            let result = ship_batch(&task_ctx, &id, pairs, in_doubt).await;
             // The receiver is gone only when the shipper is.
             let _gone = done.send((id.first_lsn, result));
         });
@@ -1249,6 +1284,7 @@ impl Shipper {
             raw_bytes,
             row_bytes,
             released: false,
+            unencoded,
         });
         self.lap(Phase::Encode);
         Ok(())
@@ -1429,7 +1465,17 @@ impl Shipper {
                     std::future::pending::<()>().await;
                 }
             };
-            // The end of the next frame's stage A ends the wait too, so stage B takes the frame at once.
+            // The end of the last block of a batch in flight ends the wait too, so the open batch seals at once.
+            let encoding = !self.all_encoded();
+            let encoded = Arc::clone(&self.ctx.encoded);
+            let blocks = async move {
+                if encoding {
+                    encoded.notified().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            // So does the end of the next frame's stage A, so stage B takes the frame at once.
             let stage_a = waiting == Phase::WaitStageA;
             let window = &mut self.window;
             let settled = async {
@@ -1447,6 +1493,7 @@ impl Shipper {
                     }
                 }
                 () = settled.fuse() => {}
+                () = blocks.fuse() => {}
                 () = durable.fuse() => {}
                 () = tick => {}
                 () = (&mut shutdown).fuse() => {
@@ -1459,15 +1506,28 @@ impl Shipper {
     }
 }
 
-/// Ships every pair of one batch concurrently; the connection gate bounds the inserts in flight.
+/// Ships every pair of one batch concurrently, each once its block is encoded; the connection gate bounds the
+/// inserts in flight. A pair holds no connection while its block is encoded.
 async fn ship_batch(
     ctx: &Arc<Ctx>,
     id: &BatchId,
-    jobs: Vec<PairJob>,
+    pairs: Vec<Encoding>,
+    in_doubt: bool,
 ) -> Result<BatchState, ShipError> {
-    let mut pairs: FuturesUnordered<_> = jobs
+    let mut pairs: FuturesUnordered<_> = pairs
         .into_iter()
-        .map(|job| ship_pair(ctx, id, job))
+        .map(|Encoding { token, mut block }| async move {
+            let block = block.take().await.map_err(|_| ShipError::JobLost {
+                stage: ENCODE,
+                lsn: id.first_lsn,
+            })??;
+            let job = PairJob {
+                token,
+                block,
+                in_doubt,
+            };
+            ship_pair(ctx, id, job).await
+        })
         .collect();
     let mut state = BatchState::Resolved;
     while let Some(end) = pairs.next().await {
