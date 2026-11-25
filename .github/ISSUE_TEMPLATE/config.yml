@@ -1,5 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
+  - name: Ask a question
+    url: https://github.com/elm-os/crucible/discussions/categories/q-a
+    about: Ask how to set up, configure or use Crucible in Discussions Q&A.
+  - name: Suggest an idea
+    url: https://github.com/elm-os/crucible/discussions/categories/ideas
+    about: Share an idea in Discussions Ideas and talk it through before it becomes a feature request.
   - name: Report a security vulnerability
     url: https://github.com/elm-os/crucible/security/advisories/new
     about: Report vulnerabilities privately, never in a public issue.

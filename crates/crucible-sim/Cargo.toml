@@ -67,7 +67,7 @@ base64 = { workspace = true }
 proptest = { workspace = true }
 tempfile = "=3.27.0"
 # Reads the presigned URLs of the media signing properties.
-url = "=2.5.8"
+url = "=2.5.9"
 
 [lints]
 workspace = true

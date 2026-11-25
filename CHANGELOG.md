@@ -12,20 +12,24 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SDK guides and READMEs install from the release: the package downloads, the Go module tag and, for Rust, a git
   dependency pinned to the release tag.
 - The SDK packages and the Go module carry the MIT license text.
+
+## [0.1.2] - 2026-11-25
+
+MCP analytics over long windows read an hourly rollup, the web UI manages the organization and its sign-in
+providers, the MCP proxy records the tool arguments and results you opt in to, export files can go to object storage,
+and dashboard widgets and search take filters. The upgrade copies the MCP rollup once and goes back only through a
+backup: read Upgrading below before you upgrade.
+
+### MCP analytics
+
 - MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
   rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
   minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
 - Migration step `0005_mcp_tool_rollup_hourly` adds the hourly rollup and copies the existing minute rollup into it
-  once, on the first start of this version.
-- The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
-  server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
-  as the copy of step 0005.
-- A migration step whose content changed, such as steps 0001 to 0003 on an upgrade from 0.1.1, applies once and the
-  ledger records its new content; it no longer applies again, with a warning, at every start.
-- A start whose master key the ClickHouse service users refuse leaves a changed migration step for a start with the
-  right key, so it no longer gives the SQL workspace's probe users that key's passwords.
-- With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the migrations ledger
-  records every step of its version, and says to run `crucible migrate` or to start one server with `--migrate`.
+  once, the first time this version migrates (a start with `--migrate`, or `crucible migrate`).
+
+### Sign-in and organization
+
 - Settings has an Organization page for the organization's name, project access (every project, or only the projects
   someone is added to) and the allowed email domains, whose people join as viewers without an invitation once their
   sign-in provider verifies their address. Members and viewers read it; editing needs a screen at least 768 pixels
@@ -33,41 +37,6 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - Settings has a Sign-in page that adds, edits, turns off and deletes GitHub, Google and OpenID Connect sign-in
   providers, replaces a client secret without ever showing the stored one, and copies the callback URL to register
   with the provider.
-- `crucible proxy` records the arguments and results of the tool calls a `--capture` rule (or
-  `CRUCIBLE_PROXY_CAPTURE`) names, with the SDKs' rules: off by default, sampled per call, scrubbed with the shared
-  rules and cut at 16 KiB per field, keeping no more than the cap plus 1 KiB of a value, and never on the forwarding
-  path.
-- The Python SDK encodes captured content without a step per JSON token: a result of 500 records took 0.4 ms
-  instead of 5.2 ms per call on a laptop, with the same text as before.
-- The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
-  a pair of characters every match of it holds (a hexadecimal digit before a `:` for the ipv6 rule), so capturing
-  500 records or 64 KiB of hexadecimal text costs about half as much.
-- The Rust SDK's `flush` waits at most the export timeout in all, for the spans and the queued scores together; it
-  waited as long again for the scores.
-- The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
-  manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
-  all four variants.
-- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
-  a presigned link that any server hands out; expiry and deletion requests remove the objects.
-- The span panel has a Media tab, in place of the media section under each payload tab, that lists the media a span's
-  input, output and metadata reference, with where each appears, and the media uploaded for the span; without object
-  storage it says so and links the media guide.
-- `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` lists the media a span references.
-- With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
-- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
-  needs.
-- Each project runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`), so a dashboard of
-  many widgets takes turns: the other queries wait within their deadline instead of reaching ClickHouse together.
-- Deleting a project deletes its dashboards with their widgets and its media records, and then every object under
-  the project's key prefix in object storage.
-- A time series widget draws as areas: a light fill under each series' line, with its dash, marker and table view.
-- The widget sheet edits a widget's filters: a field of the metrics schema, is or is not, and a value, with the
-  values the time range holds offered as suggestions.
-- Search takes the filters of the span list, name included, as `filters` in its request, and the search page has the
-  lists' filter bar. The lists, search and the MCP server's `list_traces` and `list_spans` read one filter object
-  and refuse an invalid one alike: the same member, with the same code.
-- A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
-  (`CRUCIBLE_SERVER_METRICS_LISTEN`).
 - Crucible refuses a change that would leave nobody able to sign in: turning off password sign-in while the sign-in
   page offers no provider, and turning off or deleting the last provider while password sign-in is off. The refusal
   (409 `conflict`) says what to turn on first.
@@ -77,9 +46,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - Sign-in providers carry a version: `PATCH` and `DELETE org/auth-providers/{provider_id}` need it in `If-Match`, and
   the Sign-in page sends it and reloads a provider that changed meanwhile. Postgres migration
   `V11__auth_provider_version` adds the column.
-- A sign-in provider's client ID, issuer and scopes can be changed in place. An empty client secret is refused and
-  never replaces the stored one, and a new issuer unlinks the provider's accounts, which link again through their
-  verified email.
+- A sign-in provider's client ID and scopes, and an OpenID Connect provider's issuer, can be changed in place. An
+  empty client secret is refused and never replaces the stored one, and a new issuer unlinks the provider's
+  accounts, which link again through their verified email.
 - A provider's allowed email domains apply at every sign-in, also to accounts linked before the list changed, and the
   sign-in page names the domains the provider allows. An account outside its provider's allowed domains that signed
   in on 0.1.1 is refused after the upgrade: add its domain to the provider, or have the person sign in another way.
@@ -88,17 +57,23 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   removing one from the configuration turns it off, except while it is the last way to sign in: then its row stays on
   and the server logs at start what to do. A new `auth_oidc.issuer` unlinks the provider's accounts, as an edit on the
   Sign-in page does.
-- `crucible migrate` exits with 1 when a changed migration step waits for the master key the deployment was migrated
-  with, and names the steps, why the key is refused and the key to run it with, instead of reporting the migrations
-  as applied.
-- The metric `crucible_shipper_task_microseconds_total{phase}` gives the shipper's time by what it was doing:
-  reading the log, normalizing, building rows, encoding blocks, writing its own log records, waiting for inserts and
-  idle.
-- The shipper finds the first span of each new trace in one pass over a request. A request of 50,000 traces whose
-  spans all name parents it does not carry, as a service that exports only child spans sends, took 3.1 times as long
-  to turn into rows as a request of one such trace, and takes about 1.2 times as long, measured on a laptop.
-- The shipper reads a request as soon as it is durable instead of looking for new requests every 5 ms, so at low load
-  trace reads see a span up to 5 ms sooner after its acknowledgement.
+
+### MCP proxy and SDKs
+
+- `crucible proxy` records the arguments and results of the tool calls a `--capture` rule (or
+  `CRUCIBLE_PROXY_CAPTURE`) names, with the SDKs' rules: off by default, sampled per call, scrubbed with the shared
+  rules and cut at 16 KiB per field unless the rule sets `max_bytes`, keeping no more than the cap plus 1 KiB of a
+  value, and never on the forwarding path.
+- The Python SDK encodes captured content without a step per JSON token: a result of 500 records took 0.4 ms
+  instead of 5.2 ms per call on a laptop, with the same text as before.
+- The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
+  a pair of characters every match of it holds (a hexadecimal digit before a `:` for the ipv6 rule), so capturing
+  500 records or 64 KiB of hexadecimal text costs about half as much, measured on a laptop.
+- The Rust SDK's `flush` waits at most the export timeout in all, for the spans and the queued scores together; it
+  waited as long again for the scores.
+- The SDK conformance driver checks that Crucible keeps each span's captured content as sent, and a capability
+  manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
+  all four variants.
 - The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as
   the TypeScript SDK does (a digit before a `.` for the ipv4 rule), with the same scrubbed text as before.
 - The Python SDK also skips a scrub rule on text without a run of the characters its matches are made of as long as
@@ -106,12 +81,127 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   adds less than 1 ms per call on a laptop (64 KiB of hexadecimal text 0.6 ms instead of 1.3 ms), with the same
   scrubbed text.
 - `crucible proxy` refuses a `--capture` rule whose `max_bytes` is above 8,323,072 (8 MiB less 64 KiB) and says so:
-  a field captured near 8 MiB did not fit the proxy's 8 MiB export buffer with its operation, which was then dropped.
-- With object storage, one server at a time sweeps the export objects, the one that runs the media collector, so the
-  servers of a deployment no longer each list every project's export keys every 10 minutes.
+  a field captured at a larger cap might not fit the proxy's 8 MiB export buffer with its operation, which would then
+  be dropped.
+
+### Media and exports
+
+- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
+  a presigned link that any server hands out; expiry and deletion requests remove the objects.
+- The span panel has a Media tab, in place of the media section under each payload tab, that lists the media a span's
+  input, output and metadata reference, with where each appears, and the media uploaded for the span; without object
+  storage it says so and links the media guide.
+- `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` lists the media a span references.
+- With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
+- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
+  needs.
+- With object storage, one server at a time sweeps the export objects, the one that runs the media collector, so a
+  deployment lists every project's export keys once every 10 minutes, however many servers it has.
+
+### Dashboards and search
+
+- Each project runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`), so a dashboard of
+  many widgets takes turns: the other queries wait within their deadline instead of reaching ClickHouse together.
 - A read made with an API key or through the MCP server that ClickHouse refuses because several servers together run
   as many such reads as it allows (`TOO_MANY_SIMULTANEOUS_QUERIES`) waits and is sent again within its deadline,
   instead of answering 503.
+- A time series widget can draw as areas, beside lines and bars: a light fill under each series' line, with its
+  dash, marker and table view.
+- The widget sheet edits a widget's filters: a field of the metrics schema, is or is not, and a value, with the
+  values the time range holds offered as suggestions.
+- Search takes the filters of the span list, name included, as `filters` in its request, and the search page has the
+  lists' filter bar. The lists, search and the MCP server's `list_traces` and `list_spans` read one filter object
+  and refuse an invalid one alike: the same member, with the same code.
+
+### Deletion
+
+- Deleting a project deletes its dashboards with their widgets and its media records, and then every object under
+  the project's key prefix in object storage.
+
+### Ingest and storage
+
+- The metric `crucible_shipper_task_microseconds_total{phase}` gives the shipper's time by what it was doing:
+  reading the log, normalizing, building rows, encoding blocks, writing its own log records, waiting for inserts and
+  idle.
+- The shipper finds the first span of each new trace in one pass over a request. A request of 50,000 traces of one
+  span each, whose parents it does not carry, as a service that exports only child spans sends, took 3.1 times as
+  long to turn into rows as a request of one trace of 50,000 spans, and takes about 1.2 times as long, measured on a
+  laptop.
+- The shipper reads a request as soon as it is durable instead of looking for new requests every 5 ms, so at low load
+  trace reads see a span up to 5 ms sooner after its acknowledgement.
+
+### Migrations and startup
+
+- The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
+  server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
+  as the copy of step 0005.
+- A migration step whose content changed, such as steps 0001 to 0003 on an upgrade from 0.1.1, applies once and the
+  ledger records its new content; it no longer applies again, with a warning, at every start.
+- A start whose master key the ClickHouse service users refuse leaves a changed migration step for a start with the
+  right key, so it no longer gives the SQL workspace's probe users that key's passwords.
+- With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the migrations ledger
+  records every step of its version, and says to run `crucible migrate` or to start one server with `--migrate`.
+- `crucible migrate` exits with 1 when a changed migration step waits for the master key the deployment was migrated
+  with, and names the steps, why the key is refused and the key to run it with, instead of reporting the migrations
+  as applied.
+- A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
+  (`CRUCIBLE_SERVER_METRICS_LISTEN`).
+
+### Dependencies
+
+- The `url` crate is 2.5.9, which fixes RUSTSEC-2026-0592: in 2.5.8, `Url::origin()` could overflow the stack on a
+  nested `blob:` URL. Crucible calls it only on the object store endpoint from its own configuration, never on input
+  from a request.
+
+### Help and feedback
+
+- The web UI's header has a Feedback menu whose two links open on GitHub in a new tab: "Ask a question or suggest an
+  idea" (Discussions) and "Report a bug" (the issue templates). They send no referrer and add nothing to the address.
+- `SUPPORT.md` and the docs page `docs/getting-help.md`, linked from the README, the docs index and `CONTRIBUTING.md`,
+  say where to ask a question (Discussions Q&A), suggest an idea (Discussions Ideas) or report a bug (an issue), and
+  what a bug report needs.
+- The new issue page links to Discussions Q&A and Ideas and offers a blank issue to maintainers only, and the feature
+  request form sends broad ideas to Discussions Ideas first.
+
+### Upgrading
+
+- Migrations only move forward: 0.1.1 started with `--migrate`, as the Compose files start it, stays not ready on a
+  database that 0.1.2 has upgraded. Take a
+  [backup](https://github.com/elm-os/crucible/blob/v0.1.2/docs/self-hosting/operations.md#backups) before the upgrade;
+  going back means restoring it.
+- The first migration of 0.1.2, at a start with `--migrate` or with `crucible migrate`, runs ClickHouse migration step
+  0005, which copies the minute MCP rollup into the new hourly rollup once; a server that runs it stays not ready and
+  refuses ingest until the copy has finished. The copy takes longer the more rows the minute rollup holds, and
+  ClickHouse ends it after an hour:
+  [operations](https://github.com/elm-os/crucible/blob/v0.1.2/docs/self-hosting/operations.md#upgrades) gives a rate
+  to plan with, and says what to do when a copy does not finish.
+- Leave the server running until the copy has finished: a copy cut off by a stop or a restart leaves step 0005
+  unfinished, and the next start stays not ready until you end the copy and empty the table, as operations says.
+  With the Compose files the `ready` service reports unhealthy about three minutes into a longer copy, while the
+  copy goes on; follow `docker compose logs crucible` instead of restarting.
+- Stop every 0.1.1 server first: an MCP call that 0.1.1 stores after the copy reaches only the minute rollup, so
+  reads over 12 hours or more leave it out. Then start one server with `--migrate`, as the Compose files do, or run
+  `crucible migrate`, before the other servers. With Postgres, a server started without `--migrate` stays not ready
+  and refuses ingest with 503 until the migrations ledger records step 0005.
+- With Postgres, the first migration also applies ClickHouse migration steps 0001 to 0003 once more, because they
+  now cover the new table, and warns for each that the ledger records it with other content; later starts apply
+  nothing.
+- Without Postgres there is no migrations lease and no ledger to wait for: start the other servers only once the
+  first one answers ready, so that none ships or migrates while it copies.
+- A sign-in provider's allowed email domains now apply at every sign-in, so an account outside them that signed in
+  on 0.1.1 is refused. Add the domains such accounts use to the provider, on the Sign-in page of Settings or in
+  `allowed_domains` of its configuration section, or have those people sign in another way.
+- `PATCH` and `DELETE org/auth-providers/{provider_id}` now need `If-Match` with the provider's `version`, and
+  answer 428 `precondition_required` without it: a script that changes or deletes sign-in providers through the API
+  has to read the provider first and send its version.
+- With object storage, new export files go to the bucket from the first start of 0.1.2, and their download answers 303
+  with a presigned link, so a script that downloads them has to follow redirects (`curl -L`). The store has to accept
+  multipart uploads, and a lifecycle rule for incomplete multipart uploads removes what a stopped server leaves
+  ([media](https://github.com/elm-os/crucible/blob/v0.1.2/docs/self-hosting/media.md#export-files)). Export files
+  written before stay on the server's disk until they expire.
+- Each project now runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`). A widget that
+  gets no turn within its deadline, 12 seconds for most widgets, answers 504 `query_timeout`: on dashboards of many
+  slow widgets, raise the setting.
 
 ## [0.1.1] - 2026-11-21
 

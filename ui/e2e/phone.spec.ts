@@ -108,6 +108,27 @@ test.describe("phone at 390 px", () => {
     await expectAccessible(page, "traces on a phone");
   });
 
+  test("the Feedback menu opens within the page, its links sized for a finger", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    api.on(LIST_PATH, json(tracePage([traceItem()])));
+    await page.goto(`/traces/?project=${PROJECT}`);
+    const banner = page.getByRole("banner");
+    await expect(banner).toContainText("Ada Lovelace");
+    await banner.getByRole("button", { name: "Feedback", exact: true }).tap();
+    const menu = page.getByRole("menu", { name: "Feedback" });
+    await expect(menu).toBeVisible();
+    for (const name of ["Ask a question or suggest an idea", "Report a bug"]) {
+      const link = menu.getByRole("menuitem", { name });
+      await expect(link).toBeInViewport({ ratio: 1 });
+      expect((await link.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "feedback menu on a phone");
+  });
+
   test("MCP: the scope controls wrap and the servers table scrolls inside its frame", async ({
     page,
     api,
