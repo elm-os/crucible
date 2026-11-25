@@ -9,7 +9,9 @@
 //! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, the access steps
 //!   `0002_access_service` and `0003_access_workspace` (the SQL workspace's role, profile, quota, static
 //!   policies, views and probe identities) and schema steps `0004_span_usage_aggregate` and
-//!   `0005_mcp_tool_rollup_hourly` for a single-node server ([`apply_migrations`]). All are idempotent. With
+//!   `0005_mcp_tool_rollup_hourly` ([`apply_migrations`]), rendered for a single server, or with `clickhouse.cluster`
+//!   for that cluster (replicated engines, `ON CLUSTER`) after checks that refuse a cluster that cannot hold the
+//!   tables, and ClickHouse Cloud. All are idempotent. With
 //!   Postgres configured they are recorded in the ledger of contract 6.6 and applied once, and once more after
 //!   their content changes, and the probe identities are provisioned again at every run with the passwords of the
 //!   current master key; without Postgres there is no ledger and all are applied each time.

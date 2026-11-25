@@ -81,9 +81,11 @@ talks to and refuses to start with a message that names what to change.
   `/clickhouse/tables/{shard}/{database}/{table}` and its replica name `{replica}`.
 - **`distributed_ddl_use_initial_user_and_roles` set to 1** on every replica. The `ON CLUSTER` statements that
   create the text indexes need it.
-- **The admin user on every replica**, with the same password and with access management, as on a single server
+- **The admin user on every replica**, with the same password, access management and all privileges, as the user
+  that the official image creates with `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1`
   ([your own ClickHouse](README.md#your-own-clickhouse-and-postgres)). Crucible creates its service users and the
-  SQL workspace's users on every replica with it.
+  SQL workspace's users on every replica with it, and runs its checks of the cluster as it: they read
+  `system.clusters`, `system.macros` and `system.zookeeper`, and send statements to every replica.
 - **No single-server tables.** The database `crucible` is empty or absent: Crucible creates its tables. Tables that
   are not replicated, such as those of a single-server deployment, are refused, and Crucible does not convert them.
 - **ClickHouse 26.3 or newer**, with the settings Crucible sends, as on a single server.

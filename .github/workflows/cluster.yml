@@ -131,6 +131,34 @@ jobs:
           export CRUCIBLE_E2E_BIN="$RUNNER_TEMP/bin/crucible"
           export CRUCIBLE_E2E_OUT="$PWD/cluster-out"
           cargo test --locked --package crucible --test e2e -- --nocapture
+      # Every replica runs a migration step's ON CLUSTER statements: with one stopped, `crucible migrate` fails,
+      # names it, and records nothing; once it is back the same command applies every step.
+      - name: A migration with a replica down
+        env:
+          CRUCIBLE_CLICKHOUSE_URL: http://localhost:18123
+          CRUCIBLE_CLICKHOUSE_CLUSTER: crucible
+          CRUCIBLE_CLICKHOUSE_PASSWORD: cluster-admin
+          CRUCIBLE_POSTGRES_URL: postgres://crucible:cluster-postgres@localhost:5432/crucible
+        run: |
+          "$RUNNER_TEMP/cluster/fresh.sh"
+          stack() {
+            docker compose -p cluster -f deploy/compose/compose.cluster.yaml -f "$RUNNER_TEMP/cluster/override.yaml" "$@"
+          }
+          recorded() {
+            stack exec -T postgres psql -U crucible -d crucible -Atc "SELECT count(*) FROM schema_migrations WHERE kind LIKE 'clickhouse%'"
+          }
+          stack stop clickhouse-2
+          if out=$("$RUNNER_TEMP/bin/crucible" migrate 2>&1); then
+            echo "crucible migrate passed with a replica stopped: $out"
+            exit 1
+          fi
+          echo "$out" | tail -5
+          echo "$out" | grep -q "clickhouse-2:9000 in cluster crucible did not answer"
+          [ "$(recorded)" = 0 ] || { echo "the ledger recorded a step: $(recorded)"; exit 1; }
+          stack start clickhouse-2
+          stack up -d --wait clickhouse-2
+          "$RUNNER_TEMP/bin/crucible" migrate
+          [ "$(recorded)" = 5 ] || { echo "the ledger records $(recorded) of 5 ClickHouse steps"; exit 1; }
       - name: Conformance rows
         run: |
           "$RUNNER_TEMP/cluster/fresh.sh"

@@ -195,6 +195,99 @@ pub(crate) async fn dedup_across_replicas(ctx: &Ctx) -> Result<String> {
     ))
 }
 
+/// The visibility grace of the clustered flavour (contract 8.6): how long the recent-span index keeps serving a span
+/// after its checkpoint, so that a replica that lags behind has that long to fetch it.
+const CLUSTERED_VISIBILITY_GRACE: Duration = Duration::from_secs(10);
+
+/// C11: read-after-write on the replica that took an insert, and a replica that lags behind it, against the
+/// visibility grace (contract 8.6). An acknowledged insert waited for a majority of the replicas, so the replica
+/// that took it, and with two replicas the other one too, return its rows at once. A block that one replica holds
+/// while another fetches nothing is missing from the second until it fetches again, and then appears within the
+/// grace.
+pub(crate) async fn read_after_write(ctx: &Ctx) -> Result<String> {
+    let others = others(ctx)?;
+    let table = TableId::SpanCore;
+    let name = table.name();
+    let (project, epoch) = (ctx.project(), ctx.epoch());
+    let time = Timestamp::from_micros(T0.micros() + 3 * DAY);
+    let held = format!("SELECT count() FROM crucible.{name} WHERE project_id = '{project}'");
+
+    ctx.insert(
+        &plain_rows(table, project, epoch, 1, time, 10, 6),
+        ctx.token(epoch, 1, table, time)?,
+    )
+    .await?;
+    let here = admin_count_on(&ctx.store, &held).await?;
+    expect(here == 10, || {
+        format!("the replica that took an acknowledged insert of 10 rows returns {here}")
+    })?;
+    if others.len() == 1 {
+        let there = admin_count_on(&others[0], &held).await?;
+        expect(there == 10, || {
+            format!(
+                "with two replicas the other one returns {there} rows of an acknowledged insert, not 10"
+            )
+        })?;
+    }
+
+    for other in others {
+        admin_on(other, format!("SYSTEM STOP FETCHES crucible.{name}")).await?;
+    }
+    let lagging = async {
+        let rows = plain_rows(table, project, epoch, 2, time, 10, 7);
+        let settings = InsertSettings::new(ctx.token(epoch, 2, table, time)?, ctx.flavour);
+        let sent = insert_waiting_briefly(&ctx.store, &rows, settings).await;
+        expect(
+            matches!(sent, Err(InsertError::UnknownOutcome { .. })),
+            || {
+                format!(
+                    "an insert whose quorum timed out answered {sent:?}, not an unknown outcome"
+                )
+            },
+        )?;
+        let here = admin_count_on(&ctx.store, &held).await?;
+        let there = admin_count_on(&others[0], &held).await?;
+        expect((here, there) == (20, 10), || {
+            format!(
+                "with fetches stopped, the replicas return {here} and {there} rows, not 20 and 10"
+            )
+        })?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    for other in others {
+        admin_on(other, format!("SYSTEM START FETCHES crucible.{name}")).await?;
+    }
+    lagging?;
+    let resumed = ctx.env.clock.now();
+    loop {
+        if admin_count_on(&others[0], &held).await? == 20 {
+            break;
+        }
+        expect(
+            ctx.env.clock.now().saturating_duration_since(resumed) < CLUSTERED_VISIBILITY_GRACE,
+            || {
+                format!(
+                    "the lagging replica did not return the block within the visibility grace of \
+                     {CLUSTERED_VISIBILITY_GRACE:?} after it fetched again"
+                )
+            },
+        )?;
+        ctx.env.clock.sleep(Duration::from_millis(100)).await;
+    }
+    let caught_up = ctx.env.clock.now().saturating_duration_since(resumed);
+    Ok(format!(
+        "an acknowledged insert was read at once through the replica that took it{}; a block that the other \
+         replica did not fetch was missing there until it fetched again, and then appeared after {caught_up:?}, \
+         within the visibility grace of {CLUSTERED_VISIBILITY_GRACE:?}",
+        if others.len() == 1 {
+            " and through the other one"
+        } else {
+            ""
+        }
+    ))
+}
+
 /// A block acknowledged by one replica reads present through every replica's probe at once, because the insert
 /// waits for a majority (`insert_quorum = auto`). A block whose quorum still waits is an unknown outcome, and
 /// the probe does not read it present until a majority holds it: a block on one replica only is dropped when

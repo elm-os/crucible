@@ -417,6 +417,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
             cluster::dedup_across_replicas(&ctx)
         );
         row!(
+            "C11 read-after-write on the inserting replica; replica lag against the visibility grace (8.6)",
+            cluster::read_after_write(&ctx)
+        );
+        row!(
             "Probe after a one-replica acknowledgement (5.5)",
             cluster::probe_before_quorum(&ctx)
         );
