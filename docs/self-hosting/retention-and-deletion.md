@@ -84,10 +84,10 @@ An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_i
 - **Its rows are removed within the deletion window.** Every row it holds in ClickHouse is deleted once every
   server's write-ahead log has passed the deletion, typically within minutes, and removed from storage within 24
   hours. Its rows in Postgres go next.
-- **A late row is removed within an hour of landing.** A row of the project that reaches ClickHouse after the purge,
-  from a server that was behind, cut off from Postgres or down, is deleted at the next hourly sweep and removed from
-  storage within 24 hours after that. The sweep looks at each project hourly for 30 days after its deletion, and
-  daily after that.
+- **A late row is removed within about an hour of landing.** A row of the project that reaches ClickHouse after the
+  purge, from a server that was behind, cut off from Postgres or down, is deleted at the next hourly sweep, a minute
+  or so after the hour at most, and removed from storage within 24 hours after that. The sweep looks at each project
+  hourly for 30 days after its deletion, and daily after that.
 - **No other project loses a row.** The purge drops a whole partition only where no project can write any more;
   everywhere else it deletes only the deleted project's rows.
 

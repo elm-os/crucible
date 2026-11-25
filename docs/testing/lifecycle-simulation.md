@@ -112,8 +112,9 @@ applications, hidden reads, shipper stalls, frames whose MCP rows alone carry th
 name an issuer and MCP rows that such a deletion kept because they are hashed under the other occurred, a project
 was deleted, frames of it were taken after its deletion, late frames of the second project landed in its partitions,
 its control-plane rows were checked, partitions of its history were dropped and frames of it landed after its request
-completed, each removed in time, and unless every accepted request, the project deletions included, completed. The profile with every fault also requires crashes,
-long downtimes, lease steals, failovers, store outages and stage B drops.
+completed, each removed in time, and unless every accepted request, the project deletions included, completed. The
+profile with every fault also requires crashes, long downtimes, lease steals, failovers, store outages and stage B
+drops.
 
 ## Mutants
 

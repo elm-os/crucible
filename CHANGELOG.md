@@ -34,9 +34,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   the oldest live project was made, and before now) and every project with rows in it is deleted; elsewhere the
   project's rows are deleted, so the rows of every other project stay.
 - Rows of a deleted project that reach ClickHouse after its purge, from a server that was behind, cut off from
-  Postgres or down, are deleted by the purge sweep within an hour of landing for 30 days after the deletion, and
-  within a day after that. The request stays completed and reports `late_purges` and `late_purged_at`, which the
-  Settings list shows as late rows removed.
+  Postgres or down, are deleted by the purge sweep within about an hour of landing for 30 days after the deletion,
+  and within a day after that. The request stays completed and reports `late_purges` and `late_purged_at`, which
+  the Settings list shows as late rows removed.
 - A project deletion finds the partitions that hold the project's rows from ClickHouse's list of partitions and a
   check of at most one row in each, so a project of any size is purged. A read that keeps failing shows on the
   request as `error` with `attempts`, and the Settings list says that the server keeps trying.
