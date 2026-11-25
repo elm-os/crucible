@@ -67,8 +67,9 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   may still be running it after its server stopped. The next migration refuses the step, so the server stays not
   ready, with a message that says to stop every server, then, as the ClickHouse admin user, end the copy with
   `KILL QUERY WHERE query LIKE 'INSERT INTO crucible.mcp_tool_rollup_hourly%' SYNC`, empty the table with
-  `TRUNCATE TABLE crucible.mcp_tool_rollup_hourly`, and migrate again. When the hour ran out, give ClickHouse more
-  cores before migrating again.
+  `TRUNCATE TABLE crucible.mcp_tool_rollup_hourly`, and migrate again. When ClickHouse no longer runs the copy,
+  ClickHouse 26.11 and newer answer the `KILL QUERY` with `No query to kill` (code 785): nothing is left to end, so
+  go on to the `TRUNCATE TABLE`. When the hour ran out, give ClickHouse more cores before migrating again.
 
 ## Backups
 
