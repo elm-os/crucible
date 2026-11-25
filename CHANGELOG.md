@@ -4,7 +4,7 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-11-21
+## [0.1.2] - 2026-11-25
 
 MCP analytics over long windows read an hourly rollup, the web UI manages the organization and its sign-in
 providers, the MCP proxy records the tool arguments and results you opt in to, export files can go to object storage,
@@ -138,16 +138,28 @@ backup: read Upgrading below before you upgrade.
 - A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
   (`CRUCIBLE_SERVER_METRICS_LISTEN`).
 
+### Help and feedback
+
+- The web UI's header has a Feedback menu whose two links open on GitHub in a new tab: "Ask a question or suggest an
+  idea" (Discussions) and "Report a bug" (the issue templates). They send no referrer and add nothing to the address.
+- `SUPPORT.md` and the docs page `docs/getting-help.md`, linked from the README, the docs index and `CONTRIBUTING.md`,
+  say where to ask a question (Discussions Q&A), suggest an idea (Discussions Ideas) or report a bug (an issue), and
+  what a bug report needs.
+- The new issue page links to Discussions Q&A and Ideas and offers a blank issue to maintainers only, and the feature
+  request form sends broad ideas to Discussions Ideas first.
+
 ### Upgrading
 
 - Migrations only move forward: 0.1.1 started with `--migrate`, as the Compose files start it, stays not ready on a
-  database that 0.1.2 has upgraded. Take a [backup](docs/self-hosting/operations.md#backups) before the upgrade;
+  database that 0.1.2 has upgraded. Take a
+  [backup](https://github.com/elm-os/crucible/blob/v0.1.2/docs/self-hosting/operations.md#backups) before the upgrade;
   going back means restoring it.
-- The first migration of 0.1.2, at a start with `--migrate` or with `crucible migrate`, runs ClickHouse migration
-  step 0005, which copies the minute MCP rollup into the new hourly rollup once; a server that runs it stays not
-  ready and refuses ingest until the copy has finished. The copy takes longer the more rows the minute rollup holds,
-  and ClickHouse ends it after an hour: [operations](docs/self-hosting/operations.md#upgrades) gives a rate to plan
-  with, and says what to do when a copy does not finish.
+- The first migration of 0.1.2, at a start with `--migrate` or with `crucible migrate`, runs ClickHouse migration step
+  0005, which copies the minute MCP rollup into the new hourly rollup once; a server that runs it stays not ready and
+  refuses ingest until the copy has finished. The copy takes longer the more rows the minute rollup holds, and
+  ClickHouse ends it after an hour:
+  [operations](https://github.com/elm-os/crucible/blob/v0.1.2/docs/self-hosting/operations.md#upgrades) gives a rate
+  to plan with, and says what to do when a copy does not finish.
 - Leave the server running until the copy has finished: a copy cut off by a stop or a restart leaves step 0005
   unfinished, and the next start stays not ready until you end the copy and empty the table, as operations says.
   With the Compose files the `ready` service reports unhealthy about three minutes into a longer copy, while the
@@ -167,11 +179,11 @@ backup: read Upgrading below before you upgrade.
 - `PATCH` and `DELETE org/auth-providers/{provider_id}` now need `If-Match` with the provider's `version`, and
   answer 428 `precondition_required` without it: a script that changes or deletes sign-in providers through the API
   has to read the provider first and send its version.
-- With object storage, new export files go to the bucket from the first start of 0.1.2, and their download answers
-  303 with a presigned link, so a script that downloads them has to follow redirects (`curl -L`). The store has to
-  accept multipart uploads, and a lifecycle rule for incomplete multipart uploads removes what a stopped server
-  leaves ([media](docs/self-hosting/media.md#export-files)). Export files written before stay on the server's disk
-  until they expire.
+- With object storage, new export files go to the bucket from the first start of 0.1.2, and their download answers 303
+  with a presigned link, so a script that downloads them has to follow redirects (`curl -L`). The store has to accept
+  multipart uploads, and a lifecycle rule for incomplete multipart uploads removes what a stopped server leaves
+  ([media](https://github.com/elm-os/crucible/blob/v0.1.2/docs/self-hosting/media.md#export-files)). Export files
+  written before stay on the server's disk until they expire.
 - Each project now runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`). A widget that
   gets no turn within its deadline, 12 seconds for most widgets, answers 504 `query_timeout`: on dashboards of many
   slow widgets, raise the setting.

@@ -1,7 +1,11 @@
 name: Feature request
-description: Suggest something Crucible could do.
+description: Propose a specific change to Crucible. Broad ideas start in Discussions Ideas.
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        A broad idea, or one you would like to talk through first, belongs in [Discussions Ideas](https://github.com/elm-os/crucible/discussions/categories/ideas). Open a feature request when you can name the change you need.
   - type: textarea
     id: problem
     attributes:
