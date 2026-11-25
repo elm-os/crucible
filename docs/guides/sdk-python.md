@@ -13,13 +13,14 @@ including 3.0.
 
 ## Install
 
-Install the package, `crucible-sdk`, from the repository into your project's environment:
+Install the package, `crucible-sdk`, from the GitHub release of Crucible 0.1.2 into your project's environment; the
+SDK has the server's version:
 
 ```sh
-uv pip install "crucible-sdk[mcp] @ git+https://github.com/elm-os/crucible.git#subdirectory=sdk/python"
+pip install "crucible-sdk[mcp] @ https://github.com/elm-os/crucible/releases/download/v0.1.2/crucible_sdk-0.1.2-py3-none-any.whl"
 ```
 
-or from a checkout:
+`uv add` and `uv pip install` take the same requirement. To install from a checkout of the repository instead:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
