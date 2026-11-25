@@ -15,10 +15,10 @@ Servers on the 1.x line can use `crucible proxy` instead; see [MCP proxy](mcp-pr
 
 ## Install
 
-Install the package from the GitHub release of Crucible 0.1.2; the SDK has the server's version. In your project:
+Install the package from the GitHub release of Crucible 0.1.3; the SDK has the server's version. In your project:
 
 ```sh
-npm install https://github.com/elm-os/crucible/releases/download/v0.1.2/elm-os-crucible-0.1.2.tgz
+npm install https://github.com/elm-os/crucible/releases/download/v0.1.3/elm-os-crucible-0.1.3.tgz
 npm install @modelcontextprotocol/server@^2 @modelcontextprotocol/client@^2 zod@^4   # for the MCP examples
 ```
 
