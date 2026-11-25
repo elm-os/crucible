@@ -24,11 +24,12 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SDK guides and READMEs install from the release: the package downloads, the Go module tag and, for Rust, a git
   dependency pinned to the release tag.
 - The SDK packages and the Go module carry the MIT license text.
-- The shipper normalizes the requests it reads ahead, and encodes the blocks of each sealed batch, on blocking
-  threads, while its task keeps the work that depends on the order of the log. While ingest holds more requests
-  than its share of the CPU budget prepares at once, as in a burst, the shipper does that work on its task again,
-  so ingest keeps the CPUs it had. Requests still reach deduplication in log order, and every attempt of an insert
-  still sends the same bytes.
+- While the shipper is behind the log, it normalizes the requests it reads ahead, and encodes the blocks of each
+  sealed batch, on blocking threads, and its task keeps the work that depends on the order of the log. A shipper
+  that keeps up does that work on its task, as before, and so does one while ingest holds more requests than its
+  share of the CPU budget prepares at once, as in a burst, so ingest keeps the CPUs it had. A batch seals once the
+  batch before it is encoded, so the shipper holds the rows of at most one batch besides the one it fills.
+  Requests still reach deduplication in log order, and every attempt of an insert still sends the same bytes.
 - `cpu.permits` also bounds the shipper: its normalizing and its encoding of blocks take a sixteenth of the budget
   each, at least one permit, and ingest's preparation of requests the rest. The histograms
   `crucible_cpu_permit_wait_microseconds` and `crucible_cpu_permit_hold_microseconds` have the stages `stage_a` and

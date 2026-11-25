@@ -155,8 +155,9 @@ password_file = "/run/secrets/postgres"
   CPUs because ingest's jobs share the CPUs with the runtime's workers, which run the rest of ingest and the
   shipper's task: with one permit per CPU, a burst on the perf gate's small rig acknowledged 12 to 26% fewer spans
   per second than with an unbounded blocking pool. The shipper's jobs never wait on a disk or a peer, so their
-  shares are about the CPUs they may fill. While ingest holds more requests than its share prepares at once, as
-  in a burst, the shipper does that work on its own task instead, so the burst keeps the CPUs it had.
+  shares are about the CPUs they may fill. The shipper offers them only while it is behind the log; one that keeps
+  up, or runs while ingest holds more requests than its share prepares at once, as in a burst, does that work on
+  its own task, so ingest keeps the CPUs it had.
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
 - `server.keys_file` is for a server without `[postgres]`; given both, the configuration is refused with what to do.
