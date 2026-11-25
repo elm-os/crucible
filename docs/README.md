@@ -16,6 +16,7 @@
 | [Troubleshooting](self-hosting/troubleshooting.md) | Common refusals and their fixes |
 | [Getting help](getting-help.md) | Where to ask a question, suggest an idea or report a bug, and what a bug report needs |
 | [Media](self-hosting/media.md) | Images, audio and files on S3-compatible object storage |
+| [Clustered ClickHouse](self-hosting/clustered.md) | A replicated ClickHouse cluster with Keeper, and what happens when a replica is down |
 
 ## Sending and using data
 

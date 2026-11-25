@@ -99,6 +99,13 @@ pub(crate) async fn visibility(ctx: &Ctx) -> Result<String> {
         .detect()
         .await
         .context("detect after the policy was restored")?;
+    // On a cluster every replica's identities see the row that a canary insert there leaves.
+    for (n, replica) in ctx.replicas.iter().enumerate() {
+        replica
+            .detect()
+            .await
+            .with_context(|| format!("detect on replica {}", n + 2))?;
+    }
     match narrowed {
         Err(StoreError::SelfTest(reason)) => Ok(format!(
             "all five identities see the known row; with the policy narrowed detect refuses ({reason})"

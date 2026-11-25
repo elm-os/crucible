@@ -531,6 +531,27 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
         .context("the step after the fix")?;
     let held = format!("SELECT count() FROM {tier}");
     let copied = ctx.admin_count(&held).await?;
+    // On a cluster every replica holds the copy and both of its records.
+    for (n, replica) in ctx.replicas.iter().enumerate() {
+        crate::cluster::admin_on(replica, format!("SYSTEM SYNC REPLICA {tier} LIGHTWEIGHT"))
+            .await?;
+        let there = crate::cluster::admin_count_on(replica, &held).await?;
+        let records = crate::cluster::admin_count_on(
+            replica,
+            format!(
+                "SELECT count() FROM {tier} WHERE marker_epoch IN (toUUID('{HOURLY_COPY_STARTED}'), \
+                 toUUID('{HOURLY_COPY_DONE}'))"
+            ),
+        )
+        .await?;
+        expect((there, records) == (copied, 2), || {
+            format!(
+                "replica {} holds {there} rows of the hourly table and {records} records of the copy, not \
+                 {copied} and 2",
+                n + 2
+            )
+        })?;
+    }
 
     // The pattern that the refusal gives for ending a copy that ClickHouse still runs matches the copy as the
     // server recorded it.
@@ -625,7 +646,12 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
         "step 0005 refused an unfinished copy, with part of its rows or none, and named the fix, whose KILL \
          QUERY pattern matches the copy in system.query_log; after it, it copied the minute rollup by hour \
          ({copied} rows, two batches' markers included, so both batches' hourly pairs probe present and another \
-         batch's absent), a tiered read of the copied project equals its minute read, and the step applied again \
-         changed nothing"
+         batch's absent){}, a tiered read of the copied project equals its minute read, and the step applied \
+         again changed nothing",
+        if ctx.replicas.is_empty() {
+            ""
+        } else {
+            ", every replica held the copy and both of its records"
+        }
     ))
 }

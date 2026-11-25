@@ -4,8 +4,9 @@ A Crucible deployment is one `crucible` server, one ClickHouse and one Postgres:
 
 - **The server** is one binary. It ingests OTLP, keeps every acknowledged request in a write-ahead log on its own
   disk until ClickHouse has it, and serves the UI, the REST API and the MCP server.
-- **ClickHouse** stores the telemetry. Crucible needs a single-node ClickHouse server, version 26.3 or newer, and an
-  admin user that may manage access, which it uses to create its own service users.
+- **ClickHouse** stores the telemetry. Crucible needs ClickHouse 26.3 or newer, as a single server or as a cluster of
+  one shard with several replicas ([clustered ClickHouse](clustered.md)), and an admin user that may manage access,
+  which it uses to create its own service users. ClickHouse Cloud is refused at startup.
 - **Postgres** holds the control plane: sign-in, the organization, projects, members, API keys, alert rules and
   channels, saved queries, retention settings, deletion requests, export jobs and the migrations ledger. Crucible
   needs Postgres 15 or newer. A server without Postgres takes its project keys from a file instead and has no
@@ -25,6 +26,7 @@ To get a server running, follow the [quickstart](quickstart.md).
 | [SQL workspace](sql-workspace.md) | The per-project ClickHouse users behind the SQL workspace, and its quota |
 | [Troubleshooting](troubleshooting.md) | Each common refusal, what it means and how to fix it |
 | [Media](media.md) | Images, audio and files on S3-compatible object storage, with the bundled gateway or a bucket of your own |
+| [Clustered ClickHouse](clustered.md) | A replicated ClickHouse cluster with Keeper: the bundled two-replica Compose file, pointing Crucible at your own cluster, and what happens when a replica is down |
 
 ## Ways to run it
 
@@ -32,6 +34,7 @@ To get a server running, follow the [quickstart](quickstart.md).
 |---|---|
 | Docker Compose with a bundled ClickHouse 26.8 and Postgres 18 | `deploy/compose/compose.yaml`, in the [quickstart](quickstart.md) |
 | Docker Compose against a ClickHouse and a Postgres you run elsewhere | `deploy/compose/compose.cloud.yaml`, [below](#your-own-clickhouse-and-postgres) |
+| Docker Compose with two ClickHouse replicas, ClickHouse Keeper and Postgres 18 | `deploy/compose/compose.cluster.yaml`, in [clustered ClickHouse](clustered.md) |
 | Docker Compose with a binary you built, without Postgres, for development | `deploy/compose/compose.dev.yaml`, in [development.md](../development.md#a-local-build-in-compose) |
 | The binary on its own | [below](#the-binary) |
 
@@ -106,6 +109,9 @@ docker compose -f compose.cloud.yaml up -d --wait
 - The ClickHouse user needs access management, because Crucible creates its service users and their row policies
   with it. With the official ClickHouse image, `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1` gives it to the user the
   image creates, as `compose.yaml` does.
+- For a replicated cluster, point `CRUCIBLE_CLICKHOUSE_URL` at one replica and add
+  `CRUCIBLE_CLICKHOUSE_CLUSTER=<the cluster's name in remote_servers>`; [clustered ClickHouse](clustered.md) lists
+  what the cluster needs.
 - `https://<host>:8443` connects to ClickHouse over TLS, and `?sslmode=require` at the end of the Postgres URL
   connects to Postgres over TLS. `crucible config print` shows the URL with the password redacted.
 - Create the owner the same way as with `compose.yaml` ([quickstart](quickstart.md#3-create-the-organization-and-its-owner)),

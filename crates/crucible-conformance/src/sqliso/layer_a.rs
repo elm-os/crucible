@@ -9,8 +9,8 @@ use anyhow::{Result, anyhow, bail};
 use crucible_env::SqlWorkspaceStore as _;
 use crucible_records::ProjectId;
 use crucible_schema::{
-    CURATED_VIEWS, RetentionSettings, SQL_QUOTA, SQL_QUOTA_QUERIES_PER_HOUR, project_policy_name,
-    sql_tables, table, workspace_user,
+    CURATED_VIEWS, RetentionSettings, SQL_QUOTA, SQL_QUOTA_QUERIES_PER_HOUR, Variant,
+    project_policy_name, sql_tables, table, workspace_user,
 };
 
 use super::{FORMS, Iso, Options, Reply, canary_column, fixture_row, view_of, window};
@@ -268,6 +268,19 @@ async fn w1(iso: &Iso) -> Result<String> {
         iso.attack(sql).await?;
         statements += 1;
     }
+    // On a cluster, the remote table functions over the cluster that holds the tables, whose name the workspace
+    // user can guess.
+    for sql in cluster_sources(
+        iso,
+        &[
+            "SELECT * FROM cluster('{cluster}', 'crucible', 'sqliso_admin_only')",
+            "SELECT * FROM clusterAllReplicas('{cluster}', 'crucible', 'span_core') LIMIT 10",
+            "SELECT * FROM clusterAllReplicas('{cluster}', view(SELECT * FROM crucible.span_core)) LIMIT 10",
+        ],
+    ) {
+        iso.attack(&sql).await?;
+        statements += 1;
+    }
     for sql in [
         "SELECT * FROM crucible.sqliso_admin_only",
         "SELECT count() FROM crucible.dedup_selftest",
@@ -281,6 +294,17 @@ async fn w1(iso: &Iso) -> Result<String> {
         sql_tables().count() - 1,
         CURATED_VIEWS.len()
     ))
+}
+
+/// `shapes` over the cluster of a clustered target, with `{cluster}` replaced by its name; none on one server.
+fn cluster_sources(iso: &Iso, shapes: &[&str]) -> Vec<String> {
+    match &iso.ctx.variant {
+        Variant::Clustered { cluster } => shapes
+            .iter()
+            .map(|shape| shape.replace("{cluster}", cluster.as_str()))
+            .collect(),
+        Variant::SingleNode | Variant::Cloud => Vec::new(),
+    }
 }
 
 /// W2: every table function the server lists.
@@ -327,8 +351,17 @@ async fn w2(iso: &Iso) -> Result<String> {
         "SELECT * FROM postgresql('127.0.0.1:5432', 'db', 't', 'u', 'p')",
         "SELECT * FROM sqlite('/tmp/x.db', 't')",
         "SELECT * FROM input('x UInt8')",
-    ] {
-        let code = iso.refused(sql).await?;
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(cluster_sources(
+        iso,
+        &[
+            "SELECT * FROM cluster('{cluster}', system.one)",
+            "SELECT * FROM clusterAllReplicas('{cluster}', system.one)",
+        ],
+    )) {
+        let code = iso.refused(&sql).await?;
         expect(code != 62, || {
             format!("{sql} was a syntax error, not a refusal")
         })?;
