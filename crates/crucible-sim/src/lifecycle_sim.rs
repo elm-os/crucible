@@ -551,9 +551,12 @@ const MAX_EVENT_AGE_DAYS: i64 = 12;
 
 /// When a project of the simulation was made: the time of its UUIDv7 id.
 fn made_at(project: ProjectId) -> Timestamp {
-    project.uuid().v7_parts().map_or(Timestamp::EPOCH, |(millis, _)| {
-        Timestamp::from_micros(i64::try_from(millis).unwrap_or(0).saturating_mul(1_000))
-    })
+    project
+        .uuid()
+        .v7_parts()
+        .map_or(Timestamp::EPOCH, |(millis, _)| {
+            Timestamp::from_micros(i64::try_from(millis).unwrap_or(0).saturating_mul(1_000))
+        })
 }
 
 /// Lands every row of a frame in the store at once, as a shipper writes it, from the log `epoch` at `lsn`. `false`
@@ -644,8 +647,12 @@ impl Audited {
         let Some(window) = partition_window(TableId::SpanCore, Granularity::Day, partition) else {
             return;
         };
-        let reach = made_at(self.projects[1]).saturating_add_micros(-MAX_EVENT_AGE_DAYS * DAY + 60_000_000);
-        let start = window.from().saturating_add_micros(3_600_000_000).max(reach);
+        let reach =
+            made_at(self.projects[1]).saturating_add_micros(-MAX_EVENT_AGE_DAYS * DAY + 60_000_000);
+        let start = window
+            .from()
+            .saturating_add_micros(3_600_000_000)
+            .max(reach);
         if start >= window.to() {
             return;
         }
@@ -711,9 +718,7 @@ impl TelemetryStore for Audited {
         let answer = self.ch.delete(plan).await;
         if deleted && answer.is_ok() {
             let at = self.clock.now().nanos();
-            lock(&self.ledger)
-                .removals
-                .push((table_id, partition, at));
+            lock(&self.ledger).removals.push((table_id, partition, at));
         }
         answer
     }
@@ -1481,7 +1486,13 @@ async fn history(world: &World, rng: &dyn Rng, today: u32) {
 /// Postgres took under `fail_open` twenty minutes after it, and one from the WAL of a node back after weeks, into a
 /// partition of the project's history. A request that completes too late for a sweep and a mask cycle to follow
 /// before the end gets none.
-async fn after_completion(world: World, rng: Arc<dyn Rng>, today: u32, faulty_until: u64, end: u64) {
+async fn after_completion(
+    world: World,
+    rng: Arc<dyn Rng>,
+    today: u32,
+    faulty_until: u64,
+    end: u64,
+) {
     let clock = &world.database.clock;
     let deleted = world.projects[2];
     let latest = end.saturating_sub(nanos(
@@ -1509,8 +1520,14 @@ async fn after_completion(world: World, rng: Arc<dyn Rng>, today: u32, faulty_un
     let old = day_start(*HISTORY_DAYS.start() + 5).saturating_add_micros(minutes(90));
     let kinds = [
         (requested_at.saturating_add_micros(2_000_000), day_start(0)),
-        (requested_at.saturating_add_micros(-minutes(1)), day_start(10)),
-        (requested_at.saturating_add_micros(minutes(20)), day_start(1)),
+        (
+            requested_at.saturating_add_micros(-minutes(1)),
+            day_start(10),
+        ),
+        (
+            requested_at.saturating_add_micros(minutes(20)),
+            day_start(1),
+        ),
         (old.saturating_add_micros(minutes(60)), old),
     ];
     for (n, (received_at, day)) in kinds.into_iter().enumerate() {
@@ -2322,7 +2339,8 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
     config.retention_every = Duration::from_secs(600);
     config.mask_cycle = Duration::from_secs(1_800);
     config.sweep_every = SWEEP_EVERY;
-    config.max_event_age = Duration::from_secs(u64::try_from(MAX_EVENT_AGE_DAYS).unwrap_or(0) * 86_400);
+    config.max_event_age =
+        Duration::from_secs(u64::try_from(MAX_EVENT_AGE_DAYS).unwrap_or(0) * 86_400);
     match mutant {
         None => config,
         Some(Mutant::SkipCheckpointWait) => {

@@ -142,10 +142,7 @@ async fn sweep(
         let held = find(shared, table, project, None, &mut left)
             .await
             .map_err(|error| {
-                JobError::Failed(format!(
-                    "the probes of {} failed: {error}",
-                    table.name()
-                ))
+                JobError::Failed(format!("the probes of {} failed: {error}", table.name()))
             })?;
         *probes = probes.saturating_sub(usize::MAX - left);
         found.extend(
@@ -226,11 +223,7 @@ fn purge(
     planned(
         ctx.env.new_id(),
         now,
-        format!(
-            "sweep:{}:{}:{partition}:{period}",
-            request.id,
-            table.name()
-        ),
+        format!("sweep:{}:{}:{partition}:{period}", request.id, table.name()),
         kind,
         Place {
             table,

@@ -37,8 +37,8 @@ use crucible_env::StoreError;
 use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
-    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value,
-    deletion_issuers, deletion_traces, lifecycle_column,
+    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_issuers,
+    deletion_traces, lifecycle_column,
 };
 use crucible_records::{
     DeletionRequestId, DeletionState, PartitionId, ProjectId, ProjectScope, TableId, Timestamp,
@@ -197,13 +197,16 @@ fn resolved(rows: &[Row]) -> Vec<(TraceId, Timestamp, Timestamp)> {
 /// makes the project (contract 1.1). An id of another form gives the epoch, which keeps every partition from being
 /// dropped while that project lives.
 fn made_at(project: ProjectId) -> Timestamp {
-    project.uuid().v7_parts().map_or(Timestamp::EPOCH, |(millis, _)| {
-        Timestamp::from_micros(
-            i64::try_from(millis)
-                .unwrap_or(i64::MAX)
-                .saturating_mul(1_000),
-        )
-    })
+    project
+        .uuid()
+        .v7_parts()
+        .map_or(Timestamp::EPOCH, |(millis, _)| {
+            Timestamp::from_micros(
+                i64::try_from(millis)
+                    .unwrap_or(i64::MAX)
+                    .saturating_mul(1_000),
+            )
+        })
 }
 
 /// The oldest instant at which a project, live now or made later, can still write a row: the latest end of a
@@ -854,7 +857,7 @@ impl Executor<'_> {
                 .as_deref()
                 .and_then(|text| PartitionId::parse(text).ok());
             let found =
-                match find(&self.shared, table, request.project_id, after, &mut probes).await {
+                match find(self.shared, table, request.project_id, after, &mut probes).await {
                     Ok(found) => found,
                     Err(error) => return self.unreadable(request, table, &error).await,
                 };

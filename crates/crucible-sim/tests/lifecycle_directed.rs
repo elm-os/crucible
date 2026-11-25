@@ -32,8 +32,8 @@ use crucible_records::{
     Timestamp, TraceId, Uuid, WalEpoch,
 };
 use crucible_schema::{Granularity, MigrationStep, route, table};
-use crucible_sim::blocks::Rows;
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
+use crucible_sim::blocks::Rows;
 use crucible_sim::ch_model::{ChModel, Script};
 use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_sim::pg_model::{PgFaults, PgModel};
@@ -98,7 +98,9 @@ impl Hooked {
     /// Whether this read fails, while reads are still to fail.
     fn fails(&self) -> bool {
         self.failing
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
             .is_ok()
     }
 }
@@ -823,7 +825,8 @@ fn a_project_made_while_a_deletion_runs_keeps_its_rows() {
         let landed = Arc::new(AtomicU32::new(0));
         let id = newer.id;
         node.hooked.set_hook(Arc::new(move |table_id, partition| {
-            let (ch, pg, clock, landed) = (ch.clone(), pg.clone(), clock.clone(), Arc::clone(&landed));
+            let (ch, pg, clock, landed) =
+                (ch.clone(), pg.clone(), clock.clone(), Arc::clone(&landed));
             let newer = newer.clone();
             Box::pin(async move {
                 if table_id == TableId::SpanCore
@@ -898,7 +901,11 @@ fn a_failing_read_of_a_project_deletion_is_recorded_on_the_request() {
         node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
         let done = node.request(request.id).await;
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
-        assert_eq!((done.attempts, done.error.as_deref()), (3, None), "{done:?}");
+        assert_eq!(
+            (done.attempts, done.error.as_deref()),
+            (3, None),
+            "{done:?}"
+        );
         node.assert_purged(project);
     });
 }

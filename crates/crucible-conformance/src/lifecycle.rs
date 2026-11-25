@@ -587,7 +587,14 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         holds(store, metrics, Some(now), other, true).await?;
         holds(store, metrics, None, stranger, false).await?;
         holds(store, metrics, Some(before), other, false).await?;
-        holds(store, deploys, Some(PartitionId::UNPARTITIONED), project, true).await?;
+        holds(
+            store,
+            deploys,
+            Some(PartitionId::UNPARTITIONED),
+            project,
+            true,
+        )
+        .await?;
     }
     for purged in [metrics, deploys] {
         let partition = route(purged, Granularity::Day, T0)?;
