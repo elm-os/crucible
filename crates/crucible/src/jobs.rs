@@ -183,7 +183,8 @@ mod tests {
                     "lifecycle-node",
                     "lifecycle-retention",
                     "lifecycle-mask",
-                    "lifecycle-deletion"
+                    "lifecycle-deletion",
+                    "lifecycle-sweep"
                 ]
             );
         });

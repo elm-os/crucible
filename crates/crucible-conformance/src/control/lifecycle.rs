@@ -732,7 +732,7 @@ async fn purge(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
 
 /// The deleted projects without a project deletion request (contract 13.4): those deleted before deleting a
 /// project made one. A live project and a deleted one with its project deletion are not among them; a deletion
-/// of another kind does not count.
+/// of another kind does not count. Then every project deletion, which the purge sweep looks at.
 async fn earlier(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     let s = ctl.store.as_ref();
     let repo = s.lifecycle();
@@ -763,6 +763,15 @@ async fn earlier(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     t.outcome(
         "one of them gets its project deletion",
         repo.deleted_without_request().await,
+    );
+    t.outcome(
+        "the project deletions, by sequence",
+        repo.project_requests().await.map(|requests| {
+            requests
+                .iter()
+                .map(|request| (request.project_id, request.state))
+                .collect::<Vec<_>>()
+        }),
     );
     Ok(())
 }

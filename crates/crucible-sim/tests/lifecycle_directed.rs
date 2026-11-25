@@ -18,13 +18,13 @@ use crucible_control::{
     JsonDoc, MediaObject, MediaRef, MediaState, NewExport, Project, Queue, Repos as _,
 };
 use crucible_env::{
-    InsertError, InsertSettings, MutationId, MutationStatus, QueryError, RowStream, StoreError,
-    StoreFacts, StoreFlavour, StoreHealth, Stores, TelemetryStore,
+    InsertError, InsertSettings, MutationId, MutationStatus, QueryError, RetryReason, RowStream,
+    StoreError, StoreFacts, StoreFlavour, StoreHealth, Stores, TelemetryStore,
 };
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
     EARLIER_DELETION_BY, ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, NewDeletion,
-    NodeLog as _, NodeState, Service, Subjects, WalLog, leader_jobs, node_job,
+    NodeLog as _, NodeState, Progress, Service, Subjects, WalLog, leader_jobs, node_job,
 };
 use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, Value};
 use crucible_records::{
@@ -34,7 +34,7 @@ use crucible_records::{
 use crucible_schema::{Granularity, MigrationStep, route, table};
 use crucible_sim::blocks::Rows;
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
-use crucible_sim::ch_model::ChModel;
+use crucible_sim::ch_model::{ChModel, Script};
 use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 use crucible_sim::ship_sim::{SpanSpec, request_payload};
@@ -900,6 +900,86 @@ fn a_failing_read_of_a_project_deletion_is_recorded_on_the_request() {
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
         assert_eq!((done.attempts, done.error.as_deref()), (3, None), "{done:?}");
         node.assert_purged(project);
+    });
+}
+
+/// Contract 13.4: a row of a deleted project that lands after its purge has completed is removed at the next pass of
+/// the purge sweep. The node logs the project's tombstone, then takes one more frame of the project, as a node does
+/// before its key snapshot has the revocation; stage B keeps it, since it arrived after the deletion, and its insert
+/// is held until the request has completed. Within one sweep interval of landing its rows are deleted, and after the
+/// next mask cycle they are gone; the request stays completed and counts its late purges.
+#[test]
+fn a_row_that_lands_after_the_purge_is_removed_at_the_next_sweep() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        let request = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([0x0f; 16]),
+            project,
+            node.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        node.mark_deleted(project, Some(request.clone())).await;
+        let mut tombstone = None;
+        for _ in 0..60 {
+            let acks = node.pg.lifecycle().acks(request.id).await.unwrap();
+            if let Some(ack) = acks.first() {
+                tombstone = Some(ack.tombstone_lsn);
+                break;
+            }
+            node.sleep(Duration::from_secs(1)).await;
+        }
+        let tombstone = tombstone.expect("the node logs the tombstone");
+        while node.log.watermark() < tombstone {
+            node.sleep(Duration::from_millis(500)).await;
+        }
+        let hold = Arc::new(AtomicBool::new(true));
+        let held = Arc::clone(&hold);
+        node.ch.set_script(Script::new(move |token, _| {
+            (held.load(Ordering::SeqCst) && token.first_lsn() > tombstone).then(|| {
+                InsertError::Retry {
+                    reason: RetryReason::TooManyQueries,
+                    message: "held".to_owned(),
+                }
+            })
+        }));
+        assert!(node.ingest(3, 0..1).await > tombstone);
+        let mut done = node.request(request.id).await;
+        for _ in 0..1_000 {
+            if done.state == DeletionState::Completed {
+                break;
+            }
+            node.sleep(Duration::from_secs(5)).await;
+            done = node.request(request.id).await;
+        }
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        assert_eq!(node.held(3), 0);
+
+        hold.store(false, Ordering::SeqCst);
+        for _ in 0..60 {
+            if node.held(3) > 0 {
+                break;
+            }
+            node.sleep(Duration::from_secs(1)).await;
+        }
+        assert_eq!(node.held(3), 1, "the late frame landed");
+        // Within one sweep interval, and the next run of the executor, its rows are deleted from every read.
+        node.sleep(LifecycleConfig::default().sweep_every + Duration::from_secs(90))
+            .await;
+        assert_eq!(node.visible(project), 0, "the late rows are still visible");
+        node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
+        node.assert_purged(project);
+        let after = node.request(request.id).await;
+        assert_eq!(after.state, DeletionState::Completed, "{after:?}");
+        let progress = Progress::parse(&after.places);
+        assert!(
+            progress.late > 0 && progress.late_at.is_some(),
+            "{}",
+            after.places
+        );
+        let open = node.pg.lifecycle().open_actions().await.unwrap();
+        assert!(open.is_empty(), "{open:?}");
     });
 }
 

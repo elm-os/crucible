@@ -75,3 +75,4 @@ its deletion request stays: [("{}", Pending)]
 a project that does not exist: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
 deleted without a project deletion, by id: [ProjectId(01a3185c-5046-7000-8000-000000000046), ProjectId(01a3185c-5047-7000-8000-000000000047)]
 one of them gets its project deletion: [ProjectId(01a3185c-5046-7000-8000-000000000046)]
+the project deletions, by sequence: [(ProjectId(01a3185c-503c-7000-8000-00000000003c), Pending), (ProjectId(01a3185c-5047-7000-8000-000000000047), Pending)]

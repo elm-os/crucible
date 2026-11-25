@@ -43,6 +43,19 @@ pub(crate) struct Schedule {
     /// The mask cycle (the database clock divided by `lifecycle.mask_cycle`) that was last planned.
     #[serde(default)]
     pub(crate) mask: u64,
+    /// The sweep period (the database clock divided by `lifecycle.sweep_every`) whose pass over the projects deleted
+    /// recently is complete.
+    #[serde(default)]
+    pub(crate) sweep: u64,
+    /// The `deletion_seq` of the last request that the recent pass in progress has looked at; 0 between passes.
+    #[serde(default)]
+    pub(crate) sweep_after: u64,
+    /// The sweep period whose pass over the projects deleted earlier is complete.
+    #[serde(default)]
+    pub(crate) sweep_old: u64,
+    /// The `deletion_seq` of the last request that the earlier pass in progress has looked at; 0 between passes.
+    #[serde(default)]
+    pub(crate) sweep_old_after: u64,
 }
 
 impl Schedule {

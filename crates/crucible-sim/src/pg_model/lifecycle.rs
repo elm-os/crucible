@@ -213,6 +213,16 @@ impl LifecycleRepo for Runner {
         .await
     }
 
+    async fn project_requests(&self) -> Result<Vec<DeletionRequest>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            let mut requests = all!(cx, Tbl::DeletionRequests, Row::DeletionRequest);
+            requests.retain(|request| request.selector == DeletionSelector::Project);
+            requests.sort_by_key(|request| request.deletion_seq);
+            Ok(requests)
+        })
+        .await
+    }
+
     async fn requests_after(
         &self,
         requested_after: Timestamp,

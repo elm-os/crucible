@@ -110,6 +110,13 @@ pub struct Progress {
     /// For a project deletion: the last partition probed of the next table, when a run's probes ran out in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probed: Option<String>,
+    /// For a project deletion that has ended: how many purges the purge sweep planned after the end, one per
+    /// partition in which rows of the project landed after its purge.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub late: u32,
+    /// When the purge sweep last planned such a purge, in microseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub late_at: Option<i64>,
     /// Whether every action of the request is planned.
     #[serde(default)]
     pub planned: bool,
@@ -120,6 +127,11 @@ pub struct Progress {
     /// have.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub other: BTreeMap<String, String>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // The signature serde's `skip_serializing_if` calls.
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Progress {

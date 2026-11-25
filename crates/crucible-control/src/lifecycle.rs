@@ -365,6 +365,9 @@ pub trait LifecycleRepo: Send + Sync {
     ) -> Result<Vec<DeletionRequest>, TxError>;
     /// Every request that is neither completed nor failed, ordered by sequence number.
     async fn open_requests(&self) -> Result<Vec<DeletionRequest>, TxError>;
+    /// Every request of kind `project`, in every state, ordered by sequence number: the deleted projects that the
+    /// purge sweep looks at again (contract 13.4).
+    async fn project_requests(&self) -> Result<Vec<DeletionRequest>, TxError>;
     /// The requests of every project, in every state, requested after `requested_after` and with a sequence number
     /// above `after`, ordered by sequence number, at most `limit`: what a node applies before it ships data received
     /// at or after `requested_after` (contract 13.3), page by page.

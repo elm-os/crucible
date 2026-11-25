@@ -214,6 +214,13 @@ impl LifecycleRepo for Handle {
         every(&self.read(&sql, &[]).await?, request)
     }
 
+    async fn project_requests(&self) -> Result<Vec<DeletionRequest>, TxError> {
+        let sql = format!(
+            "SELECT {REQUEST} FROM deletion_requests WHERE kind = 'project' ORDER BY deletion_seq"
+        );
+        every(&self.read(&sql, &[]).await?, request)
+    }
+
     async fn requests_after(
         &self,
         requested_after: Timestamp,
