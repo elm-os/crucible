@@ -4,7 +4,7 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
-## [0.1.3] - 2026-11-25
+## [0.1.3] - 2026-11-26
 
 Crucible stores telemetry on a self-hosted replicated ClickHouse cluster as well as on a single server, and the SDKs
 have the server's version and ship as packages with each release.
