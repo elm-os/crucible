@@ -96,8 +96,8 @@ deletion makes in the same transaction:
    oldest start time that ingest takes for it), or no project is left. Every other partition gets a delete of the
    project's rows, which keeps the rows of live projects, also those a live project writes there while the
    deletion runs. While any live project keeps its data forever, nothing is dropped. Rows that servers took in the
-   seconds after the deletion, before their keys caught up, go too, as long as they reach ClickHouse before their
-   partition is dropped or, in a partition that gets a delete, before the check of step 3.
+   seconds after the deletion, before their keys caught up, go too when they reach ClickHouse before the deletion
+   reads their table, or before the check of step 3 in a partition that it deletes from.
 3. After the next mask cycle, within 24 hours, every table is checked to hold no row of the project and no deleted
    row on disk, and the request is `verified`.
 4. Then the project's export files and every object left under its key prefix are removed, and so are its rows in
