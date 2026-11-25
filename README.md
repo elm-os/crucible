@@ -161,6 +161,16 @@ Reading data back, from the REST API, is described in [docs/api](docs/api/README
 [docs/README.md](docs/README.md) indexes every page: self-hosting, guides, the API, integrations, architecture,
 testing and development.
 
+## Questions and feedback
+
+- Ask a question in [Discussions Q&A](https://github.com/elm-os/crucible/discussions/categories/q-a).
+- Suggest an idea in [Discussions Ideas](https://github.com/elm-os/crucible/discussions/categories/ideas).
+- Report a bug as an issue, with the
+  [bug report template](https://github.com/elm-os/crucible/issues/new?template=bug.yml).
+- Report a security vulnerability privately, as the [Security](#security) section says.
+
+[Getting help](docs/getting-help.md) says what a bug report needs.
+
 ## Contributing
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup, the checks CI runs, deterministic simulation, conformance

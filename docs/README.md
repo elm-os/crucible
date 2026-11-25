@@ -14,6 +14,7 @@
 | [Alerts and egress](self-hosting/alerts-and-egress.md) | Outbound calls of channels, the egress policy and email |
 | [SQL workspace](self-hosting/sql-workspace.md) | The per-project ClickHouse users, the self-probe, limits and the quota |
 | [Troubleshooting](self-hosting/troubleshooting.md) | Common refusals and their fixes |
+| [Getting help](getting-help.md) | Where to ask a question, suggest an idea or report a bug, and what a bug report needs |
 | [Media](self-hosting/media.md) | Images, audio and files on S3-compatible object storage |
 
 ## Sending and using data

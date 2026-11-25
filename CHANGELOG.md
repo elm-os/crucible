@@ -116,6 +116,13 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - A read made with an API key or through the MCP server that ClickHouse refuses because several servers together run
   as many such reads as it allows (`TOO_MANY_SIMULTANEOUS_QUERIES`) waits and is sent again within its deadline,
   instead of answering 503.
+- The web UI's header has a Feedback menu whose two links open on GitHub in a new tab: "Ask a question or suggest an
+  idea" (Discussions) and "Report a bug" (the issue templates). They send no referrer and add nothing to the address.
+- `SUPPORT.md` and the docs page `docs/getting-help.md`, linked from the README, the docs index and `CONTRIBUTING.md`,
+  say where to ask a question (Discussions Q&A), suggest an idea (Discussions Ideas) or report a bug (an issue), and
+  what a bug report needs.
+- The new issue page links to Discussions Q&A and Ideas and offers a blank issue to maintainers only, and the feature
+  request form sends broad ideas to Discussions Ideas first.
 
 ## [0.1.1] - 2026-11-21
 
