@@ -21,6 +21,7 @@
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
 //! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key, reads the trace back with the session and builds a dashboard over it |
 //! | `CRUCIBLE_E2E_S3_ENDPOINT` | An S3-compatible endpoint that the server and the test both reach, for example `http://localhost:7070`, with `CRUCIBLE_E2E_S3_BUCKET` (default `media`, which must exist), `CRUCIBLE_E2E_S3_ACCESS_KEY` and `CRUCIBLE_E2E_S3_SECRET_KEY`. When set, the control-plane path also uploads media through the compat media endpoint and reads them back, and its export downloads from the store through a 303; when unset, it checks that the endpoint answers `media_not_supported` |
+//! | `CRUCIBLE_E2E_CLICKHOUSE_CLUSTER` | The cluster of a replicated ClickHouse, one shard with several replicas, of which `CRUCIBLE_E2E_CLICKHOUSE_URL` is one. When set, with Postgres, the cluster path runs: the server migrates the cluster, ingests a trace that every replica holds, reads it back and deletes it from every replica. The other two tests run on a single server and skip. `CRUCIBLE_E2E_CLICKHOUSE_REPLICAS` lists the HTTP endpoints of the other replicas, comma-separated, which the cluster path reads directly |
 //!
 //! `docs/development.md` ("The end-to-end test") has the commands.
 
@@ -186,6 +187,8 @@ struct Rig {
     postgres_url: Option<String>,
     /// The object store for media, when the run has one.
     media: Option<Media>,
+    /// The cluster of a replicated ClickHouse (`--clickhouse-cluster`), when the run has one.
+    cluster: Option<String>,
 }
 
 /// The object store of a run: an S3-compatible endpoint that both the server and the test reach, and a bucket
@@ -240,6 +243,9 @@ impl Rig {
             .stderr(std::fs::File::create(&log).unwrap());
         if migrate {
             command.arg("--migrate");
+        }
+        if let Some(cluster) = &self.cluster {
+            command.args(["--clickhouse-cluster", cluster]);
         }
         // With Postgres the keys live there; the keys file is the mode without it.
         match &self.postgres_url {
@@ -875,6 +881,9 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         eprintln!("skipped: CRUCIBLE_E2E_CLICKHOUSE_URL is not set");
         return;
     };
+    if single_server_skipped() {
+        return;
+    }
     let admin = Credentials {
         user: std::env::var("CRUCIBLE_E2E_CLICKHOUSE_USER")
             .unwrap_or_else(|_| "crucible_admin".to_owned()),
@@ -940,6 +949,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         starts: 0,
         postgres_url: None,
         media: None,
+        cluster: None,
     };
     let load_bearer = format!("Bearer {}", secret('b'));
 
@@ -1323,6 +1333,9 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         );
         return;
     };
+    if single_server_skipped() {
+        return;
+    }
     let admin = Credentials {
         user: std::env::var("CRUCIBLE_E2E_CLICKHOUSE_USER")
             .unwrap_or_else(|_| "crucible_admin".to_owned()),
@@ -1353,6 +1366,7 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         starts: 0,
         postgres_url: Some(postgres_url.clone()),
         media: Media::from_env(),
+        cluster: None,
     };
     // 1. Migrations run, the key snapshot loads, and the server becomes ready.
     let server = rig.start(true);
@@ -1956,4 +1970,278 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         missing.is_empty(),
         "a job ran before the migrations: {missing:#?}"
     );
+}
+
+/// Whether a test of a single server skips because `CRUCIBLE_E2E_CLICKHOUSE_CLUSTER` names a cluster.
+fn single_server_skipped() -> bool {
+    let skipped = std::env::var_os("CRUCIBLE_E2E_CLICKHOUSE_CLUSTER").is_some();
+    if skipped {
+        eprintln!(
+            "skipped: CRUCIBLE_E2E_CLICKHOUSE_CLUSTER names a cluster, and this test runs on a single server"
+        );
+    }
+    skipped
+}
+
+/// The rows of one trace that a replica returns from `tables`, read as the admin user.
+async fn trace_rows(replica: &Stored, trace: &Trace, tables: &[&str]) -> u64 {
+    let mut rows = 0;
+    for table in tables {
+        rows += replica
+            .numbers(format!(
+                "SELECT count() FROM crucible.{table} WHERE project_id = toUUID('{}') AND trace_id = \
+                 unhex('{}')",
+                replica.project, trace.trace_id
+            ))
+            .await[0];
+    }
+    rows
+}
+
+/// Clustered ClickHouse end to end, on one shard with several replicas: the server migrates every step `ON
+/// CLUSTER` and passes the startup checks of a cluster; a trace acknowledged through one replica is read back
+/// through the API and held by every replica; a deletion request hides it at once and reaches `applied` once
+/// every replica has run its deletes, after which no replica returns a row of it. The mask cycle (6 h) is longer
+/// than a test, so the mask application and the verification on every replica are the conformance row
+/// "Retention and deletion on every replica".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cluster_ingests_reads_and_deletes_on_every_replica() {
+    let (Ok(clickhouse_url), Ok(postgres_url), Ok(cluster)) = (
+        std::env::var("CRUCIBLE_E2E_CLICKHOUSE_URL"),
+        std::env::var("CRUCIBLE_E2E_POSTGRES_URL"),
+        std::env::var("CRUCIBLE_E2E_CLICKHOUSE_CLUSTER"),
+    ) else {
+        eprintln!(
+            "skipped: CRUCIBLE_E2E_CLICKHOUSE_URL, CRUCIBLE_E2E_POSTGRES_URL and CRUCIBLE_E2E_CLICKHOUSE_CLUSTER \
+             are not all set"
+        );
+        return;
+    };
+    let others: Vec<String> = std::env::var("CRUCIBLE_E2E_CLICKHOUSE_REPLICAS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let admin = Credentials {
+        user: std::env::var("CRUCIBLE_E2E_CLICKHOUSE_USER")
+            .unwrap_or_else(|_| "crucible_admin".to_owned()),
+        password: std::env::var("CRUCIBLE_E2E_CLICKHOUSE_PASSWORD")
+            .expect("CRUCIBLE_E2E_CLICKHOUSE_PASSWORD is set"),
+    };
+    let prod = crucible_env_prod::build(tokio::runtime::Handle::current(), &ProdConfig::default())
+        .unwrap();
+    let env = &prod.env;
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    let out = std::env::var_os("CRUCIBLE_E2E_OUT")
+        .map_or_else(|| dir.clone(), |o| PathBuf::from(o).join("cluster"));
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(dir.join("master-key"), format!("{MASTER_KEY}\n")).unwrap();
+    std::fs::write(dir.join("clickhouse-password"), &admin.password).unwrap();
+    std::fs::write(dir.join("owner-password"), "e2e owner password 1\n").unwrap();
+    let binary = std::env::var_os("CRUCIBLE_E2E_BIN")
+        .map(PathBuf::from)
+        .expect("CRUCIBLE_E2E_BIN is set");
+    let mut rig = Rig {
+        binary: binary.clone(),
+        clickhouse_url: clickhouse_url.clone(),
+        admin: admin.clone(),
+        dir: dir.clone(),
+        out,
+        starts: 0,
+        postgres_url: Some(postgres_url.clone()),
+        media: None,
+        cluster: Some(cluster),
+    };
+
+    // 1. The server migrates every step ON CLUSTER, passes the startup checks of a cluster and becomes ready.
+    let server = rig.start(true);
+    let log = std::fs::read_to_string(&server.log).unwrap();
+    assert!(log.contains("Clustered"), "{log}");
+
+    // 2. The owner, and a key of the first project that ingests, reads and deletes, from the command line.
+    let cli = |args: &[&str]| {
+        Command::new(&binary)
+            .args(args)
+            .args(["--postgres-url", &postgres_url])
+            .arg("--master-key-file")
+            .arg(dir.join("master-key"))
+            .env_remove("CRUCIBLE_POSTGRES_URL")
+            .output()
+            .unwrap()
+    };
+    let owner_password = dir.join("owner-password");
+    let init = cli(&[
+        "admin",
+        "init",
+        "--org-name",
+        "E2E",
+        "--name",
+        "Owner",
+        "--email",
+        "owner@cluster.e2e.test",
+        "--password-file",
+        owner_password.to_str().unwrap(),
+    ]);
+    assert!(
+        init.status.success(),
+        "crucible admin init failed (the cluster path needs a fresh database): {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let made = cli(&[
+        "admin",
+        "create-key",
+        "--project",
+        "default",
+        "--scopes",
+        "ingest,read,delete",
+    ]);
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let printed = String::from_utf8(made.stdout).unwrap();
+    let field = |name: &str| {
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} = \"")))
+            .map(|value| value.trim_end_matches('"').to_owned())
+            .unwrap_or_else(|| panic!("no {name} in {printed}"))
+    };
+    let api = Api {
+        addr: server.api,
+        project: field("project_id"),
+        bearer: format!("Bearer {}", field("secret_key")),
+        pair: String::new(),
+    };
+
+    // 3. A trace, acknowledged, read back through the API, and held by every replica. A key made outside the
+    //    server reaches it through the key feed, within 5 s.
+    let trace = Trace::new(env, "e2e cluster trace");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, body) = http(
+            server.ingest,
+            "POST",
+            "/v1/traces",
+            &[
+                ("content-type", "application/json"),
+                ("authorization", &api.bearer),
+            ],
+            trace.json().as_bytes(),
+        )
+        .unwrap();
+        if status == 200 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ingest answered {status} for 20 s with the command-line key: {}",
+            String::from_utf8_lossy(&body)
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !api.lists(&trace) {
+        assert!(Instant::now() < deadline, "the trace was not listed");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let detail = api.detail(&trace);
+    assert_eq!(
+        detail["spans"].as_array().map(Vec::len),
+        Some(2),
+        "{detail}"
+    );
+    let replicas: Vec<Stored> = std::iter::once(clickhouse_url)
+        .chain(others)
+        .map(|url| Stored {
+            store: ClickHouseStore::new(
+                env.clone(),
+                StoreConfig {
+                    url,
+                    read_url: None,
+                    admin: admin.clone(),
+                    ingest: admin.clone(),
+                    read_ui: admin.clone(),
+                    read_agent: admin.clone(),
+                    maint: admin.clone(),
+                    flavour: None,
+                    cluster: None,
+                    tls_roots: TlsRoots::WebPki,
+                    connect_timeout: Duration::from_secs(10),
+                    idle_timeout: None,
+                },
+            ),
+            project: api.project.clone(),
+        })
+        .collect();
+    for (n, replica) in replicas.iter().enumerate() {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let held = trace_rows(replica, &trace, &["span_core"]).await;
+            if held == 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replica {} holds {held} of the trace's 2 spans",
+                n + 1
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    // 4. A deletion request for the trace: the API hides it at once, and the request reaches `applied` once every
+    //    replica has run its deletes.
+    let (status, created) = http(
+        server.api,
+        "POST",
+        &format!("/api/v1/projects/{}/deletion-requests", api.project),
+        &[
+            ("content-type", "application/json"),
+            ("authorization", &api.bearer),
+        ],
+        json!({"kind": "trace", "trace_ids": [trace.trace_id]})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    let created: Value = serde_json::from_slice(&created).unwrap_or(Value::Null);
+    assert_eq!(status, 201, "{created}");
+    assert!(!api.lists(&trace), "the deleted trace is still listed");
+    let request = format!("/deletion-requests/{}", created["id"].as_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let state = loop {
+        let (status, answer) = api.get(&request);
+        assert_eq!(status, 200, "{answer}");
+        let state = answer["state"].as_str().unwrap_or_default().to_owned();
+        assert_ne!(state, "failed", "{answer}");
+        if matches!(state.as_str(), "applied" | "verified" | "completed") {
+            break state;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the deletion request did not apply within 300 s: {answer}"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+
+    // 5. No replica returns a row of the trace.
+    for (n, replica) in replicas.iter().enumerate() {
+        let rows = trace_rows(
+            replica,
+            &trace,
+            &["span_core", "span_payload", "trace_heads"],
+        )
+        .await;
+        assert_eq!(
+            rows,
+            0,
+            "replica {} returns {rows} rows of the trace after its deletion request reached {state}",
+            n + 1
+        );
+    }
+    drop(server);
 }

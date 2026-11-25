@@ -12,9 +12,9 @@
 # as in compose.yaml.
 #
 # Crucible creates its tables, users and row policies on both replicas with ON CLUSTER statements, and inserts
-# into one replica, which copies each insert to the other through Keeper. An insert waits for a majority of the
-# replicas, which with two replicas is both: while one replica is down, Crucible keeps acknowledged requests in its
-# write-ahead log and ships them when the replica is back.
+# into one replica, from which the other fetches each insert through Keeper. An insert counts as stored once a
+# majority of the replicas holds it, which with two replicas is both: while one replica is down, Crucible keeps
+# acknowledged requests in its write-ahead log and ships them when the replica is back.
 name: crucible-cluster
 
 configs:
@@ -146,7 +146,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # One replica answers Crucible; see docs/self-hosting/clustered.md for a balancer in front of both.
+      # One replica answers Crucible; docs/self-hosting/clustered.md says how a balancer can fail over between them.
       CRUCIBLE_CLICKHOUSE_URL: http://clickhouse-1:8123
       CRUCIBLE_CLICKHOUSE_CLUSTER: crucible
       CRUCIBLE_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env (see the top of this file)}

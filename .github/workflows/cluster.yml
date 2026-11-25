@@ -1,0 +1,178 @@
+name: cluster
+
+# Crucible on a replicated ClickHouse: one shard of two replicas coordinated by ClickHouse Keeper, as
+# deploy/compose/compose.cluster.yaml runs it, beside Postgres 18. Per server version, each on a fresh cluster:
+#   - the end-to-end run of the server (crates/crucible/tests/e2e.rs, the cluster path): it migrates every step
+#     ON CLUSTER, ingests a trace that every replica holds, reads it back, and deletes it from every replica;
+#   - the conformance suite (crates/crucible-conformance): its rows on the cluster, among them one token landing
+#     once across replicas, the existence probe before a quorum, a replica that goes down in the middle of an
+#     insert, and retention and deletion on every replica, with one replica down and back;
+#   - the SQL workspace's isolation suite, layers A, B and D (docs/testing/sqliso.md), with every workspace user
+#     and policy provisioned ON CLUSTER.
+# The replicas hide rows from users without a row policy (the strict value of
+# users_without_row_policies_can_read_rows), so the service-identity checks are meaningful.
+
+on:
+  pull_request:
+    paths:
+      - crates/crucible-store-clickhouse/**
+      - crates/crucible-conformance/**
+      - crates/crucible-schema/**
+      - crates/crucible-plan/**
+      - crates/crucible-lifecycle/**
+      - crates/crucible-sqlws/**
+      - crates/crucible-config/**
+      - crates/crucible-env/src/store.rs
+      - crates/crucible/**
+      - deploy/compose/compose.cluster.yaml
+      - Cargo.lock
+      - .github/workflows/cluster.yml
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cluster-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # The variables the Compose file reads.
+  CLICKHOUSE_PASSWORD: cluster-admin
+  CLICKHOUSE_CLUSTER_SECRET: cluster-secret
+  POSTGRES_PASSWORD: cluster-postgres
+  CRUCIBLE_MASTER_KEY: 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c
+
+jobs:
+  cluster:
+    name: cluster on clickhouse ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["26.8", "latest"]
+    env:
+      TAG: ${{ matrix.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: cluster
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The server is built on its own, never with the workspace or beside the test: either would compile the
+      # test-only features of other crates' dependencies into it.
+      - name: Build the server
+        run: |
+          cargo build --locked --package crucible
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp target/debug/crucible "$RUNNER_TEMP/bin/crucible"
+      - name: Build the suites and the test
+        run: |
+          cargo build --locked -p crucible-conformance
+          cargo test --locked --package crucible --test e2e --no-run
+      # The operator's Compose file with the server version under test, the strict switch, and the ports of both
+      # replicas and of Postgres published, because the suites run on the runner. `fresh` starts a new cluster.
+      - name: The cluster's override
+        run: |
+          mkdir -p "$RUNNER_TEMP/cluster"
+          cat > "$RUNNER_TEMP/cluster/strict.xml" <<'XML'
+          <clickhouse>
+            <access_control_improvements>
+              <users_without_row_policies_can_read_rows>false</users_without_row_policies_can_read_rows>
+            </access_control_improvements>
+          </clickhouse>
+          XML
+          chmod 644 "$RUNNER_TEMP/cluster/strict.xml"
+          cat > "$RUNNER_TEMP/cluster/override.yaml" <<YAML
+          services:
+            clickhouse-1:
+              image: clickhouse/clickhouse-server:$TAG
+              ports: ["18123:8123"]
+              volumes:
+                - $RUNNER_TEMP/cluster/strict.xml:/etc/clickhouse-server/config.d/strict.xml:ro
+            clickhouse-2:
+              image: clickhouse/clickhouse-server:$TAG
+              ports: ["28123:8123"]
+              volumes:
+                - $RUNNER_TEMP/cluster/strict.xml:/etc/clickhouse-server/config.d/strict.xml:ro
+            postgres:
+              ports: ["5432:5432"]
+          YAML
+          cat > "$RUNNER_TEMP/cluster/fresh.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          stack() {
+            docker compose -p cluster -f deploy/compose/compose.cluster.yaml -f "$RUNNER_TEMP/cluster/override.yaml" "$@"
+          }
+          stack down -v >/dev/null 2>&1 || true
+          stack up -d --wait keeper clickhouse-1 clickhouse-2 postgres
+          SH
+          chmod +x "$RUNNER_TEMP/cluster/fresh.sh"
+      - name: End to end
+        env:
+          CRUCIBLE_E2E_CLICKHOUSE_URL: http://localhost:18123
+          CRUCIBLE_E2E_CLICKHOUSE_REPLICAS: http://localhost:28123
+          CRUCIBLE_E2E_CLICKHOUSE_CLUSTER: crucible
+          CRUCIBLE_E2E_CLICKHOUSE_USER: crucible_admin
+          CRUCIBLE_E2E_CLICKHOUSE_PASSWORD: cluster-admin
+          CRUCIBLE_E2E_POSTGRES_URL: postgres://crucible:cluster-postgres@localhost:5432/crucible
+        run: |
+          "$RUNNER_TEMP/cluster/fresh.sh"
+          export CRUCIBLE_E2E_BIN="$RUNNER_TEMP/bin/crucible"
+          export CRUCIBLE_E2E_OUT="$PWD/cluster-out"
+          cargo test --locked --package crucible --test e2e -- --nocapture
+      - name: Conformance rows
+        run: |
+          "$RUNNER_TEMP/cluster/fresh.sh"
+          target/debug/crucible-conformance --url http://localhost:18123 --replica-url http://localhost:28123 \
+            --cluster crucible --user crucible_admin --password cluster-admin --label "$TAG cluster" \
+            | tee conformance.tsv
+      - name: SQL workspace isolation, layers A, B and D
+        env:
+          # Nightly: ten times the statements and identities of a pull request.
+          FUZZ: ${{ github.event_name == 'schedule' && '50000' || '5000' }}
+          IDENTITIES: ${{ github.event_name == 'schedule' && '200' || '20' }}
+          SEED: ${{ github.run_number }}
+        run: |
+          "$RUNNER_TEMP/cluster/fresh.sh"
+          target/debug/crucible-sqliso --url http://localhost:18123 --cluster crucible --user crucible_admin \
+            --password cluster-admin --label "$TAG cluster" --switch strict --fuzz "$FUZZ" --seed "$SEED" \
+            --identities "$IDENTITIES" | tee sqliso.tsv
+      - name: Server logs
+        if: failure()
+        run: |
+          docker compose -p cluster -f deploy/compose/compose.cluster.yaml -f "$RUNNER_TEMP/cluster/override.yaml" \
+            logs --no-color --tail 200 keeper clickhouse-1 clickhouse-2
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### Clustered ClickHouse $TAG"
+            for file in conformance sqliso; do
+              [ -f "$file.tsv" ] || continue
+              echo
+              echo "$file"
+              echo
+              echo '| Result | Row | Detail |'
+              echo '|---|---|---|'
+              awk -F'\t' 'NF >= 4 { detail = $4; gsub(/\|/, "\\|", detail); print "| " $1 " | " $3 " | " substr(detail, 1, 600) " |" }' "$file.tsv"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: cluster-${{ matrix.tag }}
+          path: |
+            *.tsv
+            cluster-out
+          if-no-files-found: ignore

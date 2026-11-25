@@ -4,6 +4,16 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- Crucible runs on a self-hosted replicated ClickHouse cluster of one shard with several replicas and ClickHouse
+  Keeper: `clickhouse.cluster` (`CRUCIBLE_CLICKHOUSE_CLUSTER`, `--clickhouse-cluster`) names the cluster, every
+  table, user and row policy is created on every replica, each insert is stored on a majority of the replicas, and
+  deletions count as applied and verified only once every replica has run them. ClickHouse Cloud is still refused at
+  startup ([clustered ClickHouse](docs/self-hosting/clustered.md)).
+- `deploy/compose/compose.cluster.yaml` runs Crucible with two ClickHouse replicas, ClickHouse Keeper and Postgres,
+  and `compose.cloud.yaml` passes `CRUCIBLE_CLICKHOUSE_CLUSTER` to the server.
+- With `clickhouse.cluster` set, a start refuses a cluster that cannot hold the tables (an unknown cluster, several
+  shards, missing macros, no Keeper, no cluster secret, or tables created for a single server) with the fix, and a
+  migration step while a replica is down fails without being recorded and names the replica.
 - MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
   rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
   minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.

@@ -356,8 +356,8 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             cluster_ok = false;
             t.errors.push(
                 "`clickhouse.cluster` is set without `clickhouse.url`: set the URL of one of the cluster's \
-                 replicas, or of a balancer in front of them (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL), or remove \
-                 the cluster for a server without ClickHouse"
+                 replicas, or of a balancer that fails over between them (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL), \
+                 or remove the cluster for a server without ClickHouse"
                     .to_owned(),
             );
         }
@@ -1833,8 +1833,8 @@ max_bytes = 67108864  # default
             errors,
             [
                 "`clickhouse.cluster` is set without `clickhouse.url`: set the URL of one of the cluster's \
-                 replicas, or of a balancer in front of them (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL), or remove \
-                 the cluster for a server without ClickHouse"
+                 replicas, or of a balancer that fails over between them (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL), \
+                 or remove the cluster for a server without ClickHouse"
             ]
         );
     }
