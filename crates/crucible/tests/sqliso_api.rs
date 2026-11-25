@@ -323,6 +323,7 @@ async fn the_sql_workspace_holds_through_the_api() {
             read_agent: admin.clone(),
             maint: admin.clone(),
             flavour: None,
+            cluster: None,
             tls_roots: TlsRoots::WebPki,
             connect_timeout: Duration::from_secs(10),
             idle_timeout: None,

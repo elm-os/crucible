@@ -1,0 +1,197 @@
+# Crucible on a replicated ClickHouse cluster: two ClickHouse 26.8 replicas of one shard, coordinated by one
+# ClickHouse Keeper, beside Postgres 18. See docs/self-hosting/clustered.md.
+#
+# One file beside this one, made once before the first start:
+#   .env       CLICKHOUSE_PASSWORD, CLICKHOUSE_CLUSTER_SECRET, POSTGRES_PASSWORD and CRUCIBLE_MASTER_KEY:
+#              printf 'CLICKHOUSE_PASSWORD=%s\nCLICKHOUSE_CLUSTER_SECRET=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+# Then: docker compose -f compose.cluster.yaml up -d --wait
+# Create the organization and its owner as with compose.yaml (docs/self-hosting/quickstart.md), with
+# `docker compose -f compose.cluster.yaml exec crucible crucible admin init ...`.
+#
+# Optional settings in .env: CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT and CRUCIBLE_OTLP_HTTP_PORT,
+# as in compose.yaml.
+#
+# Crucible creates its tables, users and row policies on both replicas with ON CLUSTER statements, and inserts
+# into one replica, from which the other fetches each insert through Keeper. An insert counts as stored once a
+# majority of the replicas holds it, which with two replicas is both: while one replica is down, Crucible keeps
+# acknowledged requests in its write-ahead log and ships them when the replica is back.
+name: crucible-cluster
+
+configs:
+  # One Keeper. Three Keeper servers keep the cluster writable when one of them is down.
+  keeper:
+    content: |
+      <clickhouse>
+        <listen_host>0.0.0.0</listen_host>
+        <logger><level>information</level><console>1</console></logger>
+        <keeper_server>
+          <tcp_port>9181</tcp_port>
+          <server_id>1</server_id>
+          <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+          <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+          <raft_configuration>
+            <server><id>1</id><hostname>keeper</hostname><port>9234</port></server>
+          </raft_configuration>
+        </keeper_server>
+      </clickhouse>
+  # The cluster as both replicas see it. Each replica takes its own name from CLICKHOUSE_REPLICA.
+  clickhouse:
+    content: |
+      <clickhouse>
+        <remote_servers>
+          <crucible>
+            <secret from_env="CLICKHOUSE_CLUSTER_SECRET"/>
+            <shard>
+              <internal_replication>true</internal_replication>
+              <replica><host>clickhouse-1</host><port>9000</port></replica>
+              <replica><host>clickhouse-2</host><port>9000</port></replica>
+            </shard>
+          </crucible>
+        </remote_servers>
+        <zookeeper>
+          <node><host>keeper</host><port>9181</port></node>
+        </zookeeper>
+        <macros>
+          <shard>01</shard>
+          <replica from_env="CLICKHOUSE_REPLICA"/>
+        </macros>
+        <distributed_ddl_use_initial_user_and_roles>1</distributed_ddl_use_initial_user_and_roles>
+      </clickhouse>
+
+x-clickhouse: &clickhouse
+  image: clickhouse/clickhouse-server:26.8
+  restart: unless-stopped
+  depends_on:
+    keeper:
+      condition: service_healthy
+  configs:
+    - source: clickhouse
+      target: /etc/clickhouse-server/config.d/cluster.xml
+  ulimits:
+    nofile: 262144
+  healthcheck:
+    # /ping takes no credentials, so no password appears in the container's configuration.
+    test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:8123/ping"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+x-clickhouse-environment: &clickhouse-environment
+  CLICKHOUSE_USER: crucible_admin
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env (see the top of this file)}
+  # crucible_admin creates Crucible's service users and their row policies.
+  CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+  # Queries that one replica sends to the other run as the user who sent them.
+  CLICKHOUSE_CLUSTER_SECRET: ${CLICKHOUSE_CLUSTER_SECRET:?set CLICKHOUSE_CLUSTER_SECRET in .env (see the top of this file)}
+
+services:
+  keeper:
+    image: clickhouse/clickhouse-keeper:26.8
+    restart: unless-stopped
+    hostname: keeper
+    configs:
+      - source: keeper
+        target: /etc/clickhouse-keeper/keeper_config.xml
+    volumes:
+      - keeper-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-keeper-client", "--host", "127.0.0.1", "--port", "9181", "--query", "ls /"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  clickhouse-1:
+    <<: *clickhouse
+    hostname: clickhouse-1
+    environment:
+      <<: *clickhouse-environment
+      CLICKHOUSE_REPLICA: clickhouse-1
+    volumes:
+      - clickhouse-1-data:/var/lib/clickhouse
+
+  clickhouse-2:
+    <<: *clickhouse
+    hostname: clickhouse-2
+    environment:
+      <<: *clickhouse-environment
+      CLICKHOUSE_REPLICA: clickhouse-2
+    volumes:
+      - clickhouse-2-data:/var/lib/clickhouse
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crucible
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see the top of this file)}
+      POSTGRES_DB: crucible
+    volumes:
+      # Postgres 18 images keep the cluster in a versioned directory under this one.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Over TCP: the server that initializes a new volume listens on the Unix socket only.
+      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--username=crucible", "--dbname=crucible"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  crucible:
+    image: ${CRUCIBLE_IMAGE:-ghcr.io/elm-os/crucible:latest}
+    restart: unless-stopped
+    depends_on:
+      clickhouse-1:
+        condition: service_healthy
+      clickhouse-2:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      # One replica answers Crucible; docs/self-hosting/clustered.md says how a balancer can fail over between them.
+      CRUCIBLE_CLICKHOUSE_URL: http://clickhouse-1:8123
+      CRUCIBLE_CLICKHOUSE_CLUSTER: crucible
+      CRUCIBLE_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env (see the top of this file)}
+      CRUCIBLE_POSTGRES_URL: postgres://crucible@postgres:5432/crucible
+      CRUCIBLE_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see the top of this file)}
+      CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (see the top of this file)}
+    # Every start migrates: the ledger in Postgres skips the steps that are already applied.
+    command:
+      - serve
+      - --migrate
+      - --data-dir=/var/lib/crucible/data
+    volumes:
+      - crucible-data:/var/lib/crucible
+    ports:
+      # The UI, the REST API and OTLP/HTTP ingest.
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_HTTP_PORT:-8080}:8080"
+      # OTLP/HTTP ingest.
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_OTLP_HTTP_PORT:-4318}:4318"
+    # The server writes only to its data volume.
+    read_only: true
+    # After SIGTERM the server finishes its open requests for up to 30 s.
+    stop_grace_period: 35s
+
+  # Reports the server's /readyz as this service's health (see compose.yaml).
+  ready:
+    image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+    restart: unless-stopped
+    depends_on:
+      crucible:
+        condition: service_started
+        # Stopped and started again around a recreated server, so `up --wait` waits for the new one (see compose.yaml).
+        restart: true
+    command: ["sleep", "infinity"]
+    stop_signal: SIGKILL
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--output", "/dev/null", "http://crucible:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+      start_interval: 1s
+
+volumes:
+  keeper-data:
+  clickhouse-1-data:
+  clickhouse-2-data:
+  postgres-data:
+  crucible-data:

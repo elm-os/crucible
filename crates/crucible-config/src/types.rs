@@ -254,6 +254,9 @@ pub struct ClickHouse {
     pub master_key: Secret,
     /// How long an idle connection is kept; `None` derives it from the server's keep-alive timeout.
     pub idle_timeout: Option<Duration>,
+    /// The cluster of a replicated ClickHouse, one shard with several replicas, as the servers' `remote_servers`
+    /// names it; `None` for one server.
+    pub cluster: Option<String>,
 }
 
 /// The `[postgres]` section, present when `postgres.url` is set.

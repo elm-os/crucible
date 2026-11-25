@@ -19,6 +19,7 @@ identity. The method is in [`methodology.md`](methodology.md).
 | Master key | `crates/crucible/tests/sqlws_master_key.rs` | The real binary started with the right master key, then once with a wrong one, then with the right one again: the workspace must still run queries |
 | Fuzz targets | `crates/crucible-sqlws/fuzz` (`lexer`), `crates/crucible-store-clickhouse/fuzz` (`grid`) | The lexical check and the result decoder under libFuzzer |
 | CI | `.github/workflows/sqliso.yml` | Every layer on 26.3, 26.8 and latest, under both values of the server switch |
+| CI, cluster | `.github/workflows/cluster.yml` | Layers A, B and D on one shard of two replicas with Keeper, 26.8 and latest, under the strict switch: every workspace user and policy is created `ON CLUSTER` (`crucible-sqliso --cluster`), and the remote table functions are also attacked through the cluster's own name |
 
 ## Fixtures and the oracle
 
