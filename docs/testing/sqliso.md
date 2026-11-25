@@ -140,6 +140,10 @@ What the suite found on real servers, and what was done about each.
   identity reconciler does so on every pass while the probe has not passed. The suite's row "A start with a wrong
   master key" applies A2 under another key, shows that the probe can no longer sign in and that provisioning the
   probe identities again repairs it, and checks that A2's ledger form is the same under both keys.
+- **From 26.11 a `KILL QUERY` that matches no statement fails with code 785** (`NOTHING_TO_KILL`); earlier versions
+  answer with no rows. A run can end just before its cancel lands, so the store takes that code as nothing left to
+  cancel. The row "Cancel of a statement that has ended" cancels a statement of project A that is not running and
+  expects success.
 - **Documented residual:** `system.tables`, `system.columns` and `EXPLAIN ESTIMATE` show whole-table totals for
   the base tables a project may read. They show volume, never rows.
 

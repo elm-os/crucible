@@ -4,6 +4,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- On ClickHouse 26.11, which refuses to kill a query that has already ended, cancelling a finished SQL workspace
+  query and abandoning a finished read succeed again, as on earlier versions.
 - The four SDKs have the server's version (the TypeScript SDK said 0.0.0 and the others 0.1.0), so the version in an
   SDK's User-Agent names the Crucible release it shipped with.
 - Each release carries the SDK packages on its GitHub release: `elm-os-crucible-X.Y.Z.tgz` for TypeScript,
