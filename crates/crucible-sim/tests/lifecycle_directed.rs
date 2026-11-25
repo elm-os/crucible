@@ -98,7 +98,7 @@ impl Hooked {
     /// Whether this read fails, while reads are still to fail.
     fn fails(&self) -> bool {
         self.failing
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
             .is_ok()
     }
 }

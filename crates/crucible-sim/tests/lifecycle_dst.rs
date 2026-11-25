@@ -1,6 +1,6 @@
 //! The lifecycle simulation suite (contract 13, invariant I9): the retention executor, the mask scheduler, the
 //! deletion executor and the node timer of `crucible-lifecycle` over `ChModel` and `PgModel` under crashes,
-//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the six seeded
+//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the eight seeded
 //! defects it must catch (docs/testing/lifecycle-simulation.md).
 //!
 //! Replay one seed:
@@ -68,6 +68,16 @@ fn assert_exercised(total: &Stats) {
         "{total:?}"
     );
     assert!(total.live_late_frames > 0, "{total:?}");
+    // The deletion dropped partitions of the project's history, which no project can write to any more, and rows of
+    // the project that landed after its request completed were removed within one sweep interval.
+    assert!(
+        total.history_frames > 0 && total.purge_drops > 0,
+        "{total:?}"
+    );
+    assert!(
+        total.after_completion > 0 && total.swept_in_time == total.after_completion,
+        "{total:?}"
+    );
     assert!(
         total.retention_changes > 0 && total.deletes > 0 && total.drops > 0 && total.masks > 0,
         "{total:?}"
@@ -187,9 +197,9 @@ fn reaching_mcp_rows_only_by_trace_is_caught() {
     }
 }
 
-/// The mutant "drop within reach", the rule before the live projects' retention horizons were consulted: a project
-/// deletion drops a partition that only deleted projects hold rows in, although the project that keeps everything
-/// can still write there, and the late row it writes as the drop is sent goes with the partition.
+/// The mutant "drop within max_event_age": a project deletion drops a partition that only deleted projects hold rows
+/// in without the event-age bound, although the project that keeps everything can still write there, and the late
+/// row it writes as the drop is sent goes with the partition.
 #[test]
 fn dropping_partitions_that_a_live_project_can_still_write_to_is_caught() {
     let options = Options {
@@ -197,7 +207,7 @@ fn dropping_partitions_that_a_live_project_can_still_write_to_is_caught() {
         ..Options::CALM
     };
     let caught = catching(8_000..8_006, options, "I9:");
-    println!("drop within reach: caught in seeds {caught:?}");
+    println!("drop within max_event_age: caught in seeds {caught:?}");
     assert!(!caught.is_empty());
     for seed in caught.into_iter().take(2) {
         assert_holds(&run_lifecycle_sim(seed, Options::CALM));
@@ -214,6 +224,37 @@ fn dropping_partitions_that_a_live_project_shares_is_caught() {
     };
     let caught = catching(7_000..7_006, options, "I9:");
     println!("drop shared partitions: caught in seeds {caught:?}");
+    assert!(!caught.is_empty());
+    for seed in caught.into_iter().take(2) {
+        assert_holds(&run_lifecycle_sim(seed, Options::CALM));
+    }
+}
+
+/// The mutant "sweep disabled": rows of the deleted project that land after its request completed stay.
+#[test]
+fn disabling_the_purge_sweep_is_caught() {
+    let options = Options {
+        mutant: Some(Mutant::SweepDisabled),
+        ..Options::CALM
+    };
+    let caught = catching(9_000..9_006, options, "I9");
+    println!("sweep disabled: caught in seeds {caught:?}");
+    assert!(!caught.is_empty());
+    for seed in caught.into_iter().take(2) {
+        assert_holds(&run_lifecycle_sim(seed, Options::CALM));
+    }
+}
+
+/// The mutant "sweep without the project predicate": the sweep removes the late rows it finds by dropping their
+/// partition, and the live projects' rows there go with them.
+#[test]
+fn a_purge_sweep_without_the_project_predicate_is_caught() {
+    let options = Options {
+        mutant: Some(Mutant::SweepWithoutProject),
+        ..Options::CALM
+    };
+    let caught = catching(9_100..9_106, options, "I9:");
+    println!("sweep without the project predicate: caught in seeds {caught:?}");
     assert!(!caught.is_empty());
     for seed in caught.into_iter().take(2) {
         assert_holds(&run_lifecycle_sim(seed, Options::CALM));

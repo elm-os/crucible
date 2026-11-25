@@ -181,11 +181,28 @@ pub struct DeletionRequest {
     /// The places of the reach list, once the request has been planned.
     pub places: Vec<DeletionPlace>,
     /// Why the request failed, or what a request that has not ended waits for and how to fix it (for a
-    /// deletion by user: a project salt that the server cannot read).
+    /// deletion by user: a project salt that the server cannot read; for a project deletion: a read of the
+    /// telemetry store that failed, which the server tries again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     #[ts(optional)]
     pub error: Option<String>,
+    /// How many times a step of the request failed, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub attempts: Option<u32>,
+    /// For a project deletion that has ended: how many times the hourly sweep found rows of the project that
+    /// reached the telemetry store after the purge, and deleted them, one per partition each time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub late_purges: Option<u32>,
+    /// When the sweep last found such rows (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false, format = DateTime)]
+    #[ts(optional)]
+    pub late_purged_at: Option<String>,
 }
 
 /// The answer of `GET deletion-requests`: newest first.

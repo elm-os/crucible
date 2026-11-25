@@ -172,13 +172,16 @@ After a deletion request or a retention expiry:
 - data received at or after `requested_at` is kept, except an exact repeat of a deleted span that the duplicate
   window still remembers, which is dropped as a repeat (contract 13.3);
 - a **project deletion** selects every row of its project whatever its arrival: once it reaches `completed`, no
-  table of the project holds a row of it (the minute rollups, the hourly tier, `mcp_deploys` and
-  `mcp_tool_inventory` included), its control-plane rows are gone, and every other project keeps every row of the
-  partitions it dropped or deleted from, also a row that a live project wrote there while the deletion ran: a
-  partition is dropped only where no live project can still write. A project deleted before deletions made their
-  project deletion request gets one. The exception is a frame that a node took for the project under I10's
-  fail-open allowance and shipped only after the deletion completed, which stage B keeps as data received after
-  `requested_at`.
+  table of the project holds a row of it that was there when the purge ran (the minute rollups, the hourly tier,
+  `mcp_deploys` and `mcp_tool_inventory` included), and its control-plane rows are gone. **A row that lands later
+  goes eventually**: a frame a node took after the deletion while its key snapshot lagged or under I10's fail-open
+  allowance, or took before it and shipped after the purge, is deleted within one sweep interval of landing (an
+  hour, for 30 days after the deletion; a day after that) and removed from storage after the next mask cycle.
+  Every other project keeps every row, also a row it writes while the deletion runs: a partition is dropped only
+  when it ends before every project, live or made later, can write (`ingest.max_event_age` and a clock margin before
+  the database clock, and before the making of the oldest live project) and every project with rows there is
+  deleted; everywhere else the purge and the sweep delete by the deleted project's id. A project deleted before
+  deletions made their project deletion request gets one.
 
 Minute rollups keep their counts by contract, unless the whole project is deleted.
 
@@ -189,6 +192,8 @@ Minute rollups keep their counts by contract, unless the whole project is delete
 | The write path: no row that a completed request selects lands after the request completed, whether the request's tombstone is in the node's log or it completed while the node was down; nothing that no request selects goes (system simulation, dimension `deletions`) | Continuous and quiescence |
 | What stage B drops for a deletion, against a linear model; dropping leaves stage B's state alone | Property |
 | Project deletion: every table of the project empty whatever the rows' arrival, its control-plane rows gone, the other projects' rows kept in the partitions it dropped or deleted from, late rows of a live project included; a project deleted without a request gets one (lifecycle simulation and its directed scenarios over the real WAL and shipper) | Quiescence |
+| Project deletion, eventual: a row of the project that lands after its request completed is deleted within one sweep interval and gone at the end (lifecycle simulation and its directed scenarios) | Continuous and quiescence |
+| No project writes before the drop horizon, however late its spans ship (property, `crucible-lifecycle`) | Property |
 | C9 delete visibility; "mask application" (`APPLY DELETED MASK`, `DELETE ... IN PARTITION`); no masked parts within the cycle | Conformance |
 | W11 lifecycle races (retention change, policy rewrite) | Conformance (`sqliso`) |
 | Retention boundary arithmetic | Proof (Kani) |

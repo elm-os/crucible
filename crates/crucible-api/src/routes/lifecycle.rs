@@ -18,7 +18,7 @@ use crucible_lifecycle::{
     MAX_DELETION_PAGE, NewDeletion, Progress, Retention, Service, ServiceError,
 };
 use crucible_query::RetentionSettings;
-use crucible_records::{DeletionRequestId, DeletionState, RequestId, TraceId};
+use crucible_records::{DeletionRequestId, DeletionState, RequestId, Timestamp, TraceId};
 use utoipa::OpenApi;
 
 use crate::access::{ApiState, DeleteTraces, DeletionReads, Manage, Principal, Read, Scoped};
@@ -293,6 +293,11 @@ fn deletion(request: &DeletionRequest) -> wire::DeletionRequest {
         traces_resolved: u32::try_from(progress.traces).unwrap_or(u32::MAX),
         places,
         error: request.error.clone(),
+        attempts: (request.attempts > 0).then_some(request.attempts),
+        late_purges: (progress.late > 0).then_some(progress.late),
+        late_purged_at: progress
+            .late_at
+            .map(|micros| Timestamp::from_micros(micros).to_string()),
     }
 }
 

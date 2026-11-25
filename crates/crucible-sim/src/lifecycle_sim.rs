@@ -33,17 +33,27 @@
 //! the MCP rows by their own identity, also where no span of the trace names the user, and when it names an
 //! issuer it must keep the rows hashed under the other one.
 //!
-//! A third project is deleted during the run, in the transaction the API's project deletion runs: its row is
-//! marked deleted and its project deletion request made. Its frames are still taken for up to 5 s after that,
-//! as nodes whose key snapshot has not caught up take them. At the end, I9 also requires that no table of the
-//! reach list holds a row of the deleted project, the minute rollups, the hourly tier, the deploys and the
-//! inventory included, whatever the row's arrival, that its control-plane rows are gone, and that the other
-//! projects lost no row of a partition that the deletion dropped or deleted from.
+//! A third project, made long before the other two, is deleted during the run, in the transaction the API's
+//! project deletion runs: its row is marked deleted and its project deletion request made. Besides what the run
+//! sends, it holds older history that it sent when that was younger than `ingest.max_event_age`, which is 12 days
+//! here: partitions that no project can write to any more, which the deletion drops. Its frames are still taken
+//! for up to 5 s after the deletion, as nodes whose key snapshot has not caught up take them. At the end, I9 also
+//! requires that no table of the reach list holds a row of the deleted project, the minute rollups, the hourly tier,
+//! the deploys and the inventory included, whatever the row's arrival, that its control-plane rows are gone, and
+//! that the other projects lost no row of a partition that the deletion dropped or deleted from.
 //!
 //! The project that keeps everything also writes late: at the moment the deletion's drop or delete of a
 //! `span_core` partition reaches the store, a frame of it whose spans start in that partition lands there, as a
-//! node ships spans with an old start time that ingest accepted inside the project's retention. The deletion must
-//! keep those rows too, so it may drop a partition only where no live project can still write.
+//! node ships a span late that ingest took when it started at most `max_event_age` before its arrival, after the
+//! project was made. The deletion must keep those rows too, so it may drop a partition only where no project can
+//! still write.
+//!
+//! Rows of the deleted project also land after its request has completed, once the faulty phase is over: a frame a
+//! node took just after the deletion while its key snapshot lagged, one a node without a heartbeat took before the
+//! deletion and ships late, one a node cut off from Postgres took under `fail_open`, and one from the WAL of a node
+//! that returns after weeks, into a partition the deletion dropped. **I9 for these is eventual**: within one sweep
+//! interval and two runs of the executor of landing, a delete or a drop removes them from every read, and at the
+//! end they are gone.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -119,6 +129,12 @@ const COUNTS: [TableId; 5] = [
 /// How long after a project's deletion its frames are still taken: a node takes them until its key snapshot
 /// has the revocation, which the key feed brings within 5 s.
 const REVOCATION_WINDOW_MILLIS: u64 = 5_000;
+/// `lifecycle.sweep_every` in the simulation.
+const SWEEP_EVERY: Duration = Duration::from_secs(600);
+/// How many days before the run the deleted project was made.
+const DELETED_MADE_DAYS_AGO: u64 = 40;
+/// The days back, before the run's start, in which the deleted project's history starts.
+const HISTORY_DAYS: std::ops::RangeInclusive<u32> = 15..=25;
 
 /// A seeded defect of the lifecycle that the oracle must catch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,9 +149,13 @@ pub enum Mutant {
     McpByTraceOnly,
     /// A project deletion drops the partitions it reaches whatever other projects hold rows there.
     DropSharedPartitions,
-    /// A project deletion drops a partition in which every project with rows is deleted although a live project
-    /// can still write rows there.
+    /// A project deletion drops a partition in which every project with rows is deleted without the event-age
+    /// bound, although a live project can still write rows there.
     DropWithinEventAge,
+    /// The purge sweep never runs.
+    SweepDisabled,
+    /// The purge sweep removes the rows it finds without the project predicate: it drops their partition.
+    SweepWithoutProject,
 }
 
 /// What one run does.
@@ -162,7 +182,7 @@ impl Options {
     pub const FAULTY: Self = Self {
         nodes: 3,
         faulty_for: Duration::from_secs(900),
-        tail: Duration::from_secs(5_400),
+        tail: Duration::from_secs(6_000),
         crashes: true,
         steals: true,
         store_faults: true,
@@ -244,6 +264,15 @@ pub struct Stats {
     /// Late frames of the project that keeps everything that landed in a partition just as the deletion's drop
     /// or delete of it reached the store.
     pub live_late_frames: u64,
+    /// Frames of the deleted project's history, sent before the run.
+    pub history_frames: u64,
+    /// Partitions that a project deletion or the purge sweep dropped.
+    pub purge_drops: u64,
+    /// Frames of the deleted project that landed after its request completed.
+    pub after_completion: u64,
+    /// Of those, the frames whose rows a delete or a drop removed within one sweep interval and two runs of the
+    /// executor.
+    pub swept_in_time: u64,
 }
 
 impl Stats {
@@ -279,6 +308,10 @@ impl Stats {
         self.late_frames += other.late_frames;
         self.control_rows_checked += other.control_rows_checked;
         self.live_late_frames += other.live_late_frames;
+        self.history_frames += other.history_frames;
+        self.purge_drops += other.purge_drops;
+        self.after_completion += other.after_completion;
+        self.swept_in_time += other.swept_in_time;
     }
 }
 
@@ -479,6 +512,11 @@ struct Ledger {
     spans: Vec<(Spans, Fate)>,
     /// Whether the first project's retention was shortened.
     retention_set: bool,
+    /// The frames of the deleted project that landed after its request completed, with when they landed on the
+    /// database host's clock, in nanoseconds.
+    after_completion: Vec<(Spans, u64)>,
+    /// Every delete of the deleted project's rows and every partition drop that reached the store, with when.
+    removals: Vec<(TableId, PartitionId, u64)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -501,6 +539,43 @@ struct Late {
 /// The log the late frames come from: a node that ships only them.
 fn late_epoch() -> WalEpoch {
     WalEpoch::from_uuid(Uuid::from_v7_parts(1_800_000_000_200, 1))
+}
+
+/// The log the deleted project's history and its frames after the completion come from.
+fn history_epoch() -> WalEpoch {
+    WalEpoch::from_uuid(Uuid::from_v7_parts(1_800_000_000_300, 1))
+}
+
+/// `ingest.max_event_age` in the simulation: older history is out of every project's reach.
+const MAX_EVENT_AGE_DAYS: i64 = 12;
+
+/// When a project of the simulation was made: the time of its UUIDv7 id.
+fn made_at(project: ProjectId) -> Timestamp {
+    project.uuid().v7_parts().map_or(Timestamp::EPOCH, |(millis, _)| {
+        Timestamp::from_micros(i64::try_from(millis).unwrap_or(0).saturating_mul(1_000))
+    })
+}
+
+/// Lands every row of a frame in the store at once, as a shipper writes it, from the log `epoch` at `lsn`. `false`
+/// when the store did not take the whole frame.
+async fn land(ch: &ChModel, spans: &Spans, epoch: WalEpoch, lsn: u64) -> bool {
+    for table_id in frame_tables() {
+        let Some((rows, partition)) = rows_of(table_id, spans, epoch, lsn) else {
+            return false;
+        };
+        let Ok(block) = rows.encode() else {
+            return false;
+        };
+        let Ok(token) = BatchToken::new(epoch, Lsn::new(lsn), Lsn::new(lsn), table_id, partition)
+        else {
+            return false;
+        };
+        let settings = InsertSettings::new(token, StoreFlavour::SingleNode);
+        if ch.insert_block(block, settings).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// The telemetry store as the leader reaches it, with the oracle of L1.
@@ -560,13 +635,20 @@ impl Audited {
     }
 
     /// A late frame of the project that keeps everything lands in a `span_core` partition, just before the project
-    /// deletion's drop or delete of it reaches the store: its spans start in the partition, as spans with an old
-    /// start time inside that project's retention do. Every table gets the frame's rows, as a shipper writes them.
-    /// Once per partition; a frame the store does not take whole is not counted, and no request can select it.
+    /// deletion's drop or delete of it reaches the store: its spans start in the partition, as a span that ingest
+    /// took at most `ingest.max_event_age` after it started, once the project was made, and that a node ships late.
+    /// A partition that ends before that gets no such frame, since no node takes one. Every table gets the frame's
+    /// rows, as a shipper writes them. Once per partition; a frame the store does not take whole is not counted,
+    /// and no request can select it.
     async fn land_late(&self, partition: PartitionId) {
         let Some(window) = partition_window(TableId::SpanCore, Granularity::Day, partition) else {
             return;
         };
+        let reach = made_at(self.projects[1]).saturating_add_micros(-MAX_EVENT_AGE_DAYS * DAY + 60_000_000);
+        let start = window.from().saturating_add_micros(3_600_000_000).max(reach);
+        if start >= window.to() {
+            return;
+        }
         let lsn = {
             let mut late = lock(&self.late);
             if !late.landed.insert(partition) {
@@ -587,27 +669,12 @@ impl Audited {
                 issuer: None,
             },
             session: "late".to_owned(),
-            start: window.from().saturating_add_micros(3_600_000_000),
+            start,
             received_at: self.clock.wall_now(),
             span_ids: vec![span.to_be_bytes()],
         };
-        let epoch = late_epoch();
-        for table_id in frame_tables() {
-            let Some((rows, partition)) = rows_of(table_id, &spans, epoch, lsn) else {
-                return;
-            };
-            let Ok(block) = rows.encode() else {
-                return;
-            };
-            let Ok(token) =
-                BatchToken::new(epoch, Lsn::new(lsn), Lsn::new(lsn), table_id, partition)
-            else {
-                return;
-            };
-            let settings = InsertSettings::new(token, StoreFlavour::SingleNode);
-            if self.ch.insert_block(block, settings).await.is_err() {
-                return;
-            }
+        if !land(&self.ch, &spans, late_epoch(), lsn).await {
+            return;
         }
         let mut ledger = lock(&self.ledger);
         ledger.stats.live_late_frames += 1;
@@ -635,12 +702,20 @@ impl TelemetryStore for Audited {
 
     async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
         self.fenced(ActionKind::Delete, plan.table(), plan.partition());
-        let purge = matches!(plan.target(), DeleteTarget::Project(scope) if scope.project_id() == self.projects[2])
-            && *plan.pred() == Pred::all();
+        let deleted = matches!(plan.target(), DeleteTarget::Project(scope) if scope.project_id() == self.projects[2]);
+        let purge = deleted && *plan.pred() == Pred::all();
         if purge && plan.table() == TableId::SpanCore {
             self.land_late(plan.partition()).await;
         }
-        self.ch.delete(plan).await
+        let (table_id, partition) = (plan.table(), plan.partition());
+        let answer = self.ch.delete(plan).await;
+        if deleted && answer.is_ok() {
+            let at = self.clock.now().nanos();
+            lock(&self.ledger)
+                .removals
+                .push((table_id, partition, at));
+        }
+        answer
     }
 
     async fn drop_partition(
@@ -649,10 +724,18 @@ impl TelemetryStore for Audited {
         partition: PartitionId,
     ) -> Result<(), StoreError> {
         self.fenced(ActionKind::Drop, table_id, partition);
-        if table_id == TableId::SpanCore && self.drops_for_a_request(table_id, partition) {
+        let for_a_request = self.drops_for_a_request(table_id, partition);
+        if table_id == TableId::SpanCore && for_a_request {
             self.land_late(partition).await;
         }
-        self.ch.drop_partition(table_id, partition).await
+        let answer = self.ch.drop_partition(table_id, partition).await;
+        if answer.is_ok() {
+            let at = self.clock.now().nanos();
+            let mut ledger = lock(&self.ledger);
+            ledger.removals.push((table_id, partition, at));
+            ledger.stats.purge_drops += u64::from(for_a_request);
+        }
+        answer
     }
 
     async fn apply_deleted_mask(
@@ -1360,6 +1443,142 @@ async fn delete_project(world: World, rng: Arc<dyn Rng>, at: u64) {
     world.violation("the third project could not be deleted".to_owned());
 }
 
+/// The deleted project's history, which it sent long before the run, each frame shipped an hour after its spans
+/// started: frames whose spans start in [`HISTORY_DAYS`], partitions that no project can write to any more.
+async fn history(world: &World, rng: &dyn Rng, today: u32) {
+    for n in 0..6_u64 {
+        let back = HISTORY_DAYS.start() + u32::try_from(below(rng, 11)).unwrap_or(0);
+        let minute = i64::try_from(below(rng, 1_200)).unwrap_or(0);
+        let start = Timestamp::from_micros(i64::from(today - back) * DAY + minute * 60_000_000);
+        let trace = world.ids.fetch_add(1, Ordering::SeqCst) + 1;
+        let spans = Spans {
+            project: world.projects[2],
+            trace: TraceId::from_bytes(u128::from(trace).to_be_bytes()),
+            user: "early".to_owned(),
+            identity: Identity {
+                spans: true,
+                mcp_user: true,
+                issuer: None,
+            },
+            session: "early".to_owned(),
+            start,
+            received_at: start.saturating_add_micros(3_600_000_000),
+            span_ids: vec![(world.ids.fetch_add(1, Ordering::SeqCst) + 1).to_be_bytes()],
+        };
+        if land(&world.ch, &spans, history_epoch(), n + 1).await {
+            let mut ledger = lock(&world.ledger);
+            ledger.stats.history_frames += 1;
+            ledger.spans.push((spans, Fate::Shipped));
+        } else {
+            world.violation("the deleted project's history could not be stored".to_owned());
+        }
+    }
+}
+
+/// Lands frames of the deleted project once its request has completed and the faulty phase is over, each a minute or
+/// less after the one before, as nodes that were behind or cut off ship them: one a node took just after the deletion
+/// while its key snapshot lagged, one a node without a heartbeat took before the deletion, one a node cut off from
+/// Postgres took under `fail_open` twenty minutes after it, and one from the WAL of a node back after weeks, into a
+/// partition of the project's history. A request that completes too late for a sweep and a mask cycle to follow
+/// before the end gets none.
+async fn after_completion(world: World, rng: Arc<dyn Rng>, today: u32, faulty_until: u64, end: u64) {
+    let clock = &world.database.clock;
+    let deleted = world.projects[2];
+    let latest = end.saturating_sub(nanos(
+        SWEEP_EVERY + world.config.mask_cycle + Duration::from_secs(600),
+    ));
+    let requested_at = loop {
+        clock.sleep(Duration::from_secs(5)).await;
+        let now = clock.now().nanos();
+        if now >= latest {
+            return;
+        }
+        let completed = world.pg.deletion_requests().into_iter().find(|request| {
+            request.project_id == deleted
+                && request.selector == DeletionSelector::Project
+                && request.state == DeletionState::Completed
+        });
+        if let Some(request) = completed
+            && now >= faulty_until
+        {
+            break request.requested_at;
+        }
+    };
+    let day_start = |back: u32| Timestamp::from_micros(i64::from(today - back) * DAY);
+    let minutes = |n: i64| n * 60_000_000;
+    let old = day_start(*HISTORY_DAYS.start() + 5).saturating_add_micros(minutes(90));
+    let kinds = [
+        (requested_at.saturating_add_micros(2_000_000), day_start(0)),
+        (requested_at.saturating_add_micros(-minutes(1)), day_start(10)),
+        (requested_at.saturating_add_micros(minutes(20)), day_start(1)),
+        (old.saturating_add_micros(minutes(60)), old),
+    ];
+    for (n, (received_at, day)) in kinds.into_iter().enumerate() {
+        clock.sleep(millis(rng.as_ref(), 0, 60_000)).await;
+        let minute = i64::try_from(below(rng.as_ref(), 300)).unwrap_or(0);
+        let start = if day == old {
+            day
+        } else {
+            day.saturating_add_micros(minutes(minute))
+        };
+        let trace = world.ids.fetch_add(1, Ordering::SeqCst) + 1;
+        let spans = Spans {
+            project: deleted,
+            trace: TraceId::from_bytes(u128::from(trace).to_be_bytes()),
+            user: "behind".to_owned(),
+            identity: Identity {
+                spans: true,
+                mcp_user: true,
+                issuer: None,
+            },
+            session: "behind".to_owned(),
+            start,
+            received_at,
+            span_ids: vec![(world.ids.fetch_add(1, Ordering::SeqCst) + 1).to_be_bytes()],
+        };
+        let lsn = 100 + n as u64;
+        if !land(&world.ch, &spans, history_epoch(), lsn).await {
+            world.violation("a frame of the deleted project could not be landed".to_owned());
+            continue;
+        }
+        let landed = clock.now().nanos();
+        let mut ledger = lock(&world.ledger);
+        ledger.stats.after_completion += 1;
+        ledger.after_completion.push((spans.clone(), landed));
+        ledger.spans.push((spans, Fate::Shipped));
+    }
+}
+
+/// I9 for the rows of the deleted project that landed after its request completed: a delete of the project's rows
+/// or a drop of their `span_core` partition reached the store within one sweep interval and three runs of the
+/// executor of their landing. That they are gone at the end is the rest of I9.
+fn check_swept(world: &World, ledger: &mut Ledger) {
+    let bound = nanos(SWEEP_EVERY + world.config.deletion_every * 3);
+    let landed = std::mem::take(&mut ledger.after_completion);
+    for (spans, at) in &landed {
+        let Ok(partition) = route(TableId::SpanCore, Granularity::Day, spans.start) else {
+            continue;
+        };
+        let removed = ledger
+            .removals
+            .iter()
+            .filter(|(table_id, held, when)| {
+                *table_id == TableId::SpanCore && *held == partition && *when >= *at
+            })
+            .map(|(_, _, when)| *when)
+            .min();
+        match removed {
+            Some(when) if when - at <= bound => ledger.stats.swept_in_time += 1,
+            _ => ledger.violations.push(format!(
+                "I9 (eventual): rows of the deleted project that landed in span_core partition {partition} after \
+                 its request completed were not removed within one sweep interval: removed {removed:?}, landed \
+                 at {at}"
+            )),
+        }
+    }
+    ledger.after_completion = landed;
+}
+
 /// L2: the accepting node hides the request's rows at once.
 fn check_hidden(world: &World, up: &Up, request: &DeletionRequest) {
     let hidden = up.state.pending().hidden(request.project_id);
@@ -1678,6 +1897,7 @@ fn any_issuer(request: &DeletionRequest) -> Option<DeletionRequest> {
 
 /// L3 and I9 over what the stores hold once every node has stopped.
 fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
+    check_swept(world, ledger);
     ledger.violations.extend(
         world
             .ch
@@ -2101,6 +2321,8 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
     let mut config = LifecycleConfig::default();
     config.retention_every = Duration::from_secs(600);
     config.mask_cycle = Duration::from_secs(1_800);
+    config.sweep_every = SWEEP_EVERY;
+    config.max_event_age = Duration::from_secs(u64::try_from(MAX_EVENT_AGE_DAYS).unwrap_or(0) * 86_400);
     match mutant {
         None => config,
         Some(Mutant::SkipCheckpointWait) => {
@@ -2121,6 +2343,12 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
         Some(Mutant::DropWithinEventAge) => {
             config.with_mutant(crucible_lifecycle::Mutant::DropWithinEventAge)
         }
+        Some(Mutant::SweepDisabled) => {
+            config.with_mutant(crucible_lifecycle::Mutant::SweepDisabled)
+        }
+        Some(Mutant::SweepWithoutProject) => {
+            config.with_mutant(crucible_lifecycle::Mutant::SweepWithoutProject)
+        }
     }
 }
 
@@ -2138,8 +2366,15 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         Granularity::Day,
         Duration::from_secs(3_600),
     );
-    let projects = [1_u64, 2, 3]
-        .map(|n| ProjectId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000 + n, u128::from(n))));
+    // The first two are made as the run starts, the deleted one forty days before.
+    let projects = [1_u64, 2, 3].map(|n| {
+        let made = if n == 3 {
+            1_800_000_000_000 - DELETED_MADE_DAYS_AGO * 86_400_000
+        } else {
+            1_800_000_000_000 + n
+        };
+        ProjectId::from_uuid(Uuid::from_v7_parts(made, u128::from(n)))
+    });
     let ledger: Arc<Mutex<Ledger>> = Arc::default();
     for (id, slug) in projects.iter().zip(["shortened", "kept", "deleted"]) {
         if let Err(error) = pg.projects().insert(&project(*id, slug)).await {
@@ -2195,9 +2430,10 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         salt_rng: sim.rng("lifecycle-sim/salts"),
         late: Arc::default(),
     };
+    let today = day_of(clock.wall_now().micros()).unwrap_or(0);
+    history(&world, sim.rng("lifecycle-sim/history").as_ref(), today).await;
     pg.set_faults(pg_faults(options.store_faults));
     ch.set_faults(ch_faults(options.store_faults));
-    let today = day_of(clock.wall_now().micros()).unwrap_or(0);
     let faulty_until = clock.now().saturating_add(options.faulty_for).nanos();
     let end = faulty_until + nanos(options.tail);
     // The third project is deleted in the faulty phase, after its frames and requests have had time to land.
@@ -2235,6 +2471,13 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
             faulty_until
         ),
         delete_project(world.clone(), delete_rng, delete_at),
+        after_completion(
+            world.clone(),
+            sim.rng("lifecycle-sim/after-completion"),
+            today,
+            faulty_until,
+            end
+        ),
         calm,
     );
     let mut ledger = std::mem::take(&mut *lock(&ledger));
