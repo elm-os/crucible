@@ -346,6 +346,18 @@ pub(crate) fn service_statements(variant: &Variant, params: &AccessParams) -> Ve
             "GRANT{on} SELECT ON system.{system_table} TO {maint}"
         ));
     }
+    // On a cluster the existence probe, the maintenance reads and the verification of a delete read every replica
+    // with `clusterAllReplicas`, which takes the remote source, against the cluster's definition.
+    if let Variant::Clustered { .. } = variant {
+        let ingest = ServiceIdentity::Ingest.name();
+        let read_ui = ServiceIdentity::ReadUi.name();
+        out.push(format!(
+            "GRANT{on} REMOTE ON *.* TO {ingest}, {read_ui}, {maint}"
+        ));
+        out.push(format!(
+            "GRANT{on} SELECT ON system.clusters TO {ingest}, {maint}"
+        ));
+    }
 
     for def in &TABLES {
         out.push(service_policy(def.id, variant, &params.admin_user));

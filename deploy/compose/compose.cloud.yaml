@@ -1,12 +1,15 @@
 # Crucible alone, against a ClickHouse and a Postgres that run elsewhere. See docs/self-hosting/README.md.
 #
-# Crucible needs a single-node ClickHouse server; it refuses a clustered or ClickHouse Cloud service at startup and
+# Crucible needs a self-hosted ClickHouse: a single server, or one replica in a replicated cluster named by
+# CRUCIBLE_CLICKHOUSE_CLUSTER (docs/self-hosting/clustered.md). It refuses a ClickHouse Cloud service at startup and
 # /readyz names the reason.
 #
 # Settings in .env beside this file:
 #   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS, or http://<host>:8123; ClickHouse 26.3 or newer
 #   CRUCIBLE_CLICKHOUSE_USER      an admin user with access management (default crucible_admin)
 #   CRUCIBLE_CLICKHOUSE_PASSWORD  that user's password
+#   CRUCIBLE_CLICKHOUSE_CLUSTER   for a replicated cluster: its name in remote_servers, with the URL of one replica
+#                                 above (optional; unset for a single server)
 #   CRUCIBLE_MASTER_KEY           64 hexadecimal characters, made once: openssl rand -hex 32
 #   CRUCIBLE_POSTGRES_URL         postgres://<user>:<password>@<host>:5432/<database>?sslmode=require (Postgres 15
 #                                 or newer): the control plane, which holds sign-in, projects, members and API keys
@@ -22,6 +25,7 @@ services:
       CRUCIBLE_CLICKHOUSE_URL: ${CRUCIBLE_CLICKHOUSE_URL:?set CRUCIBLE_CLICKHOUSE_URL in .env, for example https://<host>:8443}
       CRUCIBLE_CLICKHOUSE_USER: ${CRUCIBLE_CLICKHOUSE_USER:-crucible_admin}
       CRUCIBLE_CLICKHOUSE_PASSWORD: ${CRUCIBLE_CLICKHOUSE_PASSWORD:?set CRUCIBLE_CLICKHOUSE_PASSWORD in .env}
+      CRUCIBLE_CLICKHOUSE_CLUSTER: ${CRUCIBLE_CLICKHOUSE_CLUSTER:-}
       CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (openssl rand -hex 32)}
       # The password goes in the URL; `crucible config print` shows it redacted.
       CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:?set CRUCIBLE_POSTGRES_URL in .env, for example postgres://<user>:<password>@<host>:5432/<database>?sslmode=require}

@@ -3,8 +3,8 @@
 Open-source, self-hosted observability and analytics for AI agents and MCP servers.
 
 Crucible is one Rust binary. It ingests OpenTelemetry traces over OTLP (HTTP and gRPC) and serves a REST API, an MCP
-server, an MCP proxy and a web UI. A single-node ClickHouse (26.3 or newer) stores the telemetry and Postgres (15 or
-newer) holds the control plane. Use it for agents, for MCP servers, or for both: when an agent and the MCP servers it
+server, an MCP proxy and a web UI. ClickHouse (26.3 or newer), as a single server or a replicated cluster, stores
+the telemetry and Postgres (15 or newer) holds the control plane. Use it for agents, for MCP servers, or for both: when an agent and the MCP servers it
 calls report to the same Crucible, the agent's tool call and the server's handling of it land in one trace. Crucible
 is MIT licensed and runs on infrastructure you control.
 
@@ -72,7 +72,7 @@ ClickHouse and Postgres, with no clone and no build:
 
 ```sh
 mkdir crucible && cd crucible
-curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.1/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.2/deploy/compose/compose.yaml
 printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
 docker compose up -d --wait
 ```
@@ -81,7 +81,8 @@ Then create the owner from the setup link, make an API key and send a first trac
 `ghcr.io/elm-os/crucible` for linux/amd64 and linux/arm64; binaries for Linux and macOS, and Windows for development,
 install with a shell or PowerShell one-liner ([the binary](docs/self-hosting/README.md#the-binary)). Running against
 your own ClickHouse and Postgres, every setting, upgrades, backups and monitoring are in
-[docs/self-hosting](docs/self-hosting/README.md).
+[docs/self-hosting](docs/self-hosting/README.md), and running on a replicated ClickHouse cluster is in
+[clustered ClickHouse](docs/self-hosting/clustered.md).
 
 ## Architecture
 

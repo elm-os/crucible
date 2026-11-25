@@ -7,7 +7,8 @@
 #
 # The servers run one after another, each limited to 1500 MiB, and the suite runs in the dev container on the
 # same Docker network. Every server hides rows from users without a row policy (the strict value of
-# users_without_row_policies_can_read_rows), so the service-identity check is meaningful.
+# users_without_row_policies_can_read_rows), so the service-identity check is meaningful. The cluster is the one
+# that deploy/compose/compose.cluster.yaml runs (Keeper and two replicas), with the tag's server image.
 #
 # Environment: CRUCIBLE_DEV_IMAGE (default crucible-dev:1), CRUCIBLE_TARGET_VOLUME (default crucible-target).
 set -euo pipefail
@@ -24,6 +25,9 @@ ADMIN=crucible_admin
 ADMIN_PW=conformance-admin
 # Docker cannot copy from the POSIX temp directory under Git Bash, so the server config lives beside the script.
 CONFIG=crates/crucible-conformance/scripts/.server-config.xml
+# The cluster mode's changes to the operator's Compose file: the tag's image, the memory limits and the switch.
+CLUSTER_OVERRIDE=crates/crucible-conformance/scripts/.cluster-override.yaml
+CLUSTER_PROJECT=crucible-conformance-cluster
 
 cargo_in_container() {
   docker run --rm --cpus=3 --memory=2g --network "$NETWORK" -e CARGO_BUILD_JOBS=3 \
@@ -65,44 +69,6 @@ XML
   chmod 644 "$CONFIG"
 }
 
-cluster_config() {
-  cat >"$CONFIG" <<XML
-<clickhouse>
-  <listen_host>0.0.0.0</listen_host>
-  <distributed_ddl_use_initial_user_and_roles>1</distributed_ddl_use_initial_user_and_roles>
-  <macros><shard>01</shard><replica>$1</replica></macros>
-  <remote_servers replace="replace">
-    <crucible>
-      <shard>
-        <internal_replication>true</internal_replication>
-        <replica><host>crucible-conformance-r1</host><port>9000</port></replica>
-        <replica><host>crucible-conformance-r2</host><port>9000</port></replica>
-      </shard>
-    </crucible>
-  </remote_servers>
-  <zookeeper><node><host>crucible-conformance-r1</host><port>9181</port></node></zookeeper>
-  <access_control_improvements>
-    <users_without_row_policies_can_read_rows>false</users_without_row_policies_can_read_rows>
-  </access_control_improvements>
-XML
-  if [ "$1" = r1 ]; then
-    # Keeper is embedded in replica 1.
-    cat >>"$CONFIG" <<XML
-  <keeper_server>
-    <tcp_port>9181</tcp_port>
-    <server_id>1</server_id>
-    <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
-    <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
-    <raft_configuration>
-      <server><id>1</id><hostname>crucible-conformance-r1</hostname><port>9234</port></server>
-    </raft_configuration>
-  </keeper_server>
-XML
-  fi
-  echo "</clickhouse>" >>"$CONFIG"
-  chmod 644 "$CONFIG"
-}
-
 single() {
   local tag=$1 name=crucible-conformance-single
   single_config
@@ -111,20 +77,50 @@ single() {
   docker rm -f "$name" >/dev/null
 }
 
+# compose <args>: the operator's cluster file with this script's override. Compose reads every variable the file
+# names, also for the services it does not start.
+compose() {
+  CLICKHOUSE_PASSWORD="$ADMIN_PW" CLICKHOUSE_CLUSTER_SECRET=conformance-cluster-secret \
+    POSTGRES_PASSWORD=conformance-postgres CRUCIBLE_MASTER_KEY="$(printf '5c%.0s' $(seq 1 32))" \
+    docker compose -p "$CLUSTER_PROJECT" -f deploy/compose/compose.cluster.yaml -f "$CLUSTER_OVERRIDE" "$@"
+}
+
+cluster_override() {
+  local tag=$1 replica
+  {
+    echo "services:"
+    echo "  keeper:"
+    echo "    mem_limit: 512m"
+    for replica in clickhouse-1 clickhouse-2; do
+      cat <<YAML
+  $replica:
+    image: clickhouse/clickhouse-server:$tag
+    mem_limit: $MEMORY
+    volumes:
+      - type: bind
+        source: $ROOT/$CONFIG
+        target: /etc/clickhouse-server/config.d/conformance.xml
+        read_only: true
+YAML
+    done
+  } >"$CLUSTER_OVERRIDE"
+}
+
 cluster() {
   local tag=$1
-  cluster_config r1
-  start crucible-conformance-r1 "$tag"
-  cluster_config r2
-  start crucible-conformance-r2 "$tag"
-  suite --url "http://crucible-conformance-r1:8123" --cluster crucible --label "$tag cluster" || failed=1
-  docker rm -f crucible-conformance-r1 crucible-conformance-r2 >/dev/null
+  single_config
+  cluster_override "$tag"
+  compose up -d --wait keeper clickhouse-1 clickhouse-2
+  NETWORK="${CLUSTER_PROJECT}_default" suite --url http://clickhouse-1:8123 --replica-url http://clickhouse-2:8123 \
+    --cluster crucible --label "$tag cluster" || failed=1
+  compose down -v >/dev/null 2>&1
 }
 
 cleanup() {
-  docker rm -f crucible-conformance-single crucible-conformance-r1 crucible-conformance-r2 >/dev/null 2>&1 || true
+  docker rm -f crucible-conformance-single >/dev/null 2>&1 || true
+  if [ -f "$CLUSTER_OVERRIDE" ]; then compose down -v >/dev/null 2>&1 || true; fi
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
-  rm -f "$CONFIG"
+  rm -f "$CONFIG" "$CLUSTER_OVERRIDE"
 }
 trap cleanup EXIT
 

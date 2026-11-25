@@ -231,7 +231,8 @@ pub(crate) fn verification(
     let window = partition_window(action.table, granularity, action.partition)
         .ok_or(DetailError::Shape("the partition is not one of the table"))?;
     let pred = Detail::parse(&action.detail)?.pred(action.table)?;
-    Ok(lifecycle_oldest(scope, action.table, window, pred)?)
+    // On a cluster no replica may hold a matching row.
+    Ok(lifecycle_oldest(scope, action.table, window, pred)?.on_every_replica())
 }
 
 #[cfg(test)]
@@ -364,6 +365,20 @@ mod tests {
             purge.kind = ActionKind::Drop;
             assert_eq!(call(&purge, Some(scope)), Ok(Call::Drop(table, partition)));
         }
+    }
+
+    /// Contract 13.3, step 7: on a cluster the verification of a delete must find no row on any replica, so its
+    /// read goes to every replica.
+    #[test]
+    fn the_verification_of_a_delete_reads_every_replica() {
+        let scope = scope(ProjectId::from_bytes([2; 16])).unwrap();
+        let action = action(
+            ActionKind::Delete,
+            TableId::SpanCore,
+            &request(&[1], None, None),
+        );
+        let plan = verification(&action, scope, Granularity::Day).unwrap();
+        assert!(plan.every_replica());
     }
 
     #[test]

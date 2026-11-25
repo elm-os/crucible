@@ -16,6 +16,7 @@ use bytes::{Bytes, BytesMut};
 use crucible_env::{
     CELL_CUT_MARKER, ProbeBreach, ProbeReport, SqlCell, SqlColumn, SqlError, SqlEstimate,
     SqlExportFormat, SqlGrid, SqlLimits, SqlParam, SqlQuery, SqlStats, SqlWorkspaceStore,
+    StoreError,
 };
 use crucible_records::{ProjectId, ProjectScope, Uuid};
 use crucible_schema::{
@@ -26,7 +27,7 @@ use crucible_schema::{
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
 
-use crate::codes::Failure;
+use crate::codes::{Failure, killed};
 use crate::render::{Binder, escape};
 use crate::store::{CHANGE_DEADLINE, ClickHouseStore, LOOKUP_SECS, Reading};
 
@@ -617,6 +618,16 @@ impl ClickHouseSqlStore {
     }
 
     async fn admin(&self, statements: &[String]) -> Result<(), SqlError> {
+        // Every replica runs these ON CLUSTER statements, so one that is down is named at once.
+        if let Variant::Clustered { cluster } = &self.config.variant {
+            self.store
+                .every_replica_answers(cluster, "try again")
+                .await
+                .map_err(|error| match error {
+                    StoreError::Unavailable(message) => SqlError::Unavailable(message),
+                    other => SqlError::Internal(other.to_string()),
+                })?;
+        }
         let settings: Vec<(&str, String)> = self
             .config
             .variant
@@ -817,15 +828,17 @@ impl SqlWorkspaceStore for ClickHouseSqlStore {
         let statement = b.finish(format!(
             "KILL QUERY WHERE query_id = {id} AND user = {user} ASYNC"
         ));
-        self.store
-            .command(
-                ServiceIdentity::Maint,
-                &statement,
-                &[],
-                Duration::from_secs(LOOKUP_SECS),
-            )
-            .await
-            .map_err(admin_error)
+        killed(
+            self.store
+                .command(
+                    ServiceIdentity::Maint,
+                    &statement,
+                    &[],
+                    Duration::from_secs(LOOKUP_SECS),
+                )
+                .await,
+        )
+        .map_err(admin_error)
     }
 
     async fn provision(

@@ -207,6 +207,10 @@ struct ConfigArgs {
     /// password itself is read from CRUCIBLE_CLICKHOUSE_PASSWORD.
     #[arg(long)]
     clickhouse_password_file: Option<String>,
+    /// The cluster in the ClickHouse servers' remote_servers that holds Crucible's replicas, one shard with
+    /// several replicas; unset for one server. Also read from CRUCIBLE_CLICKHOUSE_CLUSTER.
+    #[arg(long)]
+    clickhouse_cluster: Option<String>,
     /// File that holds the master key as 64 hexadecimal characters. The passwords of the four service
     /// identities are derived from it. Also read from CRUCIBLE_MASTER_KEY_FILE; the key itself is read from
     /// CRUCIBLE_MASTER_KEY.
@@ -241,6 +245,7 @@ impl ConfigArgs {
             ("clickhouse.url", &self.clickhouse_url),
             ("clickhouse.user", &self.clickhouse_user),
             ("clickhouse.password_file", &self.clickhouse_password_file),
+            ("clickhouse.cluster", &self.clickhouse_cluster),
             ("master_key_file", &self.master_key_file),
             ("recent.max_bytes", &self.recent_max_bytes),
             ("postgres.url", &self.postgres_url),
