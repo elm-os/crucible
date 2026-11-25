@@ -39,7 +39,7 @@ rusty-s3 = "=0.11.0"
 # The time type rusty-s3 signs with: signatures take the `Env` clock's time, never the ambient one.
 jiff = { version = "=0.2.46", default-features = false, features = ["std"] }
 # The endpoint URLs rusty-s3 takes.
-url = "=2.5.8"
+url = "=2.5.9"
 
 [dev-dependencies]
 proptest = { workspace = true }
