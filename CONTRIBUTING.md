@@ -4,7 +4,8 @@ Crucible is MIT licensed, and contributions are made under the same license. Thi
 a change must pass, and how a pull request is merged. The ground rules every change follows are in
 [AGENTS.md](AGENTS.md): the naming rule, no AI attribution, determinism in product crates, and verification by tests
 rather than review. Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md), and vulnerabilities are
-reported privately as [SECURITY.md](SECURITY.md) describes, never in a public issue.
+reported privately as [SECURITY.md](SECURITY.md) describes, never in a public issue. Questions and ideas go to
+GitHub Discussions and bugs to issues, as [Getting help](docs/getting-help.md) describes.
 
 ## Setup
 
