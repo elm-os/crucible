@@ -66,6 +66,20 @@ traces_resolved: number,
 places: Array<DeletionPlace>, 
 /**
  * Why the request failed, or what a request that has not ended waits for and how to fix it (for a
- * deletion by user: a project salt that the server cannot read).
+ * deletion by user: a project salt that the server cannot read; for a project deletion: a read of the
+ * telemetry store that failed, which the server tries again).
  */
-error?: string, };
+error?: string, 
+/**
+ * How many times a step of the request failed, when one did.
+ */
+attempts?: number, 
+/**
+ * For a project deletion that has ended: how many times the hourly sweep found rows of the project that
+ * reached the telemetry store after the purge, and deleted them, one per partition each time.
+ */
+late_purges?: number, 
+/**
+ * When the sweep last found such rows (RFC 3339).
+ */
+late_purged_at?: string, };

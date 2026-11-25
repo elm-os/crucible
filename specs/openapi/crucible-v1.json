@@ -12608,9 +12608,15 @@
           "places"
         ],
         "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many times a step of the request failed, when one did.",
+            "minimum": 0
+          },
           "error": {
             "type": "string",
-            "description": "Why the request failed, or what a request that has not ended waits for and how to fix it (for a\ndeletion by user: a project salt that the server cannot read)."
+            "description": "Why the request failed, or what a request that has not ended waits for and how to fix it (for a\ndeletion by user: a project salt that the server cannot read; for a project deletion: a read of the\ntelemetry store that failed, which the server tries again)."
           },
           "id": {
             "type": "string",
@@ -12623,6 +12629,17 @@
           "kind": {
             "$ref": "#/components/schemas/DeletionKind",
             "description": "What it selects."
+          },
+          "late_purged_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the sweep last found such rows (RFC 3339)."
+          },
+          "late_purges": {
+            "type": "integer",
+            "format": "int32",
+            "description": "For a project deletion that has ended: how many times the hourly sweep found rows of the project that\nreached the telemetry store after the purge, and deleted them, one per partition each time.",
+            "minimum": 0
           },
           "places": {
             "type": "array",
