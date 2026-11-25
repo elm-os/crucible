@@ -26,7 +26,7 @@ use crucible_schema::{
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
 
-use crate::codes::Failure;
+use crate::codes::{Failure, killed};
 use crate::render::{Binder, escape};
 use crate::store::{CHANGE_DEADLINE, ClickHouseStore, LOOKUP_SECS, Reading};
 
@@ -817,15 +817,17 @@ impl SqlWorkspaceStore for ClickHouseSqlStore {
         let statement = b.finish(format!(
             "KILL QUERY WHERE query_id = {id} AND user = {user} ASYNC"
         ));
-        self.store
-            .command(
-                ServiceIdentity::Maint,
-                &statement,
-                &[],
-                Duration::from_secs(LOOKUP_SECS),
-            )
-            .await
-            .map_err(admin_error)
+        killed(
+            self.store
+                .command(
+                    ServiceIdentity::Maint,
+                    &statement,
+                    &[],
+                    Duration::from_secs(LOOKUP_SECS),
+                )
+                .await,
+        )
+        .map_err(admin_error)
     }
 
     async fn provision(

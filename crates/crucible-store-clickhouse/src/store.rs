@@ -26,7 +26,7 @@ use crucible_schema::{
 use futures::Stream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::codes::{self, Failure, parse_code};
+use crate::codes::{self, Failure, killed, parse_code};
 use crate::connect;
 use crate::decode::Decoder;
 use crate::render::{self, Binder, Statement};
@@ -1264,9 +1264,11 @@ impl TelemetryStore for ClickHouseStore {
         let mut b = Binder::default();
         let id = b.string(&query_id.to_string());
         let statement = b.finish(format!("KILL QUERY WHERE query_id = {id} ASYNC"));
-        self.command(ServiceIdentity::Maint, &statement, &[], KILL_DEADLINE)
-            .await
-            .map_err(Failure::into_store)
+        killed(
+            self.command(ServiceIdentity::Maint, &statement, &[], KILL_DEADLINE)
+                .await,
+        )
+        .map_err(Failure::into_store)
     }
 
     async fn health(&self) -> StoreHealth {
