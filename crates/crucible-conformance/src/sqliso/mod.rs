@@ -678,7 +678,10 @@ pub async fn run(env: &Env, target: &Target, options: &Options) -> Vec<Outcome> 
     }
     row!("W0 deployment as declared", iso.deployment());
     row!("Runtime self-probe (7.5)", iso.runtime_probe());
-    row!("Cancel of a statement that has ended (2.9)", iso.cancel_ended());
+    row!(
+        "Cancel of a statement that has ended (2.9)",
+        iso.cancel_ended()
+    );
     row!(
         "A start with a wrong master key (6.6, 7.5)",
         iso.wrong_master_key()
