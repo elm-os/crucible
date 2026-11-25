@@ -11,6 +11,7 @@
 //! the requests made after the data it ships arrived, because a deletion selects data received before it.
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use crucible_api::{ProjectSettings, ProjectSettingsSource};
 use crucible_control::{ControlStore, DeletionRequest, DeletionSelector, Node, TxError};
@@ -50,16 +51,20 @@ pub(crate) struct Lifecycle {
     objects: Option<ExportObjects>,
     /// What the shipper reads the deletion requests through.
     deletions: Arc<ControlDeletions>,
+    /// `ingest.max_event_age` as this node's ingest applies it, which bounds what a project deletion drops.
+    max_event_age: Duration,
 }
 
 impl Lifecycle {
     /// The lifecycle of the node whose WAL is `wal`, over the control store. `objects` is the deployment's
-    /// object store, when it has one, which stores media and export files.
+    /// object store, when it has one, which stores media and export files. `max_event_age` is the
+    /// `ingest.max_event_age` that this node's ingest applies.
     pub(crate) fn new(
         env: &Env,
         control: Arc<dyn ControlStore>,
         wal: Wal,
         objects: Option<ExportObjects>,
+        max_event_age: Duration,
     ) -> Self {
         let node = Arc::new(NodeState::new(Arc::new(WalLog(wal.clone())), VERSION, ""));
         Self {
@@ -68,6 +73,7 @@ impl Lifecycle {
             stores: Arc::default(),
             objects,
             deletions: Arc::new(ControlDeletions { control, wal }),
+            max_event_age,
         }
     }
 
@@ -76,10 +82,11 @@ impl Lifecycle {
         Arc::clone(&self.deletions) as Arc<dyn DeletionRequests>
     }
 
-    /// The node timer and the three leader jobs of the `lifecycle` lease.
+    /// The node timer and the leader jobs of the `lifecycle` lease.
     pub(crate) fn jobs(&self) -> Vec<Job> {
         let mut config = LifecycleConfig::default();
         config.media = self.objects.is_some();
+        config.max_event_age = self.max_event_age;
         let stores = Arc::clone(&self.stores);
         let source: LeaderSource = Arc::new(move || stores.get().cloned());
         let mut jobs = vec![node_job(Arc::clone(&self.node), &config)];
@@ -253,6 +260,20 @@ mod tests {
     use super::*;
 
     const PROJECT: ProjectId = ProjectId::from_bytes([4; 16]);
+
+    /// A project deletion drops only what ingest can no longer write to, so the node gives its jobs the
+    /// `ingest.max_event_age` its ingest applies, and the defaults agree for whatever builds them alone.
+    #[test]
+    fn the_jobs_and_ingest_share_the_maximum_event_age() {
+        assert_eq!(
+            LifecycleConfig::default().max_event_age,
+            crucible_ingest::DEFAULT_MAX_EVENT_AGE
+        );
+        assert_eq!(
+            crucible_ingest::IngestConfig::default().max_event_age,
+            crucible_ingest::DEFAULT_MAX_EVENT_AGE
+        );
+    }
 
     /// The horizon is the read cut-off of `span_core`: the start of the UTC day `retention_days` back, never
     /// below a floor that an earlier, shorter retention set, and none for a project that keeps everything.

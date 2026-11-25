@@ -6,26 +6,33 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use crucible_auth::test_support::scope;
+use crucible_chfmt::EncodedBlock;
 use crucible_control::{
     ActionKind, ControlStore, DeletionRequest, DeletionSelector, ExportCommit, ExportFormat,
     JsonDoc, MediaObject, MediaRef, MediaState, NewExport, Project, Queue, Repos as _,
 };
-use crucible_env::{StoreFlavour, Stores};
+use crucible_env::{
+    InsertError, InsertSettings, MutationId, MutationStatus, QueryError, RowStream, StoreError,
+    StoreFacts, StoreFlavour, StoreHealth, Stores, TelemetryStore,
+};
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
     EARLIER_DELETION_BY, ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, NewDeletion,
     NodeLog as _, NodeState, Service, Subjects, WalLog, leader_jobs, node_job,
 };
-use crucible_plan::Value;
+use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, Value};
 use crucible_records::{
-    DeletionState, ExportJobId, Lsn, MediaObjectId, PartitionId, ProjectId, TableId, Timestamp,
-    TraceId,
+    BatchToken, DeletionState, ExportJobId, Lsn, MediaObjectId, PartitionId, ProjectId, TableId,
+    Timestamp, TraceId, Uuid, WalEpoch,
 };
-use crucible_schema::{Granularity, route, table};
+use crucible_schema::{Granularity, MigrationStep, route, table};
+use crucible_sim::blocks::Rows;
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
 use crucible_sim::ch_model::ChModel;
 use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
@@ -53,10 +60,181 @@ impl Subjects for NoSalt {
     }
 }
 
+/// What a test runs just before a drop or a delete reaches the store model, with its table and partition.
+type Hook = Arc<dyn Fn(TableId, PartitionId) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// The store model as the leader jobs reach it, with what a test steers: a hook that runs just before a drop or a
+/// delete reaches the model, and a number of reads that fail, as a server that times out fails them.
+#[derive(Clone)]
+struct Hooked {
+    ch: ChModel,
+    hook: Arc<Mutex<Option<Hook>>>,
+    /// The reads over every instant of a table, and the reads that find where a project's rows are, that are
+    /// still to fail.
+    failing: Arc<AtomicU32>,
+}
+
+impl std::fmt::Debug for Hooked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hooked")
+    }
+}
+
+impl Hooked {
+    fn set_hook(&self, hook: Hook) {
+        *self.hook.lock().unwrap() = Some(hook);
+    }
+
+    async fn before(&self, table_id: TableId, partition: PartitionId) {
+        let hook = self.hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(table_id, partition).await;
+        }
+    }
+
+    /// Whether this read fails, while reads are still to fail.
+    fn fails(&self) -> bool {
+        self.failing
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+            .is_ok()
+    }
+}
+
+#[async_trait]
+impl TelemetryStore for Hooked {
+    async fn insert_block(
+        &self,
+        block: EncodedBlock,
+        settings: InsertSettings,
+    ) -> Result<(), InsertError> {
+        self.ch.insert_block(block, settings).await
+    }
+
+    async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
+        let every_instant = plan.window().from() == Timestamp::EPOCH
+            && plan.window().to() == Timestamp::MAX_EXCLUSIVE;
+        if every_instant && self.fails() {
+            return Err(QueryError::Timeout);
+        }
+        self.ch.execute(plan).await
+    }
+
+    async fn probe(&self, probe: BatchProbe) -> Result<bool, StoreError> {
+        self.ch.probe(probe).await
+    }
+
+    async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
+        self.before(plan.table(), plan.partition()).await;
+        self.ch.delete(plan).await
+    }
+
+    async fn drop_partition(
+        &self,
+        table_id: TableId,
+        partition: PartitionId,
+    ) -> Result<(), StoreError> {
+        self.before(table_id, partition).await;
+        self.ch.drop_partition(table_id, partition).await
+    }
+
+    async fn apply_deleted_mask(
+        &self,
+        table_id: TableId,
+        partition: PartitionId,
+    ) -> Result<MutationId, StoreError> {
+        self.ch.apply_deleted_mask(table_id, partition).await
+    }
+
+    async fn mutation_status(&self, id: &MutationId) -> Result<MutationStatus, StoreError> {
+        self.ch.mutation_status(id).await
+    }
+
+    async fn partition_projects(
+        &self,
+        table_id: TableId,
+        partition: PartitionId,
+    ) -> Result<Vec<ProjectId>, StoreError> {
+        self.ch.partition_projects(table_id, partition).await
+    }
+
+    async fn masked_parts(
+        &self,
+        table_id: TableId,
+        partition: PartitionId,
+    ) -> Result<u64, StoreError> {
+        self.ch.masked_parts(table_id, partition).await
+    }
+
+    async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
+        self.ch.apply_migration(step).await
+    }
+
+    async fn detect(&self) -> Result<StoreFacts, StoreError> {
+        self.ch.detect().await
+    }
+
+    async fn dedup_selftest(&self) -> Result<(), StoreError> {
+        self.ch.dedup_selftest().await
+    }
+
+    async fn kill(&self, query_id: Uuid) -> Result<(), StoreError> {
+        self.ch.kill(query_id).await
+    }
+
+    async fn health(&self) -> StoreHealth {
+        self.ch.health().await
+    }
+}
+
+/// One `span_core` row of `project` that starts at `start`, as a shipper writes it: a span of the trace `tag`
+/// from a WAL that only such rows come from, at log position `lsn`.
+async fn land_span(ch: &ChModel, project: ProjectId, tag: u8, start: Timestamp, lsn: u64) {
+    let epoch = WalEpoch::from_uuid(Uuid::from_v7_parts(1_700_000_000_000, 7));
+    let trace = TraceId::from_bytes([tag; 16]);
+    let rows = Rows::new(TableId::SpanCore, 1)
+        .all("project_id", Value::Uuid(project.uuid()))
+        .all("start_time", Value::Time(start))
+        .all("trace_id", Value::Bytes(trace.to_bytes().to_vec()))
+        .all("trace_hash", Value::UInt(u64::from(trace.trace_hash())))
+        .all("span_id", Value::Bytes(vec![tag, 0, 0, 0, 0, 0, 0, 1]))
+        .all("received_at", Value::Time(start))
+        .all("wal_epoch", Value::Uuid(epoch.uuid()))
+        .all("batch_seq", Value::UInt(lsn))
+        .all("lsn", Value::UInt(lsn))
+        .sorted();
+    let partition = route(TableId::SpanCore, Granularity::Day, start).unwrap();
+    let token = BatchToken::new(
+        epoch,
+        Lsn::new(lsn),
+        Lsn::new(lsn),
+        TableId::SpanCore,
+        partition,
+    )
+    .unwrap();
+    let settings = InsertSettings::new(token, StoreFlavour::SingleNode);
+    ch.insert_block(rows.encode().unwrap(), settings)
+        .await
+        .unwrap();
+}
+
+/// A live project made at `made_at` (microseconds), with the UUIDv7 id that `Env::new_id` mints at that moment,
+/// keeping its data forever.
+fn made(n: u8, name: &str, made_at: i64) -> Project {
+    Project {
+        id: ProjectId::from_uuid(Uuid::from_v7_parts(
+            u64::try_from(made_at / 1_000).unwrap(),
+            u128::from(n),
+        )),
+        ..project(n, name)
+    }
+}
+
 struct Node {
     host: Host,
     wal: Wal,
     ch: ChModel,
+    /// The store as the leader jobs reach it.
+    hooked: Hooked,
     pg: PgModel,
     service: Service,
     log: WalLog,
@@ -211,6 +389,15 @@ where
     F: FnOnce(Node) -> Fut,
     Fut: Future<Output = ()>,
 {
+    directed_with(|_| {}, body);
+}
+
+/// [`directed`] with the lifecycle settings that `configure` changes.
+fn directed_with<F, Fut>(configure: impl FnOnce(&mut LifecycleConfig), body: F)
+where
+    F: FnOnce(Node) -> Fut,
+    Fut: Future<Output = ()>,
+{
     run(11, |sim| async move {
         let host = sim.host("node", &sim.disk("node"), 0);
         let ch = ChModel::new(
@@ -268,13 +455,19 @@ where
         let mut config = LifecycleConfig::default();
         config.mask_cycle = Duration::from_secs(1_800);
         config.media = true;
+        configure(&mut config);
         let objects = SimObjectStore::new(
             host.clock.clone(),
             sim.rng("objects"),
             ObjectFaults::default(),
         );
+        let hooked = Hooked {
+            ch: ch.clone(),
+            hook: Arc::default(),
+            failing: Arc::default(),
+        };
         let stores = LeaderStores {
-            telemetry: Arc::new(ch.clone()),
+            telemetry: Arc::new(hooked.clone()),
             subjects: Arc::new(NoSalt),
             exports: Some(ExportObjects::new(objects.clone(), "media")),
         };
@@ -289,6 +482,7 @@ where
             host,
             wal,
             ch,
+            hooked,
             pg,
             service,
             log,
@@ -445,64 +639,182 @@ fn a_project_deletion_empties_every_table_and_completes_over_the_real_wal_and_sh
     });
 }
 
-/// Contract 13.4: a project deletion drops a partition only when every project with rows there is deleted and no
-/// live project can still write there. Beside the deleted project lives a project that keeps two days: ingest takes
-/// its spans from the start of the day two days back, so the deleted project's partition of ten days ago is out of
-/// its reach and dropped, while those of two days ago and of today get deletes of the deleted project's rows
-/// (where the rule before dropped the settled partition of two days ago too). Every row of the project goes.
-#[test]
-fn a_project_deletion_drops_only_the_partitions_that_no_live_project_can_write_to() {
-    directed(|node| async move {
-        let project = ProjectId::from_bytes(PROJECT);
-        let live = Project {
-            retention_days: Some(2),
-            ..self::project(2, "Two")
-        };
-        node.pg.projects().insert(&live).await.unwrap();
-        const DAY: i64 = 86_400_000_000;
-        for (tag, back) in [(1, 10), (2, 2), (3, 0)] {
-            node.ingest_at(tag, 0..2, SIM_EPOCH_MICROS - back * DAY)
-                .await;
-        }
-        node.sleep(Duration::from_secs(2)).await;
-        let request = DeletionRequest::project(
-            crucible_records::DeletionRequestId::from_bytes([0x0e; 16]),
-            project,
-            node.host.env.clock.wall_now(),
-            "user:test".to_owned(),
-        );
-        node.mark_deleted(project, Some(request.clone())).await;
+const DAY: i64 = 86_400_000_000;
 
-        node.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
-        let done = node.request(request.id).await;
-        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
-        node.assert_purged(project);
-        let day = |back: i64| {
-            route(
-                TableId::SpanCore,
-                Granularity::Day,
-                Timestamp::from_micros(SIM_EPOCH_MICROS - back * DAY),
-            )
-            .unwrap()
-        };
-        let kinds: BTreeMap<PartitionId, ActionKind> = node
-            .pg
+/// The `span_core` partition of the day `back` days before the simulation's epoch.
+fn day(back: i64) -> PartitionId {
+    route(
+        TableId::SpanCore,
+        Granularity::Day,
+        Timestamp::from_micros(SIM_EPOCH_MICROS - back * DAY),
+    )
+    .unwrap()
+}
+
+/// `ingest.max_event_age` in the tests of the drop rule: 5 days.
+fn five_days(config: &mut LifecycleConfig) {
+    config.max_event_age = Duration::from_secs(5 * 86_400);
+}
+
+impl Node {
+    /// How each `span_core` partition of a request was purged: dropped or deleted from.
+    async fn span_core_kinds(
+        &self,
+        request: crucible_records::DeletionRequestId,
+    ) -> BTreeMap<PartitionId, ActionKind> {
+        self.pg
             .lifecycle()
-            .request_actions(request.id)
+            .request_actions(request)
             .await
             .unwrap()
             .into_iter()
             .filter(|action| action.table == TableId::SpanCore)
             .map(|action| (action.partition, action.kind))
-            .collect();
+            .collect()
+    }
+
+    /// The `span_core` rows of a project that reads still see.
+    fn visible(&self, project: ProjectId) -> usize {
+        let at = table(TableId::SpanCore)
+            .columns
+            .iter()
+            .position(|column| column.name == "project_id")
+            .unwrap();
+        self.ch
+            .held_rows(TableId::SpanCore)
+            .iter()
+            .filter(|(_, masked, cells)| !masked && cells[at] == Value::Uuid(project.uuid()))
+            .count()
+    }
+
+    /// Deletes the project as `DELETE projects/{id}` does and waits two mask cycles, by which the purge is complete.
+    async fn delete_and_purge(&self, project: ProjectId, id: u8) -> DeletionRequest {
+        let request = DeletionRequest::project(
+            crucible_records::DeletionRequestId::from_bytes([id; 16]),
+            project,
+            self.host.env.clock.wall_now(),
+            "user:test".to_owned(),
+        );
+        self.mark_deleted(project, Some(request.clone())).await;
+        self.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
+        let done = self.request(request.id).await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        self.assert_purged(project);
+        done
+    }
+}
+
+/// Contract 13.4: a project deletion drops a partition only when the partition ends before the oldest instant at which
+/// any project, live or made later, can still write, and every project with rows there is deleted. With
+/// `ingest.max_event_age` at 5 days and the one live project made now, keeping everything, the deleted project's
+/// partition of ten days ago is dropped, while those of two days ago and of today, which the live project can still
+/// write to, get deletes of the deleted project's rows. (The rule before kept every partition from being dropped while
+/// a project that keeps everything lived.)
+#[test]
+fn a_project_deletion_drops_a_partition_only_where_no_project_can_write_any_more() {
+    directed_with(five_days, |node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.pg
+            .projects()
+            .insert(&made(2, "Two", SIM_EPOCH_MICROS))
+            .await
+            .unwrap();
+        for (tag, back) in [(1, 10), (2, 2), (3, 0)] {
+            node.ingest_at(tag, 0..2, SIM_EPOCH_MICROS - back * DAY)
+                .await;
+        }
+        node.sleep(Duration::from_secs(2)).await;
+        let done = node.delete_and_purge(project, 0x0e).await;
         assert_eq!(
-            kinds,
+            node.span_core_kinds(done.id).await,
             BTreeMap::from([
                 (day(10), ActionKind::Drop),
                 (day(2), ActionKind::Delete),
                 (day(0), ActionKind::Delete),
             ])
         );
+    });
+}
+
+/// Contract 13.4: a live project made forty days ago can still write a row that starts up to `max_event_age` before it
+/// was made, whenever it ships: a span it took back then and ships now, or a fact on one of its old spans, which takes
+/// that span's start. So the deleted project's partition of ten days ago, though it ends more than `max_event_age`
+/// before now, is not dropped. Such a row of the old project lands there just as the purge reaches the store, and it
+/// stays.
+#[test]
+fn a_project_made_long_ago_keeps_every_partition_it_can_still_write_to() {
+    directed_with(five_days, |node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        let old = made(2, "Old", SIM_EPOCH_MICROS - 40 * DAY).id;
+        node.pg
+            .projects()
+            .insert(&made(2, "Old", SIM_EPOCH_MICROS - 40 * DAY))
+            .await
+            .unwrap();
+        node.ingest_at(1, 0..2, SIM_EPOCH_MICROS - 10 * DAY).await;
+        node.ingest_at(3, 0..2, SIM_EPOCH_MICROS).await;
+        node.sleep(Duration::from_secs(2)).await;
+        let (ch, landed) = (node.ch.clone(), Arc::new(AtomicU32::new(0)));
+        node.hooked.set_hook(Arc::new(move |table_id, partition| {
+            let (ch, landed) = (ch.clone(), Arc::clone(&landed));
+            Box::pin(async move {
+                if table_id == TableId::SpanCore
+                    && partition == day(10)
+                    && landed.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    let start = SIM_EPOCH_MICROS - 10 * DAY + 3_600_000_000;
+                    land_span(&ch, old, 9, Timestamp::from_micros(start), 1).await;
+                }
+            })
+        }));
+        let done = node.delete_and_purge(project, 0x0c).await;
+        assert_eq!(
+            node.span_core_kinds(done.id).await,
+            BTreeMap::from([(day(10), ActionKind::Delete), (day(0), ActionKind::Delete)])
+        );
+        assert_eq!(node.visible(old), 1, "the old project's row is gone");
+    });
+}
+
+/// Contract 13.4: a project made while a deletion runs keeps its rows. With no live project, the rule before dropped
+/// every partition of the deleted project, today's included, so a project made between that decision and the drop
+/// lost what it wrote today. Now today's partition, which a project made at any later moment can write to, gets a
+/// delete of the deleted project's rows, and the new project's row, which lands just before that purge reaches the
+/// store, stays; the partition of ten days ago, before the reach of every project, is dropped.
+#[test]
+fn a_project_made_while_a_deletion_runs_keeps_its_rows() {
+    directed_with(five_days, |node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest_at(1, 0..2, SIM_EPOCH_MICROS - 10 * DAY).await;
+        node.ingest_at(3, 0..2, SIM_EPOCH_MICROS).await;
+        node.sleep(Duration::from_secs(2)).await;
+        let newer = made(5, "Five", SIM_EPOCH_MICROS);
+        let (ch, pg, clock) = (
+            node.ch.clone(),
+            node.pg.clone(),
+            Arc::clone(&node.host.env.clock),
+        );
+        let landed = Arc::new(AtomicU32::new(0));
+        let id = newer.id;
+        node.hooked.set_hook(Arc::new(move |table_id, partition| {
+            let (ch, pg, clock, landed) = (ch.clone(), pg.clone(), clock.clone(), Arc::clone(&landed));
+            let newer = newer.clone();
+            Box::pin(async move {
+                if table_id == TableId::SpanCore
+                    && partition == day(0)
+                    && landed.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    pg.projects().insert(&newer).await.unwrap();
+                    land_span(&ch, newer.id, 9, clock.wall_now(), 1).await;
+                }
+            })
+        }));
+        let done = node.delete_and_purge(project, 0x0b).await;
+        assert_eq!(
+            node.span_core_kinds(done.id).await,
+            BTreeMap::from([(day(10), ActionKind::Drop), (day(0), ActionKind::Delete)])
+        );
+        assert_eq!(node.visible(id), 1, "the new project's row is gone");
     });
 }
 

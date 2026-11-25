@@ -135,7 +135,7 @@ pub enum Mutant {
     DropSharedPartitions,
     /// A project deletion drops a partition in which every project with rows is deleted although a live project
     /// can still write rows there.
-    DropWithinReach,
+    DropWithinEventAge,
 }
 
 /// What one run does.
@@ -2105,8 +2105,8 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
         Some(Mutant::DropSharedPartitions) => {
             config.with_mutant(crucible_lifecycle::Mutant::DropSharedPartitions)
         }
-        Some(Mutant::DropWithinReach) => {
-            config.with_mutant(crucible_lifecycle::Mutant::DropWithinReach)
+        Some(Mutant::DropWithinEventAge) => {
+            config.with_mutant(crucible_lifecycle::Mutant::DropWithinEventAge)
         }
     }
 }

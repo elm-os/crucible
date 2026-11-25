@@ -193,7 +193,7 @@ fn reaching_mcp_rows_only_by_trace_is_caught() {
 #[test]
 fn dropping_partitions_that_a_live_project_can_still_write_to_is_caught() {
     let options = Options {
-        mutant: Some(Mutant::DropWithinReach),
+        mutant: Some(Mutant::DropWithinEventAge),
         ..Options::CALM
     };
     let caught = catching(8_000..8_006, options, "I9:");

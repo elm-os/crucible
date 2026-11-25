@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use crucible_schema::Granularity;
 
+/// The default of `ingest.max_event_age` (contract 1.2): 400 days.
+pub const DEFAULT_MAX_EVENT_AGE: Duration = Duration::from_secs(400 * 86_400);
+
 /// A seeded defect. The simulation suite switches each one on and must catch it.
 ///
 /// Without the cargo feature `test-mutants` this type has no value, so no defect can be switched on. Only
@@ -27,10 +30,16 @@ pub enum Mutant {
     /// A project deletion drops every partition it reaches, whatever other projects hold rows there.
     #[cfg(feature = "test-mutants")]
     DropSharedPartitions,
-    /// A project deletion drops a partition in which every project with rows is deleted although a live project
-    /// can still write rows there: the rule before the live projects' retention horizons were consulted.
+    /// A project deletion drops a partition in which every project with rows is deleted without the event-age
+    /// bound, although a live project can still write rows there.
     #[cfg(feature = "test-mutants")]
-    DropWithinReach,
+    DropWithinEventAge,
+    /// The purge sweep never runs, so rows of a deleted project that land after its purge stay.
+    #[cfg(feature = "test-mutants")]
+    SweepDisabled,
+    /// The purge sweep removes the rows it finds without the project predicate: it drops their partition.
+    #[cfg(feature = "test-mutants")]
+    SweepWithoutProject,
 }
 
 /// The settings of the lifecycle jobs.
@@ -52,13 +61,21 @@ pub struct LifecycleConfig {
     pub granularity: Granularity,
     /// How many definite failures an action survives before it is given up as `failed`.
     pub max_attempts: u32,
-    /// How far behind the database clock the retention executor computes its cut-offs and the deletion executor
-    /// the live projects' retention horizons, so that neither removes a row that a node with a slower clock still
-    /// serves or still takes.
+    /// How far a node's clock may be from the database clock. The retention executor computes its cut-offs this
+    /// far behind the database clock, so that it removes no row that a node with a slower clock still serves, and
+    /// a project deletion takes it into the instant before which no project can write, the end of what it may drop.
     pub clock_margin: Duration,
     /// Whether the deployment stores media (an object store is configured): a completed deletion request
     /// then reports the media place `done`, otherwise `not_present`.
     pub media: bool,
+    /// `ingest.max_event_age` (contract 1.2): ingest takes no span that starts longer than this before it arrives,
+    /// so a project deletion may drop a partition only where no project can write any more. The binary passes the
+    /// value its ingest runs with.
+    pub max_event_age: Duration,
+    /// How often the purge sweep looks again for rows of each project deleted in the last
+    /// [`SWEEP_RECENT`](crate::SWEEP_RECENT); older deletions are looked at every
+    /// [`SWEEP_OLD_PERIODS`](crate::SWEEP_OLD_PERIODS) of these.
+    pub sweep_every: Duration,
     pub(crate) mutant: Option<Mutant>,
 }
 
@@ -74,6 +91,8 @@ impl Default for LifecycleConfig {
             max_attempts: 8,
             clock_margin: Duration::from_secs(3_600),
             media: false,
+            max_event_age: DEFAULT_MAX_EVENT_AGE,
+            sweep_every: Duration::from_secs(3_600),
             mutant: None,
         }
     }
@@ -128,10 +147,26 @@ impl LifecycleConfig {
         false
     }
 
-    /// Whether a project deletion drops partitions that a live project can still write to (a seeded defect).
-    pub(crate) fn drops_within_reach(&self) -> bool {
+    /// Whether a project deletion drops partitions without the event-age bound (a seeded defect).
+    pub(crate) fn drops_within_event_age(&self) -> bool {
         #[cfg(feature = "test-mutants")]
-        return self.mutant == Some(Mutant::DropWithinReach);
+        return self.mutant == Some(Mutant::DropWithinEventAge);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether the purge sweep does nothing (a seeded defect).
+    pub(crate) fn skips_sweep(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::SweepDisabled);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether the purge sweep drops the partitions it finds rows in (a seeded defect).
+    pub(crate) fn sweeps_without_project(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::SweepWithoutProject);
         #[cfg(not(feature = "test-mutants"))]
         false
     }

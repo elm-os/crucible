@@ -12,9 +12,8 @@
 //! - a logged project deletion is planned a table at a time instead: every table of the project, one purge per
 //!   partition that holds the project's rows, whatever their arrival (the project takes no new data once
 //!   deleted). Each time a purge is sent it is decided again whether it drops the partition or deletes the
-//!   project's rows from it: it drops only when every project with rows there is deleted and no live project
-//!   can still write there, because the partition lies before every live project's retention horizon or no
-//!   project is live ([`Purges::kind`]);
+//!   project's rows from it: it drops only when the partition ends before every project, live or made later, can
+//!   write ([`write_horizon`]) and every project with rows there is deleted ([`Purges::kind`]);
 //! - a deleted project without a project deletion request, deleted before deleting a project made one, gets one
 //!   at the start of every run, so an upgrade purges the projects deleted before it;
 //! - it is `applied` when every delete has finished, `verified` when every delete is verified after the mask
@@ -27,16 +26,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crucible_auth::stored_project_scope;
 use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
-    RetentionFloor, TxError, duration_micros,
+    TxError, duration_micros,
 };
 use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
-    DELETION_TRACES_PAGE, RetentionClamp, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value,
+    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value,
     deletion_issuers, deletion_traces, lifecycle_column, lifecycle_days,
 };
 use crucible_records::{
@@ -54,7 +54,6 @@ use crate::reach::{
     CONTROL_PLANE, EXPORT_FILES, MEDIA, OTHER_PLACES, Reach, final_reach, identity_reach,
     page_reach, project_reach,
 };
-use crate::retention;
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
@@ -176,45 +175,42 @@ fn resolved(rows: &[Row]) -> Vec<(TraceId, Timestamp, Timestamp)> {
         .collect()
 }
 
-/// Whether a partition that ends at `end` is out of every live project's reach. Each live project is given by
-/// its retention horizon, `None` for one that keeps its data forever. Ingest refuses a span that starts before
-/// its project's horizon, and a fact takes the time of a target that a read clamped to the horizon found
-/// (contract 1.2), so no live project writes a row before its horizon. True when no project is live.
-pub(crate) fn out_of_reach(end: Timestamp, horizons: &[Option<Timestamp>]) -> bool {
-    horizons
-        .iter()
-        .all(|horizon| horizon.is_some_and(|horizon| end <= horizon))
+/// When a project was made: the time of its UUIDv7 id, which `Env::new_id` mints from the clock of the node that
+/// makes the project (contract 1.1). An id of another form gives the epoch, which keeps every partition from being
+/// dropped while that project lives.
+fn made_at(project: ProjectId) -> Timestamp {
+    project.uuid().v7_parts().map_or(Timestamp::EPOCH, |(millis, _)| {
+        Timestamp::from_micros(
+            i64::try_from(millis)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1_000),
+        )
+    })
 }
 
-/// The retention horizon of every live project: the first instant of `span_core` that its reads keep, never
-/// below its floor, which ingest takes from the same settings (contract 1.2); `None` for a project that keeps
-/// its data forever, or whose settings give no cut-off. Taken a clock margin behind the database clock, as the
-/// retention executor takes its cut-offs, so that a node whose clock is behind takes nothing older.
-async fn horizons(
-    ctx: &LeaderCtx,
-    config: &LifecycleConfig,
-) -> Result<Vec<Option<Timestamp>>, JobError> {
-    let store = ctx.store();
-    let now = store
-        .db_now()
-        .await?
-        .saturating_add_micros(-duration_micros(config.clock_margin));
-    let floors: BTreeMap<ProjectId, RetentionFloor> =
-        store.lifecycle().floors().await?.into_iter().collect();
-    Ok(store
-        .projects()
-        .list()
-        .await?
-        .iter()
-        .map(|project| {
-            let floor = floors.get(&project.id).copied().unwrap_or_default();
-            RetentionClamp::new(retention::settings(project), now)
-                .with_floors(retention::floors(floor))
-                .cutoff(TableId::SpanCore)
-                .ok()
-                .flatten()
-        })
-        .collect())
+/// The oldest instant at which a project, live now or made later, can still write a row: the latest end of a
+/// partition that a project deletion may drop (contract 13.4).
+///
+/// Ingest refuses a span that starts more than `ingest.max_event_age` before it arrives (contract 1.2), and spans
+/// place every row: each table holds a row at the start of a span its project sent, a fact at the start of its target,
+/// which is a stored span of the same project (contract 3.8). A span arrives after its project was made, so a live
+/// project writes nothing that starts more than `max_event_age` before it was made, however late a node ships it, and
+/// a project made after `db_now` writes nothing that starts more than `max_event_age` before `db_now`. Each instant is
+/// taken a clock margin earlier for the node that took the span, and a project's making a margin more for the node
+/// that minted its id, so node clocks up to a margin off the database clock change nothing. `db_now` must be read
+/// before the live projects: a project the list misses was made visible after it, so it took no span before then.
+pub(crate) fn write_horizon(
+    db_now: Timestamp,
+    live: impl IntoIterator<Item = ProjectId>,
+    margin: Duration,
+    max_event_age: Duration,
+) -> Timestamp {
+    let margin = duration_micros(margin);
+    live.into_iter()
+        .map(|project| made_at(project).saturating_add_micros(-margin))
+        .fold(db_now, std::cmp::min)
+        .saturating_add_micros(-margin)
+        .saturating_add_micros(-duration_micros(max_event_age))
 }
 
 /// How the purges of a project deletion that one run of the actions sends remove their rows (contract 13.4).
@@ -223,14 +219,17 @@ pub(crate) struct Purges {
     /// Whether each project is deleted, read once per run: a deleted project stays deleted, and a project read
     /// as live only keeps a partition from being dropped.
     gone: BTreeMap<ProjectId, bool>,
+    /// [`write_horizon`], read once per run: as time passes it only moves later, and a project made after the read
+    /// writes nothing before it.
+    horizon: Option<Timestamp>,
 }
 
 impl Purges {
-    /// The kind a purge is sent as: the drop of its partition when every project with rows there is deleted and
-    /// no live project can write rows there any more ([`out_of_reach`]), otherwise the delete of its project's
-    /// rows, which keeps every other project's. It is decided each time the purge is sent, from the partition's
-    /// projects and the live projects as they are then, so a row that a live project wrote into the partition
-    /// after the purge was planned never goes with it. Every other action keeps its kind.
+    /// The kind a purge is sent as: the drop of its partition when the partition ends before every project can
+    /// write ([`write_horizon`]) and every project with rows there is deleted, otherwise the delete of its project's
+    /// rows, which keeps every other project's. It is decided each time the purge is sent. No project, live or made
+    /// later, can write into a partition that ends before the horizon, so nothing that lands after the partition's
+    /// projects are listed goes with a drop. Every other action keeps its kind.
     pub(crate) async fn kind(
         &mut self,
         ctx: &LeaderCtx,
@@ -249,6 +248,9 @@ impl Purges {
         if config.drops_shared_partitions() {
             return Ok(ActionKind::Drop);
         }
+        if !config.drops_within_event_age() && window.to() > self.horizon(ctx, config).await? {
+            return Ok(ActionKind::Delete);
+        }
         // While the store cannot list the partition's projects, the delete is the safe choice.
         let Ok(listed) = shared
             .telemetry
@@ -262,13 +264,28 @@ impl Purges {
                 return Ok(ActionKind::Delete);
             }
         }
-        let out =
-            config.drops_within_reach() || out_of_reach(window.to(), &horizons(ctx, config).await?);
-        Ok(if out {
-            ActionKind::Drop
-        } else {
-            ActionKind::Delete
-        })
+        Ok(ActionKind::Drop)
+    }
+
+    /// [`write_horizon`] over the database clock, then the live projects.
+    async fn horizon(
+        &mut self,
+        ctx: &LeaderCtx,
+        config: &LifecycleConfig,
+    ) -> Result<Timestamp, JobError> {
+        if let Some(horizon) = self.horizon {
+            return Ok(horizon);
+        }
+        let db_now = ctx.store().db_now().await?;
+        let live = ctx.store().projects().list().await?;
+        let horizon = write_horizon(
+            db_now,
+            live.iter().map(|project| project.id),
+            config.clock_margin,
+            config.max_event_age,
+        );
+        self.horizon = Some(horizon);
+        Ok(horizon)
     }
 
     /// Whether a project is deleted. A project the control store does not have counts as live.
@@ -1065,35 +1082,76 @@ mod tests {
         Timestamp::from_micros(n * DAY)
     }
 
-    /// A partition is out of reach only when it ends at or before the horizon of every live project: a project
-    /// that keeps its data forever reaches every partition, and with no project live nothing can arrive.
+    fn made(day_number: i64, n: u8) -> ProjectId {
+        let millis = u64::try_from(day(day_number).micros() / 1_000).unwrap();
+        ProjectId::from_uuid(crucible_records::Uuid::from_v7_parts(millis, u128::from(n)))
+    }
+
+    /// The horizon is `max_event_age` and a clock margin before the database clock with no live project, and
+    /// `max_event_age` and two margins before the making of the oldest live project when that is earlier; an id that is
+    /// not a UUIDv7 keeps every partition.
     #[test]
-    fn a_partition_is_out_of_reach_only_before_every_live_horizon() {
-        assert!(out_of_reach(day(10), &[]));
-        assert!(out_of_reach(day(10), &[Some(day(10)), Some(day(12))]));
-        assert!(!out_of_reach(day(11), &[Some(day(10)), Some(day(12))]));
-        assert!(!out_of_reach(day(1), &[Some(day(12)), None]));
+    fn the_write_horizon_is_before_the_oldest_live_project_and_before_now() {
+        let hour = Duration::from_secs(3_600);
+        let age = Duration::from_secs(5 * 86_400);
+        let hours = |n: i64| n * 3_600_000_000;
+        let now = day(100);
+        assert_eq!(
+            write_horizon(now, [], hour, age),
+            day(95).saturating_add_micros(-hours(1))
+        );
+        assert_eq!(
+            write_horizon(now, [made(40, 1), made(90, 2)], hour, age),
+            day(35).saturating_add_micros(-hours(2))
+        );
+        // A project made just now still counts a margin for the node that minted its id.
+        assert_eq!(
+            write_horizon(now, [made(100, 3)], hour, age),
+            day(95).saturating_add_micros(-hours(2))
+        );
+        assert!(write_horizon(now, [ProjectId::from_bytes([1; 16])], hour, age) < Timestamp::EPOCH);
     }
 
     proptest! {
-        /// Out of reach is exactly "no live project can still write a row that starts inside the partition":
-        /// ingest takes a span that starts at or after its project's horizon, and anything from a project
-        /// without one, so the latest instant before the partition's end is refused for every live project.
+        /// No project writes into a partition that ends at or before the horizon: neither a live project, whose spans
+        /// arrive after it was made, however late they are shipped, nor a project made after the database clock was
+        /// read, with every node's clock at most a margin off the database clock.
         #[test]
-        fn out_of_reach_means_ingest_refuses_every_live_project_there(
-            end in 1i64..100,
-            horizons in prop::collection::vec(prop::option::of(0i64..100), 0..6),
+        fn no_project_writes_before_the_write_horizon(
+            now in 2_000i64..4_000,
+            live in prop::collection::vec((0i64..4_000, -60i64..=60), 0..4),
+            later in 0i64..500,
+            age_days in 1i64..400,
+            arrives_after in 0i64..2_000,
+            skew in -60i64..=60,
+            margin_minutes in 60i64..120,
         ) {
-            let horizons: Vec<Option<Timestamp>> =
-                horizons.into_iter().map(|horizon| horizon.map(day)).collect();
-            let takes = |horizon: &Option<Timestamp>, start: Timestamp| {
-                horizon.is_none_or(|horizon| start >= horizon)
-            };
-            let last = day(end).saturating_add_micros(-1);
-            prop_assert_eq!(
-                out_of_reach(day(end), &horizons),
-                horizons.iter().all(|horizon| !takes(horizon, last))
-            );
+            let minute = 60_000_000_i64;
+            let margin = Duration::from_secs(u64::try_from(margin_minutes * 60).unwrap());
+            let age = Duration::from_secs(u64::try_from(age_days * 86_400).unwrap());
+            let at = |days: i64| day(days);
+            // Each live project was made at a true instant; the node that minted its id ran up to an hour off.
+            let ids: Vec<ProjectId> = live
+                .iter()
+                .enumerate()
+                .map(|(n, (made_day, id_skew))| {
+                    let minted = at(*made_day).min(at(now)).saturating_add_micros(id_skew * minute);
+                    let millis = u64::try_from(minted.micros().max(0) / 1_000).unwrap();
+                    ProjectId::from_uuid(crucible_records::Uuid::from_v7_parts(millis, n as u128))
+                })
+                .collect();
+            let horizon = write_horizon(at(now), ids.iter().copied(), margin, age);
+            // A span of any of them, or of a project made after `now`, arrives at a node whose clock is up to an hour
+            // off and starts no earlier than ingest takes it; a fact takes the start of such a span.
+            let mut made_days: Vec<i64> = live.iter().map(|(made_day, _)| (*made_day).min(now)).collect();
+            made_days.push(now + later);
+            for made_day in made_days {
+                let arrival = at(made_day).saturating_add_micros(arrives_after * minute);
+                let earliest = arrival
+                    .saturating_add_micros(skew * minute)
+                    .saturating_add_micros(-duration_micros(age));
+                prop_assert!(earliest >= horizon, "a row at {earliest} is before the horizon {horizon}");
+            }
         }
     }
 

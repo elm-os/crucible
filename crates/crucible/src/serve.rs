@@ -442,6 +442,7 @@ async fn open_app(
             Arc::new(control.store.clone()),
             wal.clone(),
             media.map(NodeMedia::export_objects),
+            ingest.max_event_age,
         ))
     });
     // Ingest rejects spans older than their project's retention horizon (contract 1.2).
@@ -2357,7 +2358,13 @@ mod tests {
         );
         crate::identity::start_tasks(env, &identity, Arc::clone(&store));
         let (wal, _) = Wal::open(env, WalConfig::default()).await.unwrap();
-        let lifecycle = Lifecycle::new(env, Arc::clone(&store), wal, None);
+        let lifecycle = Lifecycle::new(
+            env,
+            Arc::clone(&store),
+            wal,
+            None,
+            crucible_ingest::DEFAULT_MAX_EVENT_AGE,
+        );
         let evaluator =
             crucible_alerts::Evaluator::new(Arc::new(crate::alerts::LateSource::default()));
         let jobs = crate::jobs::start(
