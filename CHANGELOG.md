@@ -31,8 +31,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The trace page is titled with the trace name when one is set, as the trace list names the trace, with the root
   span's name below it, and its header shows the trace's user and session, each linked to its page, its environment
   and its release. In 0.1.3 the page showed only the root span's name.
-- The span panel's Attributes and Events tabs read "No attributes were recorded." and "No events were recorded.",
-  and "This span's events aren't stored." when the payload has expired.
+- The span panel's Attributes and Events tabs say "No attributes were recorded.", "No events were recorded." and
+  "This span's events aren't stored.", in place of "was recorded" and "isn't stored".
 - The span panel's Input and Output tabs say "The input was cut at the size limit, so it shows as text." only for a
   field the span reports as cut, and label other text "Text". In 0.1.3 every text value carried a notice that it
   might be JSON cut at the size limit.
