@@ -50,7 +50,7 @@ The tag runs three workflows:
 
 | Workflow | Publishes |
 |---|---|
-| `release.yml` (cargo-dist, configured in `dist-workspace.toml`) | The GitHub release, with the `crucible` binary for seven targets as archives with checksums, a shell installer (`crucible-installer.sh`) and a PowerShell installer (`crucible-installer.ps1`) |
+| `release.yml` (cargo-dist, configured in `dist-workspace.toml`) | The GitHub release, with the `crucible` binary for seven targets as archives with checksums, a shell installer (`crucible-installer.sh`), a PowerShell installer (`crucible-installer.ps1`) and `dist-manifest.json`, cargo-dist's description of the release |
 | `docker.yml` | `ghcr.io/elm-os/crucible` for linux/amd64 and linux/arm64, with SBOM and provenance attestations, tagged `X.Y.Z`, `X.Y` and `latest`; a pre-release gets only its own tag |
 | `sdk-release.yml` | The SDK packages on the GitHub release: `elm-os-crucible-X.Y.Z.tgz` (TypeScript), `crucible_sdk-X.Y.Z-py3-none-any.whl` and `crucible_sdk-X.Y.Z.tar.gz` (Python) and `crucible-sdk-X.Y.Z.crate` (Rust); the Go module tag `sdk/go/vX.Y.Z` on the release commit; and each registry that [Registry setup](#registry-setup) turns on |
 
@@ -66,6 +66,21 @@ go list -m github.com/elm-os/crucible/sdk/go@vX.Y.Z
 ```
 
 The image package on GHCR is public, so the pull works without signing in.
+
+Check that the release lists `dist-manifest.json`. This prints its name, or nothing when it is missing:
+
+```sh
+gh release view vX.Y.Z --repo elm-os/crucible --json assets --jq '.assets[].name | select(. == "dist-manifest.json")'
+```
+
+If it is missing, attach the copy that the release run stored as the artifact `artifacts-dist-manifest`. The first
+command lists the run of the tag; use its ID in the second:
+
+```sh
+gh run list --repo elm-os/crucible --workflow release.yml --branch vX.Y.Z
+gh run download <run ID> --repo elm-os/crucible -n artifacts-dist-manifest
+gh release upload vX.Y.Z dist-manifest.json --repo elm-os/crucible
+```
 
 If an `sdk-release.yml` job fails, fix the cause and run the workflow again from the tag: on the Actions tab, open
 sdk-release, choose Run workflow and pick the tag under "Use workflow from", or run

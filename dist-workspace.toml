@@ -27,6 +27,10 @@ include = ["THIRD_PARTY_NOTICES"]
 github-build-setup = "../build-setup.yml"
 # Release runs start only from a tag.
 pr-run-mode = "skip"
+# The announce job creates the GitHub release, once the host job has ended. Created in the host job, the release
+# took the run's artifacts from a listing made 0.3 s after that job uploaded dist-manifest.json, which missed it,
+# so v0.1.1, v0.1.2 and v0.1.3 were published without the manifest.
+github-release = "announce"
 
 # The actions the generated workflow uses, pinned by commit like every other workflow here.
 [dist.github-action-commits]

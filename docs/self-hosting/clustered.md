@@ -126,7 +126,10 @@ the first start ([adding a replica](#adding-a-replica)).
 1. Set up every replica the cluster will have, each as the list below says. Crucible creates its tables, users and
    row policies only on the replicas that are in the cluster when it first migrates, and nothing on a replica added
    later ([adding a replica](#adding-a-replica)).
-2. Set `clickhouse.url` and `clickhouse.cluster`, as the table below says.
+2. Set `clickhouse.url` and `clickhouse.cluster`, as the table below says, and give the deployment a Postgres
+   database of its own. The migrations ledger in the database of a deployment on another ClickHouse, such as a
+   single-server one, records steps that created service users the cluster does not hold, and Crucible refuses it
+   and names the fix ([troubleshooting](troubleshooting.md#the-server-is-not-ready)).
 3. Start Crucible once with `--migrate`, or run `crucible migrate`. It checks the cluster first and, when something is
    missing, refuses with a message that names what to change; otherwise it creates its databases, tables, users and
    row policies on every replica.
@@ -139,9 +142,10 @@ The two settings ([configuration](configuration.md#clickhouse)):
 | `clickhouse.cluster` (`CRUCIBLE_CLICKHOUSE_CLUSTER`, `--clickhouse-cluster`) | The cluster's name in `remote_servers` |
 
 The cluster needs the following. Before any statement runs on the cluster, Crucible checks the shard, the secret,
-Keeper, the macros, the server setting and the tables on the replica it talks to, and refuses to start with a message
-that names what to change. It checks the version and the settings once it has migrated, as on a single server. A
-replica without the admin user fails the first `ON CLUSTER` statement with that replica's error.
+Keeper, the macros and the server setting on the replica it talks to, and the tables on every replica that answers,
+and refuses to start with a message that names what to change. It checks the version and the settings once it has
+migrated, as on a single server. A replica without the admin user fails the first `ON CLUSTER` statement with that
+replica's error.
 
 - **One shard.** The named cluster has one shard with two or more replicas. A cluster of several shards is refused.
 - **A cluster secret.** The cluster's entry in `remote_servers` holds a `<secret>` on every replica, so a query that
@@ -157,8 +161,11 @@ replica without the admin user fails the first `ON CLUSTER` statement with that 
   ([your own ClickHouse](README.md#your-own-clickhouse-and-postgres)). Crucible creates its service users and the
   SQL workspace's users on every replica with it, and runs its checks of the cluster as it: they read
   `system.clusters`, `system.macros` and `system.zookeeper`, and send statements to every replica.
-- **No single-server tables.** The database `crucible` is empty or absent: Crucible creates its tables. Tables that
-  are not replicated, such as those of a single-server deployment, are refused, and Crucible does not convert them.
+- **No single-server tables.** The database `crucible` is empty or absent on every replica: Crucible creates its
+  tables. Tables that are not replicated, such as those of a single-server deployment, are refused on any replica,
+  and the refusal names the replica and its tables. Crucible does not convert them, and its `ON CLUSTER` statements
+  would leave them as they are on that replica. Put an empty replica in its place, or drop the database on it
+  (`DROP DATABASE crucible SYNC`, which deletes its rows).
 - **ClickHouse 26.3 or newer**, with the settings Crucible sends, as on a single server.
 
 A `remote_servers` entry with all of this, on every replica:

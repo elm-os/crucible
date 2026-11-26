@@ -4,6 +4,19 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- With `clickhouse.cluster` set, a start refuses tables created for a single server on any replica that answers,
+  before any statement runs on the cluster, and names the replica, its tables and the fix. In 0.1.3 the check read
+  only the replica that `clickhouse.url` names, and the `ON CLUSTER` statements left another replica's
+  single-server tables as they were.
+- When the migrations ledger in Postgres records the step that creates Crucible's ClickHouse service users and
+  ClickHouse holds none of them, as with a new cluster given a single-server deployment's Postgres, `crucible
+  migrate` exits with 1 and a start stays not ready, both saying so and naming the fix: a Postgres database of its
+  own for the new ClickHouse, or an empty ledger. `crucible migrate` blamed the master key in 0.1.3, or reported the
+  migrations applied when no step had changed; a wrong master key keeps its own message.
+- On a cluster with a replica down, each read of every replica (the existence probe, the checks of a deletion and of
+  a partition drop, and the check before each migration step) tries the stopped replica once instead of three times,
+  so it waits for one connection attempt instead of three.
+
 ## [0.1.3] - 2026-11-26
 
 Crucible stores telemetry on a self-hosted replicated ClickHouse cluster as well as on a single server, and the SDKs

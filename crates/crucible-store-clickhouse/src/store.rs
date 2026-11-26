@@ -66,7 +66,7 @@ fn migration_deadline(step: &MigrationStep) -> Duration {
 
 /// Every query-level setting this crate sends, apart from the per-insert settings of
 /// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
-pub const QUERY_SETTINGS: [&str; 24] = [
+pub const QUERY_SETTINGS: [&str; 25] = [
     "max_execution_time",
     "max_memory_usage",
     "max_rows_to_read",
@@ -88,6 +88,7 @@ pub const QUERY_SETTINGS: [&str; 24] = [
     "distributed_ddl_task_timeout",
     // The reads of every replica in a cluster, and the replicated changes that a replica that is down has not run.
     "skip_unavailable_shards",
+    "connections_with_failover_max_tries",
     "replication_wait_for_inactive_replica_timeout",
     // The copy of the hourly schema step (`crucible_schema::schema_mcp_tool_rollup_hourly`).
     "max_bytes_before_external_group_by",
@@ -358,25 +359,32 @@ fn table_present(database: &str, name: &str) -> String {
     format!("(SELECT count() FROM system.tables WHERE database = {database} AND name = {name})")
 }
 
+/// One replica in a cluster, from the server's `remote_servers`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Replica {
+    /// Its shard's number.
+    shard: u64,
+    /// `host:port`.
+    host: String,
+    /// Whether it is the server the store talks to (`is_local` in `system.clusters`).
+    local: bool,
+}
+
 /// The replicas (`host:port`, in the order of `remote_servers`) that are not among those that `answered`, each of
 /// which is its place in `remote_servers` (1 for the first) and a user.
-fn silent(replicas: &[(u64, String)], answered: &[(usize, String)]) -> Vec<String> {
+fn silent(replicas: &[Replica], answered: &[(usize, String)]) -> Vec<String> {
     replicas
         .iter()
         .enumerate()
         .filter(|(n, _)| !answered.iter().any(|(place, _)| *place == n + 1))
-        .map(|(_, (_, host))| host.clone())
+        .map(|(_, replica)| replica.host.clone())
         .collect()
 }
 
 /// When a replica ran a statement that `user` sent to every replica as another user, says so: queries that one
 /// replica sends to another then run as the user that `remote_servers` names, because the cluster has no
 /// `<secret>`, and that user's grants and row policies are not those of the identity that sent them.
-fn foreign_user(
-    user: &str,
-    replicas: &[(u64, String)],
-    answered: &[(usize, String)],
-) -> Option<String> {
+fn foreign_user(user: &str, replicas: &[Replica], answered: &[(usize, String)]) -> Option<String> {
     answered
         .iter()
         .find(|(_, ran_as)| ran_as != user)
@@ -384,7 +392,7 @@ fn foreign_user(
             let host = place
                 .checked_sub(1)
                 .and_then(|n| replicas.get(n))
-                .map_or("a replica", |(_, host)| host.as_str());
+                .map_or("a replica", |replica| replica.host.as_str());
             format!("{host} ran a statement that {user} sent as user {ran_as}")
         })
 }
@@ -392,6 +400,56 @@ fn foreign_user(
 /// `clusterAllReplicas('<cluster>', view(<select>))`: `select` on every replica, one answer row each.
 fn on_every_replica(cluster: &Ident, select: &str) -> String {
     format!("clusterAllReplicas('{cluster}', view({select}))")
+}
+
+/// What one replica in a cluster holds in database `crucible`, from a statement sent to every replica.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ReplicaHoldings {
+    /// The replica, as `host:port`.
+    pub replica: String,
+    /// Whether it is the replica the store talks to, the one `clickhouse.url` names.
+    pub local: bool,
+    /// Its tables of database `crucible` whose engine is not replicated, by name: tables created for a single
+    /// server, which `CREATE TABLE IF NOT EXISTS ... ON CLUSTER` leaves as they are.
+    pub unreplicated: Vec<String>,
+    /// How many of the four generated service users (contract 7.1) it holds.
+    pub service_users: u64,
+}
+
+/// The holdings in the answer of [`ClickHouseStore::holdings`]: one line per replica that answered, its place in
+/// `remote_servers` (1 for the first), its unreplicated tables, comma-separated, and its service users.
+fn holdings(answer: &str, replicas: &[Replica]) -> Result<Vec<ReplicaHoldings>, StoreError> {
+    let unexpected = || unexpected("the holdings of every replica", answer);
+    lines(answer)
+        .into_iter()
+        .filter(|line| line != &[""])
+        .map(|line| {
+            let [place, unreplicated, service_users] = line.as_slice() else {
+                return Err(unexpected());
+            };
+            let replica = place
+                .parse::<usize>()
+                .ok()
+                .and_then(|place| place.checked_sub(1))
+                .and_then(|n| replicas.get(n))
+                .ok_or_else(unexpected)?;
+            Ok(ReplicaHoldings {
+                replica: replica.host.clone(),
+                local: replica.local,
+                unreplicated: unreplicated
+                    .split(',')
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                service_users: service_users.parse().map_err(|_| unexpected())?,
+            })
+        })
+        .collect()
+}
+
+/// The names of the four generated service users.
+fn service_user_names() -> [&'static str; 4] {
+    ServiceIdentity::GENERATED.map(ServiceIdentity::name)
 }
 
 /// What the startup checks of a replicated deployment read through the replica the store talks to, as
@@ -410,8 +468,9 @@ pub struct ClusterFacts {
     pub keeper: Option<String>,
     /// The server setting `distributed_ddl_use_initial_user_and_roles`, which `ON CLUSTER` text-index DDL needs.
     pub ddl_initial_user_and_roles: bool,
-    /// The tables of database `crucible` whose engine is not replicated, by name.
-    pub unreplicated: Vec<String>,
+    /// What each replica that answered holds, in the order of `remote_servers`. Read only once the replicas run
+    /// a statement sent to all of them as the user who sent it (`fan_out` is `None`), so empty otherwise.
+    pub holdings: Vec<ReplicaHoldings>,
     /// Why the replicas cannot run a statement sent to all of them as the user who sent it: the statement failed,
     /// or a replica ran it as another user. A replica that is down does not fail it.
     pub fan_out: Option<String>,
@@ -897,22 +956,20 @@ impl ClickHouseStore {
         statement: Statement,
     ) -> Result<String, StoreError> {
         let mut statement = statement;
-        statement
-            .settings
-            .push(("skip_unavailable_shards", "1".to_owned()));
+        render::every_replica(&mut statement, true);
         self.lookup(identity, &statement).await
     }
 
-    /// The replicas of `cluster` as `host:port`, in the order of `remote_servers`, with their shard numbers.
-    async fn cluster_replicas(&self, cluster: &Ident) -> Result<Vec<(u64, String)>, StoreError> {
+    /// The replicas of `cluster`, in the order of `remote_servers`.
+    async fn cluster_replicas(&self, cluster: &Ident) -> Result<Vec<Replica>, StoreError> {
         let mut b = Binder::default();
         let name = b.string(cluster.as_str());
         let answer = self
             .lookup(
                 ServiceIdentity::Admin,
                 &b.finish(format!(
-                    "SELECT shard_num, host_name, port FROM system.clusters WHERE cluster = {name} ORDER BY \
-                     shard_num, replica_num"
+                    "SELECT shard_num, host_name, port, is_local FROM system.clusters WHERE cluster = {name} \
+                     ORDER BY shard_num, replica_num"
                 )),
             )
             .await?;
@@ -920,9 +977,13 @@ impl ClickHouseStore {
             .into_iter()
             .filter(|line| line != &[""])
             .map(|line| match line.as_slice() {
-                [shard, host, port] => shard
+                [shard, host, port, local] => shard
                     .parse()
-                    .map(|shard| (shard, format!("{host}:{port}")))
+                    .map(|shard| Replica {
+                        shard,
+                        host: format!("{host}:{port}"),
+                        local: *local == "1",
+                    })
                     .map_err(|_| unexpected("system.clusters", &answer)),
                 _ => Err(unexpected("system.clusters", &answer)),
             })
@@ -979,16 +1040,78 @@ impl ClickHouseStore {
     async fn silent_replicas(
         &self,
         cluster: &Ident,
-        replicas: &[(u64, String)],
+        replicas: &[Replica],
     ) -> Result<Vec<String>, StoreError> {
         let answered = self.answering_replicas(cluster).await?;
         Ok(silent(replicas, &answered))
     }
 
+    /// What each replica in `cluster` that answers holds in database `crucible`, from one statement sent to every
+    /// replica as `crucible_admin`, in the order of `remote_servers`.
+    async fn holdings(
+        &self,
+        cluster: &Ident,
+        replicas: &[Replica],
+    ) -> Result<Vec<ReplicaHoldings>, StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let replicated = b.string("Replicated");
+        let users = b.strings(&service_user_names());
+        // Two aggregates joined, not scalar subqueries, so that each replica reads its own system tables.
+        let select = format!(
+            "SELECT unreplicated, service_users FROM (SELECT arrayStringConcat(arraySort(groupArrayIf(name, NOT \
+             startsWith(engine, {replicated}))), ',') AS unreplicated FROM system.tables WHERE database = \
+             {database}) AS tables CROSS JOIN (SELECT count() AS service_users FROM system.users WHERE has({users}, \
+             name)) AS users"
+        );
+        let statement = b.finish(format!(
+            "SELECT _shard_num, unreplicated, service_users FROM {} ORDER BY _shard_num",
+            on_every_replica(cluster, &select)
+        ));
+        let answer = self
+            .every_replica_lookup(ServiceIdentity::Admin, statement)
+            .await?;
+        holdings(&answer, replicas)
+    }
+
+    /// The cluster of a replicated deployment (`clickhouse.cluster`), when one is configured.
+    pub fn cluster(&self) -> Option<&Ident> {
+        self.inner.config.cluster.as_ref()
+    }
+
+    /// How many of the four generated service users (contract 7.1) the store holds, read as `crucible_admin`: those
+    /// of the server it talks to, or, with a cluster configured and none there, those of the replica that answers
+    /// with the most. Only that second read goes to every replica, so a start reads one server when the users exist.
+    pub async fn service_users(&self) -> Result<u64, StoreError> {
+        let mut b = Binder::default();
+        let users = b.strings(&service_user_names());
+        let answer = self
+            .lookup(
+                ServiceIdentity::Admin,
+                &b.finish(format!(
+                    "SELECT count() FROM system.users WHERE has({users}, name)"
+                )),
+            )
+            .await?;
+        let here = count("the service users", &answer)?;
+        match &self.inner.config.cluster {
+            Some(cluster) if here == 0 => {
+                let replicas = self.cluster_replicas(cluster).await?;
+                let holdings = self.holdings(cluster, &replicas).await?;
+                Ok(holdings
+                    .iter()
+                    .map(|holding| holding.service_users)
+                    .max()
+                    .unwrap_or(0))
+            }
+            _ => Ok(here),
+        }
+    }
+
     /// What the startup checks of a replicated deployment need from the server (contract 5.8), read as
     /// `crucible_admin` through the replica the store talks to: whether it is ClickHouse Cloud, the cluster's
-    /// shards and replicas, the macros of the replication path, the Keeper session, and whether every replica
-    /// answers a statement sent to all of them.
+    /// shards and replicas, the macros of the replication path, the Keeper session, whether every replica
+    /// answers a statement sent to all of them, and what each replica holds.
     pub async fn cluster_facts(&self, cluster: &Ident) -> Result<ClusterFacts, StoreError> {
         let admin = ServiceIdentity::Admin;
         let cloud = self
@@ -1005,7 +1128,7 @@ impl ClickHouseStore {
                 missing_macros: Vec::new(),
                 keeper: None,
                 ddl_initial_user_and_roles: false,
-                unreplicated: Vec::new(),
+                holdings: Vec::new(),
                 fan_out: None,
                 silent: Vec::new(),
             });
@@ -1019,23 +1142,8 @@ impl ClickHouseStore {
             .await?
             .trim()
             == "1";
-        let mut b = Binder::default();
-        let database = b.string(DATABASE);
-        let replicated = b.string("Replicated");
-        let unreplicated = self
-            .lookup(
-                admin,
-                &b.finish(format!(
-                    "SELECT name FROM system.tables WHERE database = {database} AND NOT startsWith(engine, \
-                     {replicated}) ORDER BY name"
-                )),
-            )
-            .await?
-            .lines()
-            .map(str::to_owned)
-            .collect();
         let replicas = self.cluster_replicas(cluster).await?;
-        let mut shards: Vec<u64> = replicas.iter().map(|(shard, _)| *shard).collect();
+        let mut shards: Vec<u64> = replicas.iter().map(|replica| replica.shard).collect();
         shards.dedup();
         let mut b = Binder::default();
         let wanted = b.strings(&["shard", "replica"]);
@@ -1074,14 +1182,21 @@ impl ClickHouseStore {
         } else {
             (None, Vec::new())
         };
+        // A replica runs the read of its holdings as the admin only once the cluster has its secret; until then the
+        // refusal names the secret.
+        let holdings = if shards.len() == 1 && fan_out.is_none() {
+            self.holdings(cluster, &replicas).await?
+        } else {
+            Vec::new()
+        };
         Ok(ClusterFacts {
             cloud,
             shards: shards.len() as u64,
-            replicas: replicas.into_iter().map(|(_, host)| host).collect(),
+            replicas: replicas.into_iter().map(|replica| replica.host).collect(),
             missing_macros,
             keeper,
             ddl_initial_user_and_roles,
-            unreplicated,
+            holdings,
             fan_out,
             silent,
         })
@@ -1665,9 +1780,7 @@ impl TelemetryStore for ClickHouseStore {
                     "SELECT DISTINCT project_id FROM {}",
                     on_every_replica(cluster, &select)
                 ));
-                statement
-                    .settings
-                    .push(("skip_unavailable_shards", "0".to_owned()));
+                render::every_replica(&mut statement, false);
                 statement
             }
             None => b.finish(select),
@@ -1815,7 +1928,11 @@ mod tests {
         }
         sent.extend(DELETE_SETTINGS.map(|(name, _)| name));
         // The reads of every replica in a cluster and its replicated changes.
-        sent.extend(["skip_unavailable_shards", INACTIVE_REPLICAS.0]);
+        sent.extend([
+            "skip_unavailable_shards",
+            "connections_with_failover_max_tries",
+            INACTIVE_REPLICAS.0,
+        ]);
         // The byte limit a plan may carry, the semi-join id cap, the per-series fill, the mask application and
         // the partition drop.
         sent.extend([
@@ -1999,15 +2116,56 @@ mod tests {
         );
     }
 
+    /// Three replicas of one shard; the store talks to the first.
+    fn three_replicas() -> [Replica; 3] {
+        [1, 2, 3].map(|n| Replica {
+            shard: 1,
+            host: format!("clickhouse-{n}:9000"),
+            local: n == 1,
+        })
+    }
+
+    /// Each line of the read of every replica's holdings names a replica by its place in `remote_servers`, lists
+    /// its tables that are not replicated (a replica with none lists nothing) and counts its service users.
+    #[test]
+    fn the_holdings_of_every_replica_name_each_replica_and_its_unreplicated_tables() {
+        let replicas = three_replicas();
+        let read = holdings("1\t\t4\n3\tspan_core,span_payload\t0\n", &replicas).unwrap();
+        assert_eq!(
+            read,
+            [
+                ReplicaHoldings {
+                    replica: "clickhouse-1:9000".to_owned(),
+                    local: true,
+                    unreplicated: Vec::new(),
+                    service_users: 4,
+                },
+                ReplicaHoldings {
+                    replica: "clickhouse-3:9000".to_owned(),
+                    local: false,
+                    unreplicated: vec!["span_core".to_owned(), "span_payload".to_owned()],
+                    service_users: 0,
+                },
+            ]
+        );
+        assert!(holdings("", &replicas).unwrap().is_empty());
+        // A place outside the cluster, or a line of another shape, is an unexpected answer.
+        for unexpected in [
+            "4\t\t4\n",
+            "0\t\t4\n",
+            "1\t\n",
+            "x\tspan_core\t4\n",
+            "1\t\tfour\n",
+        ] {
+            assert!(holdings(unexpected, &replicas).is_err(), "{unexpected:?}");
+        }
+    }
+
     /// A replica that did not answer a statement sent to every replica is silent; one that ran it as another user
     /// than the sender's runs the queries of other replicas without the cluster's secret.
     #[test]
     fn the_replicas_that_answer_say_who_is_silent_and_who_ran_as_another_user() {
-        let replicas = [
-            (1, "clickhouse-1:9000".to_owned()),
-            (1, "clickhouse-2:9000".to_owned()),
-            (1, "clickhouse-3:9000".to_owned()),
-        ];
+        let replicas = three_replicas();
         let admin = |place: usize| (place, "crucible_admin".to_owned());
         assert_eq!(
             silent(&replicas, &[admin(1), admin(3)]),

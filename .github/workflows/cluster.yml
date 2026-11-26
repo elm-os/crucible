@@ -4,13 +4,17 @@ name: cluster
 # deploy/compose/compose.cluster.yaml runs it, beside Postgres 18. Per server version, each on a fresh cluster:
 #   - the end-to-end run of the server (crates/crucible/tests/e2e.rs, the cluster path): it migrates every step
 #     ON CLUSTER, ingests a trace that every replica holds, reads it back, and deletes it from every replica;
+#   - a migration with a replica down, and a new cluster beside another deployment's Postgres, whose ledger
+#     records steps that created service users no replica holds;
 #   - the conformance suite (crates/crucible-conformance): its rows on the cluster, among them one token landing
 #     once across replicas, the existence probe before a quorum, a replica that goes down in the middle of an
 #     insert, and retention and deletion on every replica, with one replica down and back;
 #   - the SQL workspace's isolation suite, layers A, B and D (docs/testing/sqliso.md), with every workspace user
-#     and policy provisioned ON CLUSTER.
-# The replicas hide rows from users without a row policy (the strict value of
-# users_without_row_policies_can_read_rows), so the service-identity checks are meaningful.
+#     and policy provisioned ON CLUSTER, under both values of the server switch
+#     users_without_row_policies_can_read_rows, then layer D's D8 mutant: the suite declared strict on a
+#     permissive cluster, which must fail.
+# Apart from the permissive run, the replicas hide rows from users without a row policy (the strict value of the
+# switch), so the service-identity checks are meaningful.
 
 on:
   pull_request:
@@ -81,37 +85,41 @@ jobs:
         run: |
           cargo build --locked -p crucible-conformance
           cargo test --locked --package crucible --test e2e --no-run
-      # The operator's Compose file with the server version under test, the strict switch, and the ports of both
-      # replicas and of Postgres published, because the suites run on the runner. `fresh` starts a new cluster.
+      # The operator's Compose file with the server version under test, the server switch, and the ports of both
+      # replicas and of Postgres published, because the suites run on the runner. `fresh` starts a new cluster,
+      # strict unless its argument is `permissive`.
       - name: The cluster's override
         run: |
           mkdir -p "$RUNNER_TEMP/cluster"
-          cat > "$RUNNER_TEMP/cluster/strict.xml" <<'XML'
-          <clickhouse>
-            <access_control_improvements>
-              <users_without_row_policies_can_read_rows>false</users_without_row_policies_can_read_rows>
-            </access_control_improvements>
-          </clickhouse>
-          XML
-          chmod 644 "$RUNNER_TEMP/cluster/strict.xml"
           cat > "$RUNNER_TEMP/cluster/override.yaml" <<YAML
           services:
             clickhouse-1:
               image: clickhouse/clickhouse-server:$TAG
               ports: ["18123:8123"]
               volumes:
-                - $RUNNER_TEMP/cluster/strict.xml:/etc/clickhouse-server/config.d/strict.xml:ro
+                - $RUNNER_TEMP/cluster/switch.xml:/etc/clickhouse-server/config.d/switch.xml:ro
             clickhouse-2:
               image: clickhouse/clickhouse-server:$TAG
               ports: ["28123:8123"]
               volumes:
-                - $RUNNER_TEMP/cluster/strict.xml:/etc/clickhouse-server/config.d/strict.xml:ro
+                - $RUNNER_TEMP/cluster/switch.xml:/etc/clickhouse-server/config.d/switch.xml:ro
             postgres:
               ports: ["5432:5432"]
           YAML
           cat > "$RUNNER_TEMP/cluster/fresh.sh" <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
+          # The switch: false hides rows from users without a row policy (strict), true shows them (permissive).
+          can_read=false
+          [ "${1:-strict}" = permissive ] && can_read=true
+          cat > "$RUNNER_TEMP/cluster/switch.xml" <<XML
+          <clickhouse>
+            <access_control_improvements>
+              <users_without_row_policies_can_read_rows>$can_read</users_without_row_policies_can_read_rows>
+            </access_control_improvements>
+          </clickhouse>
+          XML
+          chmod 644 "$RUNNER_TEMP/cluster/switch.xml"
           stack() {
             docker compose -p cluster -f deploy/compose/compose.cluster.yaml -f "$RUNNER_TEMP/cluster/override.yaml" "$@"
           }
@@ -160,8 +168,59 @@ jobs:
           stack up -d --wait clickhouse-2
           "$RUNNER_TEMP/bin/crucible" migrate
           [ "$(recorded)" = 5 ] || { echo "the ledger records $(recorded) of 5 ClickHouse steps"; exit 1; }
+      # A new cluster beside the Postgres of a deployment on another ClickHouse: the ledger records the steps that
+      # created service users which no replica holds. `crucible migrate` fails and a server's start stays not ready,
+      # both saying so with the fix and not blaming the master key; the fix, an empty ledger, lets the cluster
+      # migrate. A wrong master key, with a step that changed, keeps its own message.
+      - name: A new cluster beside another deployment's Postgres
+        env:
+          CRUCIBLE_CLICKHOUSE_URL: http://localhost:18123
+          CRUCIBLE_CLICKHOUSE_CLUSTER: crucible
+          CRUCIBLE_CLICKHOUSE_PASSWORD: cluster-admin
+          CRUCIBLE_POSTGRES_URL: postgres://crucible:cluster-postgres@localhost:5432/crucible
+        run: |
+          "$RUNNER_TEMP/cluster/fresh.sh"
+          stack() {
+            docker compose -p cluster -f deploy/compose/compose.cluster.yaml -f "$RUNNER_TEMP/cluster/override.yaml" "$@"
+          }
+          ledger() {
+            stack exec -T postgres psql -U crucible -d crucible -Atc "$1"
+          }
+          missing="but no replica in cluster crucible holds any of them"
+          "$RUNNER_TEMP/bin/crucible" migrate
+          # The replicas and Keeper start again from empty volumes, and Postgres keeps the ledger.
+          stack rm -sfv keeper clickhouse-1 clickhouse-2
+          docker volume rm cluster_keeper-data cluster_clickhouse-1-data cluster_clickhouse-2-data
+          stack up -d --wait keeper clickhouse-1 clickhouse-2
+          if out=$("$RUNNER_TEMP/bin/crucible" migrate 2>&1); then
+            echo "crucible migrate passed beside another ClickHouse's ledger: $out"
+            exit 1
+          fi
+          echo "$out" | tail -3
+          echo "$out" | grep -q "$missing"
+          if echo "$out" | grep -q "master key"; then
+            echo "the refusal blames the master key"
+            exit 1
+          fi
+          for migrate in --migrate ""; do
+            timeout 30 "$RUNNER_TEMP/bin/crucible" serve $migrate --data-dir "$RUNNER_TEMP/serve-data" \
+              --listen 127.0.0.1:0 --ingest-listen 127.0.0.1:0 --grpc-listen 127.0.0.1:0 \
+              --metrics-listen 127.0.0.1:0 > serve.log 2>&1 || true
+            grep -q "$missing" serve.log || { echo "serve $migrate:"; tail -20 serve.log; exit 1; }
+          done
+          ledger "DELETE FROM schema_migrations WHERE kind LIKE 'clickhouse%'"
+          "$RUNNER_TEMP/bin/crucible" migrate
+          [ "$(ledger "SELECT count(*) FROM schema_migrations WHERE kind LIKE 'clickhouse%'")" = 5 ]
+          if out=$(CRUCIBLE_MASTER_KEY=0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad \
+            CRUCIBLE_SQL_STATEMENTS_PER_HOUR=1200 "$RUNNER_TEMP/bin/crucible" migrate 2>&1); then
+            echo "crucible migrate passed with a wrong master key: $out"
+            exit 1
+          fi
+          echo "$out" | grep -q "refuse this server's master key"
+      # A suite's exit status, not tee's, decides each step that writes a report.
       - name: Conformance rows
         run: |
+          set -o pipefail
           "$RUNNER_TEMP/cluster/fresh.sh"
           target/debug/crucible-conformance --url http://localhost:18123 --replica-url http://localhost:28123 \
             --cluster crucible --user crucible_admin --password cluster-admin --label "$TAG cluster" \
@@ -173,10 +232,35 @@ jobs:
           IDENTITIES: ${{ github.event_name == 'schedule' && '200' || '20' }}
           SEED: ${{ github.run_number }}
         run: |
+          set -o pipefail
           "$RUNNER_TEMP/cluster/fresh.sh"
           target/debug/crucible-sqliso --url http://localhost:18123 --cluster crucible --user crucible_admin \
             --password cluster-admin --label "$TAG cluster" --switch strict --fuzz "$FUZZ" --seed "$SEED" \
             --identities "$IDENTITIES" | tee sqliso.tsv
+      # The same layers under the permissive value of the switch, with a fifth of the statements and 20 identities
+      # as sqliso.yml runs them on a single server. Then layer D's D8 mutant: on this permissive cluster, the suite
+      # declared strict must fail on row W0.
+      - name: SQL workspace isolation under the permissive switch, and the D8 mutant
+        env:
+          FUZZ: ${{ github.event_name == 'schedule' && '10000' || '1000' }}
+          SEED: ${{ github.run_number }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/cluster/fresh.sh" permissive
+          run() {
+            target/debug/crucible-sqliso --url http://localhost:18123 --cluster crucible --user crucible_admin \
+              --password cluster-admin --label "$TAG cluster" "$@"
+          }
+          status=0
+          run --switch permissive --layers a,b,d --fuzz "$FUZZ" --seed "$SEED" --identities 20 \
+            | tee permissive.tsv || status=1
+          if run --switch strict --layers none > flipped.tsv; then
+            printf 'FAIL\t%s\tD8 mutant: the server switch flipped\tthe suite passed a cluster whose switch is not the declared one\n' "$TAG cluster" | tee -a permissive.tsv
+            status=1
+          else
+            printf 'PASS\t%s\tD8 mutant: the server switch flipped\tcaught by W0 deployment as declared\n' "$TAG cluster" | tee -a permissive.tsv
+          fi
+          exit $status
       - name: Server logs
         if: failure()
         run: |
@@ -187,7 +271,7 @@ jobs:
         run: |
           {
             echo "### Clustered ClickHouse $TAG"
-            for file in conformance sqliso; do
+            for file in conformance sqliso permissive; do
               [ -f "$file.tsv" ] || continue
               echo
               echo "$file"
