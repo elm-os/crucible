@@ -262,6 +262,13 @@ function main() {
   }
 }
 
+// Node.js before 24.2 has no import.meta.main, and without this check the script would do nothing and exit with 0.
+if (import.meta.main === undefined) {
+  console.error(
+    `This script needs Node.js 24.2 or later, and this is ${process.version}; install a newer Node.js 24.`,
+  );
+  process.exit(2);
+}
 if (import.meta.main) {
   main();
 }
