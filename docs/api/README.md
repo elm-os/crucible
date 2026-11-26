@@ -219,7 +219,8 @@ signed-in person, and `none` needs no credential.
 
 Every route takes `side` (`client` or `server`), `from` and `to`, and accepts `source` (`auto`, the default, `sdk`,
 `proxy` or `otlp`), `include_caller_faults` and `server`. Each answer names the capture source it read for each server
-(`capture_sources`); see the [MCP overview](../guides/mcp.md).
+(`capture_sources`); see the [MCP overview](../guides/mcp.md). Latency percentiles are estimates within 3.125%, as
+under [metrics](#metrics).
 
 | Method and path | What it does | Permission |
 |---|---|---|
@@ -770,14 +771,39 @@ The answer above is cut to its first series; the query returns one series per me
 which granularity it used, whether the last bucket may still grow (`partial_last_bucket`), and where the measures
 were read (`source_tier`: the minute rollup or the span table).
 
+A percentile is read from a latency histogram, here and in the MCP analytics routes: it is an estimate within 3.125%
+of the true value, and can exceed the largest value observed. Exact values are in the
+[SQL workspace](../guides/sql-workspace.md).
+
+A `filter` is a tree of conditions. `{"in": {"field": ..., "values": [...]}}` holds when the field has one of the
+values; `and` and `or` take a list of conditions, and `not` takes one. `GET metrics/schema` lists each source's
+filter fields: `environment`, `release`, `level` and `observation_type` for `spans`, and none for `traces` and
+`mcp_ops`. This filter keeps the spans of production and the error spans of any environment, and leaves events out:
+
+```json
+{"and": [
+  {"or": [{"in": {"field": "environment", "values": ["production"]}},
+          {"in": {"field": "level", "values": ["error"]}}]},
+  {"not": {"in": {"field": "observation_type", "values": ["event"]}}}
+]}
+```
+
 ## Dashboards and widgets
 
 A dashboard is a grid of 12 columns holding at most 50 widgets. A widget has a `query`, which is the body of
 `POST metrics/query` without `from` and `to` (the dashboard's time range supplies the window), a `display` (its
-`kind`: `timeseries`, `stat`, `bar`, `table` or `markdown`; a `title`; `chart` `line` or `bar` for a time series;
-`text` for Markdown, which takes no query) and a `layout` in cells (`x`, `y`, `w`, `h`, each widget at most 12 by
-12, and no two widgets overlapping). The [dashboards guide](../guides/dashboards.md) lists what each kind may query
-and its smallest size.
+`kind`: `timeseries`, `stat`, `bar`, `table` or `markdown`; a `title`; `chart` `line` (the default), `bar` or
+`area` for a time series; `text` for Markdown, which takes no query) and a `layout` in cells (`x`, `y`, `w`, `h`,
+each widget at most 12 by 12, and no two widgets overlapping). The [dashboards guide](../guides/dashboards.md) lists
+what each kind may query and its smallest size. This widget draws the cost of production spans as an area, with
+the query's `filter` ([metrics](#metrics)):
+
+```json
+{"display": {"kind": "timeseries", "title": "Cost, production", "chart": "area"},
+ "layout": {"x": 6, "y": 0, "w": 6, "h": 3},
+ "query": {"source": "spans", "measures": [{"measure": "total_cost", "aggregation": "sum"}],
+           "filter": {"in": {"field": "environment", "values": ["production"]}}}}
+```
 
 `GET projects/{project_id}/dashboards` lists the project's dashboards, oldest first, then the built-in starters,
 whose `id` is their `builtin_key`:
@@ -834,7 +860,8 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   and read with `GET facts`; see [facts](../guides/facts.md).
 - **SQL workspace**: `GET sql/schema` lists the `crucible_sql.*` relations; `POST sql/run` runs one read-only
   statement over a window (`{from:DateTime64(6)}` and `{to:DateTime64(6)}`) and returns at most 10,000 rows;
-  `POST sql/export` returns the result as CSV, JSONL or Parquet; saved queries keep a statement with declared
+  `POST sql/export` returns the result as CSV, JSONL or Parquet; `GET sql/runs` lists a key's own runs, a person's
+  own runs, or, for a project admin, every run of the project; saved queries keep a statement with declared
   parameters. Each project's statements run as its own ClickHouse user
   ([SQL workspace](../self-hosting/sql-workspace.md)).
 - **MCP analytics**: servers, tools, errors, clients, users, sessions, operations, deploys and a compare of two

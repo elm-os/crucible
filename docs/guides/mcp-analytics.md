@@ -24,7 +24,7 @@ The time range is the shell's, at most the project's maximum window (30 days by 
 | Page | What it shows |
 |---|---|
 | Servers | For each server: calls, errors, error rate, caller faults, p50, p90 and p99 latency, the last call, how many clients called it, its version and its deploys |
-| Tools | For each tool: the same measures, request and response bytes, and the hash of its latest listed schema; tools a server listed that nobody called are marked unused |
+| Tools | For each tool: the same measures, its response bytes, and the hash of its latest listed schema; tools a server listed that nobody called are marked unused |
 | Tool | One tool: calls and errors over time as bars, p50, p90 and p99 latency as lines, with deploy markers and a table view; its error classes and its top clients |
 | Errors | Calls by error class, and the failing methods and targets; the breakdown groups the errors by message and JSON-RPC code |
 | Clients | Calls by client name, or by name and version; names and versions are what the clients reported about themselves |
@@ -38,6 +38,29 @@ The time range is the shell's, at most the project's maximum window (30 days by 
 A server is named by `crucible.mcp.server.name`, else its resource's `service.name`. A deploy is the resource's
 `crucible.deploy.id`, else the server's version (`crucible.mcp.server.version`, else `service.version`), as seen on
 the server side.
+
+A server's calls, errors and latency count every request and notification it handled, `initialize`, `tools/list`
+and `notifications/initialized` included; the Tools and Tool pages count `tools/call` only. A tool's response bytes
+are the sum of the sizes recorded for its calls, and a size that was not recorded counts as 0: a tool whose calls
+carry no sizes shows 0 on the Tools page, as do `request_bytes` and `response_bytes` in the API.
+
+## Percentiles
+
+The p50, p90 and p99 latencies are read from a histogram, so each is an estimate within 3.125% of the true value,
+and can exceed the slowest call. Exact values are in the SQL workspace, from each operation's `duration_us`:
+
+```sql
+SELECT server_name, target_name, count() AS calls,
+       quantileExact(0.99)(duration_us) AS p99_us, max(duration_us) AS max_us
+FROM crucible_sql.mcp_operations
+WHERE start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)}
+  AND side = 'server' AND method = 'tools/call' AND caller_fault = 0
+GROUP BY server_name, target_name
+ORDER BY p99_us DESC
+```
+
+The pages read each server from one capture source; for a server captured twice, add a `capture_source` condition
+(`sdk`, `proxy_stdio`, `proxy_http` or `otlp`).
 
 ## Long time ranges
 
