@@ -45,11 +45,12 @@ file, and step 2 needs `openssl` and a POSIX shell.
    curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.3/deploy/compose/compose.cluster.yaml
    ```
 
-2. Make the `.env` file beside it, once:
+2. Make the `.env` file beside it, once. The last line pins the image of the release the Compose file comes from:
 
    ```sh
    printf 'CLICKHOUSE_PASSWORD=%s\nCLICKHOUSE_CLUSTER_SECRET=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' \
      "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+   echo 'CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1.3' >> .env
    ```
 
 3. Start it:
