@@ -51,18 +51,23 @@ function concat(parts: Uint8Array[], total: number): Uint8Array {
 }
 
 // One payload field of one span: its first kibibyte at once, the rest by byte ranges, then parsed in a
-// worker into a tree, a message list or text.
+// worker into a tree, a message list or text. `plural` makes the copy agree with a plural noun, and
+// `truncated` says whether the span reported the field cut at the size limit (null when not known).
 export function PayloadViewer({
   project,
   span,
   field,
   noun,
+  plural = false,
+  truncated = null,
   ioShape,
 }: {
   project: string;
   span: PayloadSpan;
   field: PayloadField;
   noun: string;
+  plural?: boolean;
+  truncated?: boolean | null;
   ioShape: IoShape | null;
 }) {
   const queryClient = useQueryClient();
@@ -128,7 +133,10 @@ export function PayloadViewer({
     const error = asUiError(head.error);
     if (error.kind === "not_found") {
       return (
-        <EmptyState kind="filtered" title={`This span's ${noun} isn't stored.`}>
+        <EmptyState
+          kind="filtered"
+          title={`This span's ${noun} ${plural ? "aren't" : "isn't"} stored.`}
+        >
           It may have expired under the project&apos;s payload retention, which can be shorter than
           the retention of spans.
         </EmptyState>
@@ -137,7 +145,7 @@ export function PayloadViewer({
     return <ErrorCard error={error} label={noun} onRetry={() => head.refetch()} />;
   }
   if (total === 0) {
-    return <EmptyState kind="filtered" title={`No ${noun} was recorded.`} />;
+    return <EmptyState kind="filtered" title={`No ${noun} ${plural ? "were" : "was"} recorded.`} />;
   }
 
   const preview = (
@@ -216,22 +224,45 @@ export function PayloadViewer({
       </div>
     );
   }
+  const note = textNote(noun, plural, parsed.isError ? "unreadable" : truncated ? "cut" : "text");
   if (parsed.isError) {
-    return <TextView noun={noun} text={decode(bytes)} reason="unreadable" />;
+    return <TextView text={decode(bytes)} note={note} />;
   }
-  return <ParsedView doc={doc} noun={noun} parsed={parsed.data} ioShape={ioShape} total={total} />;
+  return (
+    <ParsedView
+      doc={doc}
+      noun={noun}
+      parsed={parsed.data}
+      note={note}
+      ioShape={ioShape}
+      total={total}
+    />
+  );
+}
+
+// What a field shown as text says about itself: why it could not be read, that the span reported it cut,
+// or plainly that it is text.
+function textNote(noun: string, plural: boolean, why: "unreadable" | "cut" | "text"): string {
+  const shows = plural ? "they show" : "it shows";
+  if (why === "unreadable")
+    return `The ${noun} couldn't be read as a document, so ${shows} as text.`;
+  if (why === "cut")
+    return `The ${noun} ${plural ? "were" : "was"} cut at the size limit, so ${shows} as text.`;
+  return "Text";
 }
 
 function ParsedView({
   doc,
   noun,
   parsed,
+  note,
   ioShape,
   total,
 }: {
   doc: string;
   noun: string;
   parsed: Parsed;
+  note: string;
   ioShape: IoShape | null;
   total: number;
 }) {
@@ -241,7 +272,7 @@ function ParsedView({
       : null;
   const [view, setView] = useState<"messages" | "json">(messages ? "messages" : "json");
   if (parsed.kind === "text") {
-    return <TextView noun={noun} text={parsed.text} reason={parsed.reason} />;
+    return <TextView text={parsed.text} note={note} />;
   }
   const label = noun.charAt(0).toUpperCase() + noun.slice(1);
   return (
@@ -281,21 +312,9 @@ function ParsedView({
   );
 }
 
-function TextView({
-  noun,
-  text,
-  reason,
-}: {
-  noun: string;
-  text: string;
-  reason: "not_json" | "empty" | "unreadable";
-}) {
+function TextView({ text, note }: { text: string; note: string }) {
   const [all, setAll] = useState(false);
   const long = text.length > TEXT_CLAMP;
-  const note =
-    reason === "unreadable"
-      ? `The ${noun} couldn't be read as a document, so it shows as text.`
-      : `The ${noun} is text, or JSON that was cut at the size limit.`;
   return (
     <div className="flex flex-col items-start gap-2">
       <p className="text-label text-ink-soft">{note}</p>
