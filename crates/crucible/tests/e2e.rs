@@ -558,7 +558,10 @@ impl Trace {
             "environment",
             "release",
         ] {
-            assert_eq!(summary[field], item[field], "{when}: summary {field} in {detail}");
+            assert_eq!(
+                summary[field], item[field],
+                "{when}: summary {field} in {detail}"
+            );
         }
         if settled {
             for field in [
@@ -569,7 +572,10 @@ impl Trace {
                 "output_tokens",
                 "total_tokens",
             ] {
-                assert_eq!(summary[field], item[field], "{when}: summary {field} in {detail}");
+                assert_eq!(
+                    summary[field], item[field],
+                    "{when}: summary {field} in {detail}"
+                );
             }
         }
         let spans = detail["spans"].as_array().unwrap();
