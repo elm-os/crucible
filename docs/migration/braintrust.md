@@ -9,11 +9,13 @@ Verified with a plain OpenTelemetry OTLP exporter (Python 1.45.2), braintrust 0.
 
 ## What changes
 
-From an OTLP exporter, point the base endpoint at Crucible's `/otel` path and send a Crucible secret key:
+From an OTLP exporter, point the traces endpoint at Crucible's `/otel/v1/traces` path and send a Crucible secret
+key, with the variables for traces, which leave metrics and logs where they go today:
 
 ```sh
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/otel
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20csk_...,x-bt-parent=project_name:my-project"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/otel/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20csk_...,x-bt-parent=project_name:my-project"
 ```
 
 `x-bt-parent` can stay or go; the key decides the project.
