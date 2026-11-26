@@ -397,15 +397,16 @@ shape of the gate's lanes, one trace per request, never exercised it.
 
 ## The shipper after #192
 
-Measured on 2026-11-25 and 2026-11-26 (UTC) on the same laptop, **measured on a laptop, not reference hardware**,
-at the gate's small-rig limits (Crucible on 2 CPUs and 1 GB), with no other container on the machine during the
+Measured on 2026-11-25 and 2026-11-26 (UTC) on the same laptop, **measured on a laptop, not reference hardware**, at
+the gate's small-rig limits (Crucible on 2 CPUs and 1 GB), with no other container on the machine during the
 deciding runs but the gate's own driver: every gate session's run context names only its driver, and no
-`baseline.sh` step saw another container at its start or its end. #192 takes stage A and encoding off the shipper task: stage A runs as a blocking
-job on the frames the shipper reads ahead, each block of a sealed batch is encoded by a blocking job, each under a
-share of the CPU budget, stage B still takes the frames in LSN order, and while ingest holds more requests than its
-prepare share runs at once the shipper does that work on its task. The base is `main` at `8134c64`; `main` since then
-changes conformance tests and docs only. Every image is the gate's (`crucible-gate:<commit>`), and the `baseline.sh`
-steps run the `crucible` binary of those images.
+`baseline.sh` step saw another container at its start or its end. #192 takes stage A and encoding off the shipper
+task: stage A runs as a blocking job on the frames the shipper reads ahead, each block of a sealed batch is encoded
+by a blocking job, each under a share of the CPU budget, stage B still takes the frames in LSN order, and while
+ingest holds more requests than its prepare share runs at once the shipper does that work on its task. The base is
+`main` at `8134c64`; `main` since then changes conformance tests and docs, and the 0.1.3 release commit sets
+the version. Every image is the gate's (`crucible-gate:<commit>`), and the `baseline.sh` steps run the `crucible`
+binary of those images.
 
 | Build | Stage A as a job | Encoding as a job |
 |---|---|---|
