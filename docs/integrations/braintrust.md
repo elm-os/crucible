@@ -11,11 +11,14 @@ Python OTLP exporter 1.45.2.
 
 ## Pointing it at Crucible
 
-From an OTLP exporter, set the base endpoint to Crucible's `/otel` path; the exporter appends `/v1/traces`:
+From an OTLP exporter, point the traces endpoint at Crucible's `/otel/v1/traces` path, with the variables for
+traces, which leave metrics and logs where they go today
+([sending traces](../guides/sending-traces.md#from-an-opentelemetry-sdk)):
 
 ```sh
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318/otel
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20csk_...,x-bt-parent=project_name:my-project"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/otel/v1/traces
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20csk_...,x-bt-parent=project_name:my-project"
 ```
 
 `x-bt-parent` can stay or go: Crucible reads it only as a hint about the spans' attributes, and the project comes
