@@ -22,7 +22,7 @@ for agents and MCP servers. Crucible ingests traces only; it does not take logs 
 - Both HTTP listeners also serve compatibility routes that take other tracing SDKs' OTLP exports, with the same
   bodies, keys, caps and acknowledgement ([integrations](../integrations/README.md)).
 - `deploy/compose/compose.yaml` publishes ports 8080 and 4318, not 4317. To send gRPC from outside the Compose
-  network, add `- "4317:4317"` to the `ports` of the `crucible` service.
+  network, add `- "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:4317:4317"` to the `ports` of the `crucible` service.
 
 ## Authentication
 
@@ -62,25 +62,46 @@ $ curl -s -X POST http://127.0.0.1:4318/v1/traces -H 'Content-Type: application/
 
 ## From an OpenTelemetry SDK
 
-OpenTelemetry SDKs read their exporter settings from standard environment variables. Over HTTP:
+OpenTelemetry SDKs read their exporter settings from standard environment variables. Set the ones for traces, which
+have `TRACES` in their names. Over HTTP:
 
 ```sh
 export OTEL_SERVICE_NAME=support-agent
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://crucible.internal:4318/v1/traces
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$CRUCIBLE_SECRET_KEY"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20$CRUCIBLE_SECRET_KEY"
 ```
 
-Over gRPC, with an exporter that speaks gRPC:
+Over gRPC:
 
 ```sh
 export OTEL_SERVICE_NAME=support-agent
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://crucible.internal:4317
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$CRUCIBLE_SECRET_KEY"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://crucible.internal:4317
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20$CRUCIBLE_SECRET_KEY"
 ```
 
-`%20` is the space after `Bearer`: the values in `OTEL_EXPORTER_OTLP_HEADERS` are percent-decoded. The `http://`
-scheme tells a gRPC exporter to connect without TLS. Both sets were checked against a running server, the first
-with the OpenTelemetry Python SDK's HTTP exporter and the second with the OpenTelemetry Go SDK's gRPC exporter.
+Crucible takes traces only. Keep metrics and logs on their current exporter, or turn them off when Crucible is your
+only backend:
+
+```sh
+export OTEL_METRICS_EXPORTER=none
+export OTEL_LOGS_EXPORTER=none
+```
+
+- The same variables without `TRACES` in their names, such as `OTEL_EXPORTER_OTLP_ENDPOINT` and
+  `OTEL_EXPORTER_OTLP_HEADERS`, apply to metrics and logs too. They would send metrics and logs to Crucible, which
+  refuses them, or send your Crucible key to the backend that receives your metrics and logs.
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used as it is over HTTP, so it ends in `/v1/traces`. Over gRPC it takes no
+  path.
+- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` picks the exporter, and SDKs differ in their default: the Node.js SDK sends
+  `http/protobuf`, and Python's automatic setup (`opentelemetry-instrument`) sends gRPC. So both blocks set it.
+- `%20` is the space after `Bearer`: SDKs percent-decode the headers variable. The Node.js and Python SDKs also
+  accept a literal space.
+- The `http://` scheme tells a gRPC exporter to connect without TLS.
+
+Both blocks were checked against a running server with the OpenTelemetry SDKs for Node.js (`@opentelemetry/sdk-node`
+0.301) and Python (1.45), the Python one through `opentelemetry-instrument` and through its HTTP and gRPC exporters.
 
 ## From the OpenTelemetry Collector
 
