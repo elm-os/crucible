@@ -321,8 +321,11 @@ function TraceSummary({
           <TraceStatusLabel errors={summary.error_count} status={summary.status_code} />
         </div>
         {headName ? (
-          <p className="text-label text-ink-soft break-all">
-            {summary.head_kind === "root" ? "Root span" : "First span"} {headName}
+          <p data-head-span className="text-label break-all">
+            <span className="text-ink-soft">
+              {summary.head_kind === "root" ? "Root span" : "First span"}
+            </span>{" "}
+            {headName}
           </p>
         ) : null}
       </div>

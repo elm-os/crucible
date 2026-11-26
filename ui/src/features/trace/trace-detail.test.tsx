@@ -245,7 +245,7 @@ describe("the trace page", () => {
     renderPage();
     const title = await screen.findByText("research assistant");
     expect(title.tagName).toBe("P");
-    expect(screen.getByText("Root span run_agent")).toBeTruthy();
+    expect(document.querySelector("[data-head-span]")?.textContent).toBe("Root span run_agent");
     const facts = within(screen.getAllByRole("definition")[0]?.closest("dl") as HTMLElement);
     expect(facts.getByRole("link", { name: "user-42" }).getAttribute("href")).toMatch(
       /^\/user\/?\?project=p-1&user=user-42$/,
@@ -263,7 +263,7 @@ describe("the trace page", () => {
     await screen.findByText("1 error");
     const header = screen.getByText("1 error").closest("div")?.parentElement as HTMLElement;
     expect(within(header).getByText("agent run")).toBeTruthy();
-    expect(screen.queryByText(/^Root span/)).toBeNull();
+    expect(document.querySelector("[data-head-span]")).toBeNull();
     expect(screen.queryByText("User")).toBeNull();
     expect(screen.queryByText("Release")).toBeNull();
   });

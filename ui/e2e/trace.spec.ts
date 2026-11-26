@@ -16,6 +16,7 @@ import {
   TRACE_PATH,
   test,
   traceDetail,
+  traceSummary,
   traceUrl,
 } from "./fixtures";
 
@@ -55,6 +56,42 @@ test.describe("trace detail: summary", () => {
     await expect(facts).toContainText("Started");
     await expect(page.getByText(TRACE)).toBeVisible();
     await expectAccessible(page, "summary success");
+  });
+
+  test("success: the trace name titles the page, with the root span, user, session, environment and release", async ({
+    page,
+    api,
+  }) => {
+    const summary = traceSummary(AGENT_SPANS);
+    api.on(
+      TRACE_PATH,
+      json(
+        traceDetail({
+          summary: summary && {
+            ...summary,
+            trace_name: "ticket 4411",
+            user_id: "user-42",
+            session_id: "sess-migrate-1",
+            release: "2.7.0",
+          },
+        }),
+      ),
+    );
+    await page.goto(traceUrl());
+    await expect(page.getByText("ticket 4411", { exact: true })).toBeVisible();
+    await expect(page.locator("[data-head-span]")).toHaveText("Root span support agent");
+    const facts = page.locator("dl").first();
+    await expect(facts.getByRole("link", { name: "user-42" })).toHaveAttribute(
+      "href",
+      `/user/?project=${PROJECT}&user=user-42`,
+    );
+    await expect(facts.getByRole("link", { name: "sess-migrate-1" })).toHaveAttribute(
+      "href",
+      `/session/?project=${PROJECT}&session=sess-migrate-1`,
+    );
+    await expect(facts).toContainText("Environmentproduction");
+    await expect(facts).toContainText("Release2.7.0");
+    await expectAccessible(page, "summary with trace name");
   });
 
   test("success: a partial response says spans may be missing, a lagging one that the newest may", async ({
@@ -315,7 +352,9 @@ test.describe("trace detail: child spans of a paged trace", () => {
     api.on(TRACE_PATH, json(paged));
     const release = api.hold(CHILDREN_PATH, json(spanPage(fetches)));
     await page.goto(traceUrl());
-    await expect(page.getByText("This trace is large.")).toBeVisible();
+    await expect(
+      page.getByText("This trace is large, so the timeline loads its spans as you expand them."),
+    ).toBeVisible();
     const row = page.getByRole("row", { name: /worker one/ });
     await row.focus();
     await page.keyboard.press("ArrowRight");
