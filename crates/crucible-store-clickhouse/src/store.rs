@@ -66,7 +66,7 @@ fn migration_deadline(step: &MigrationStep) -> Duration {
 
 /// Every query-level setting this crate sends, apart from the per-insert settings of
 /// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
-pub const QUERY_SETTINGS: [&str; 24] = [
+pub const QUERY_SETTINGS: [&str; 25] = [
     "max_execution_time",
     "max_memory_usage",
     "max_rows_to_read",
@@ -88,6 +88,7 @@ pub const QUERY_SETTINGS: [&str; 24] = [
     "distributed_ddl_task_timeout",
     // The reads of every replica in a cluster, and the replicated changes that a replica that is down has not run.
     "skip_unavailable_shards",
+    "connections_with_failover_max_tries",
     "replication_wait_for_inactive_replica_timeout",
     // The copy of the hourly schema step (`crucible_schema::schema_mcp_tool_rollup_hourly`).
     "max_bytes_before_external_group_by",
@@ -897,9 +898,7 @@ impl ClickHouseStore {
         statement: Statement,
     ) -> Result<String, StoreError> {
         let mut statement = statement;
-        statement
-            .settings
-            .push(("skip_unavailable_shards", "1".to_owned()));
+        render::every_replica(&mut statement, true);
         self.lookup(identity, &statement).await
     }
 
@@ -1665,9 +1664,7 @@ impl TelemetryStore for ClickHouseStore {
                     "SELECT DISTINCT project_id FROM {}",
                     on_every_replica(cluster, &select)
                 ));
-                statement
-                    .settings
-                    .push(("skip_unavailable_shards", "0".to_owned()));
+                render::every_replica(&mut statement, false);
                 statement
             }
             None => b.finish(select),
@@ -1815,7 +1812,11 @@ mod tests {
         }
         sent.extend(DELETE_SETTINGS.map(|(name, _)| name));
         // The reads of every replica in a cluster and its replicated changes.
-        sent.extend(["skip_unavailable_shards", INACTIVE_REPLICAS.0]);
+        sent.extend([
+            "skip_unavailable_shards",
+            "connections_with_failover_max_tries",
+            INACTIVE_REPLICAS.0,
+        ]);
         // The byte limit a plan may carry, the semi-join id cap, the per-series fill, the mask application and
         // the partition drop.
         sent.extend([

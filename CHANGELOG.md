@@ -4,6 +4,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- On a cluster with a replica down, each read of every replica (the existence probe, the checks of a deletion and of
+  a partition drop, and the check before each migration step) tries the stopped replica once instead of three times,
+  so it waits for one connection attempt instead of three.
+
 ## [0.1.3] - 2026-11-26
 
 Crucible stores telemetry on a self-hosted replicated ClickHouse cluster as well as on a single server, and the SDKs

@@ -958,9 +958,22 @@ pub fn plan(plan: &QueryPlan) -> Result<Statement, RenderError> {
     Ok(b.finish(sql))
 }
 
+/// Makes `statement` a read of every replica in a cluster (`clusterAllReplicas`). A replica it cannot reach is left
+/// out of the answer with `skip_unreachable`, and the caller counts it as not answering; without it the replica
+/// fails the read, whatever the caller's settings profile says about unavailable shards. Either way the replica is
+/// tried once: ClickHouse tries three times by default (`connections_with_failover_max_tries`), and each try at a
+/// replica that is down costs a connect timeout, or a failed lookup of its name.
+pub(crate) fn every_replica(statement: &mut Statement, skip_unreachable: bool) {
+    let skip = if skip_unreachable { "1" } else { "0" };
+    statement.settings.extend([
+        ("skip_unavailable_shards", skip.to_owned()),
+        ("connections_with_failover_max_tries", "1".to_owned()),
+    ]);
+}
+
 /// Renders a plan read on each of the replicas in `cluster` ([`QueryPlan::on_every_replica`]): each table reference
 /// reads the rows of all replicas together (`clusterAllReplicas`), and a replica that cannot answer fails the
-/// read, whatever the caller's settings profile says about unavailable shards.
+/// read ([`every_replica`]).
 pub fn plan_on_replicas(plan: &QueryPlan, cluster: &Ident) -> Result<Statement, RenderError> {
     let scope = Scope {
         project: plan.scope().project_id(),
@@ -973,9 +986,7 @@ pub fn plan_on_replicas(plan: &QueryPlan, cluster: &Ident) -> Result<Statement, 
     };
     let sql = node(&mut b, &scope, plan.root())?;
     let mut statement = b.finish(sql);
-    statement
-        .settings
-        .push(("skip_unavailable_shards", "0".to_owned()));
+    every_replica(&mut statement, false);
     Ok(statement)
 }
 
@@ -1019,9 +1030,7 @@ pub fn probe_replicas(probe: &BatchProbe, cluster: &Ident) -> Statement {
         "SELECT countIf(n > 0), count(), (SELECT count() FROM system.clusters WHERE cluster = {name}) FROM \
          clusterAllReplicas('{cluster}', view(SELECT count() AS n {source}))"
     ));
-    statement
-        .settings
-        .push(("skip_unavailable_shards", "1".to_owned()));
+    every_replica(&mut statement, true);
     statement
 }
 
@@ -1113,6 +1122,46 @@ mod tests {
                     .settings
                     .contains(&("skip_unavailable_shards", "1".to_owned()))
             );
+        }
+    }
+
+    /// Every read of every replica tries a replica it cannot reach once, not three times, and then leaves it out
+    /// (the probe, which counts the replicas that answered) or fails (a plan read on every replica).
+    #[test]
+    fn a_read_of_every_replica_tries_an_unreachable_replica_once() {
+        use crucible_records::{CivilDate, Lsn, PartitionId, ProjectId, TimeWindow, WalEpoch};
+
+        let cluster = Ident::new("crucible").unwrap();
+        let probe = crucible_plan::test_support::batch_probe(
+            TableId::SpanCore,
+            PartitionId::date(CivilDate::new(2026, 11, 17).unwrap()),
+            WalEpoch::from_bytes([7; 16]),
+            Lsn::new(5),
+        )
+        .unwrap();
+        let project = ProjectId::parse("0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b").unwrap();
+        let window = TimeWindow::new(Timestamp::EPOCH, Timestamp::from_micros(1_000_000)).unwrap();
+        let plan = crucible_plan::lifecycle_oldest(
+            crucible_auth::test_support::scope(project).unwrap(),
+            TableId::SpanCore,
+            window,
+            Pred::all(),
+        )
+        .unwrap()
+        .on_every_replica();
+        for (statement, skip) in [
+            (probe_replicas(&probe, &cluster), "1"),
+            (plan_on_replicas(&plan, &cluster).unwrap(), "0"),
+        ] {
+            for (name, value) in [
+                ("skip_unavailable_shards", skip),
+                ("connections_with_failover_max_tries", "1"),
+            ] {
+                assert!(
+                    statement.settings.contains(&(name, value.to_owned())),
+                    "{statement}"
+                );
+            }
         }
     }
 
