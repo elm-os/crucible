@@ -1,6 +1,7 @@
 //! Admission before the ack (contract 4.8): the `ingest.inflight_bytes` budget and the WAL's signals, combined
 //! by [`crucible_admission::decide`].
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crucible_admission::{
@@ -29,6 +30,8 @@ pub(crate) struct Admission {
     buckets: Option<Mutex<ProjectBuckets>>,
     clock: Arc<dyn Clock>,
     origin: Instant,
+    /// The requests admitted and not answered yet: every reservation alive.
+    requests: AtomicU64,
 }
 
 /// What a refused request is told, by the condition that refused it.
@@ -63,7 +66,13 @@ impl Admission {
             buckets: project_rate.map(|config| Mutex::new(ProjectBuckets::new(config))),
             origin: clock.now(),
             clock,
+            requests: AtomicU64::new(0),
         }
+    }
+
+    /// The requests admitted and not answered yet.
+    pub(crate) fn requests(&self) -> u64 {
+        self.requests.load(Ordering::Relaxed)
     }
 
     /// Takes `bytes` from the project's bucket. `true` when no rate is set or the bucket covered them.
@@ -140,6 +149,7 @@ impl Admission {
     /// from the project's bucket when a rate is set, and consults the decision table. The returned reservation
     /// grows as the request is read and decoded.
     pub(crate) fn admit(self: &Arc<Self>, project: ProjectId, bytes: u64) -> Result<Held, Reject> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
         let mut held = Held {
             admission: Arc::clone(self),
             bytes: 0,
@@ -219,5 +229,6 @@ impl Drop for Held {
         if self.bytes > 0 {
             self.admission.change(false, self.bytes);
         }
+        self.admission.requests.fetch_sub(1, Ordering::Relaxed);
     }
 }

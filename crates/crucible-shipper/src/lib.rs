@@ -10,6 +10,15 @@
 //! after a probe read absent. A `Checkpoint` frame follows once a batch and every earlier batch are resolved, and
 //! garbage collection of the WAL runs from there.
 //!
+//! The task keeps the order-dependent work: reading the log, stage B, the rows and the WAL's records. Stage A, pure
+//! per frame (contract 3.2), runs on the frames the task reads ahead, up to twice the stage A share of the CPU
+//! budget and `normalize.cache_bytes`, each as a blocking job; stage B takes the frames strictly in LSN order with
+//! the records their jobs made. Each block of a sealed batch is encoded by a blocking job under the encode share,
+//! and the bytes are kept until the pair resolves, so every retry sends them unchanged (contract 5.2). A batch
+//! seals only once every batch before it is encoded, so besides the open batch only the batch being encoded holds
+//! rows. While ingest is busy, the task does the jobs' work itself; the simulation's spawner runs blocking jobs in
+//! place, so there the task does too.
+//!
 //! After a restart, the sealed batches that no checkpoint covers are shipped again with their recorded boundaries
 //! and identical tokens, every pair probed first; pairs named by a `Quarantine` frame stay resolved; the unsealed
 //! tail is sealed with fresh boundaries.
@@ -36,6 +45,7 @@
 
 mod batch;
 mod config;
+mod cpu;
 mod error;
 mod frames;
 mod hooks;
@@ -48,15 +58,17 @@ mod recent_hook;
 mod shipper;
 pub mod tables;
 pub mod value;
+mod window;
 
 pub use batch::{BatchId, OpenBatch, Pair, pair_block, pair_token};
 pub use config::{
-    DEFAULT_ENCODED_BYTES, FrameFault, Mutant, POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig,
+    DEFAULT_CACHE_BYTES, DEFAULT_ENCODED_BYTES, DEFAULT_SHIPPER_PERMITS, FrameFault, Mutant,
+    POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig,
 };
 pub use error::ShipError;
 pub use hooks::{
-    Barrier, Barriers, DeletionRequests, DeletionsUnavailable, KnownDeletion, NoBarriers,
-    NoDeletions, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
+    Barrier, Barriers, DeletionRequests, DeletionsUnavailable, IngestLoad, KnownDeletion,
+    NoBarriers, NoDeletions, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
 };
 pub use limits::SealLimits;
 pub use quarantine::{

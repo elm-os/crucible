@@ -3,14 +3,16 @@
 The first end-to-end throughput measurement of `crucible serve`: OTLP ingest to the durable acknowledgement
 (burst), and ingest through the shipper into ClickHouse (sustained). Every number on this page was **measured on a
 laptop, not reference hardware**: the milestone 1 runs on one day with other jobs sharing the machine, and
-[the shipper after #168](#the-shipper-after-168) on a later day without them. Use it to find bottlenecks and to
-compare builds on the same machine, never as a capacity claim. The rig, the load generator and the fsync-honesty
-probe are described in [`perf.md`](perf.md); `tools/perf/baseline.sh` repeats every run below.
+[the shipper after #168](#the-shipper-after-168) and [after #192](#the-shipper-after-192) on later days without
+them. Use it to find bottlenecks and to compare builds on the same machine, never as a capacity claim. The rig, the
+load generator and the fsync-honesty probe are described in [`perf.md`](perf.md); `tools/perf/baseline.sh` repeats
+every run below.
 
 **Status: checkpoint, incomplete.** The work was paused on request before the sustained runs finished. What is
 missing is listed under [Incomplete: remaining runs](#incomplete-remaining-runs). The shipper's phase split was
 measured again on the gate's small rig with #168, which put the phase metric on `main`:
-[the shipper after #168](#the-shipper-after-168).
+[the shipper after #168](#the-shipper-after-168), and with stage A and encoding off the shipper task in #192:
+[the shipper after #192](#the-shipper-after-192).
 
 ## Summary
 
@@ -28,8 +30,9 @@ measured again on the gate's small rig with #168, which put the phase metric on 
 - **End to end, the shipper's single task is the bottleneck.** Above the sustained limit the task was 91 to 98%
   busy while Crucible's other cores and ClickHouse (0.8 of 8 cores) idled, and it never waited for ClickHouse.
   Encoding takes half of the task's time, stage A a fifth.
-- **Recommendation:** take work off the shipper task in milestone 2, encoding first, then stage A
-  ([Recommendation](#recommendation)).
+- **Recommendation:** take work off the shipper task, encoding first, then stage A
+  ([Recommendation](#recommendation)). #192 moved both off the task:
+  [the shipper after #192](#the-shipper-after-192).
 
 ## The fsync-honesty probe
 
@@ -276,7 +279,8 @@ keeps up by definition and shows idle time.
   14.1%, stage B 8.5%).
 - The other jobs ran on Crucible's vCPUs too (load average up to 10), which slows this one task; on a quiet machine
   it would move somewhat more. The split between phases is the stable result.
-- What taking work off the task can buy, at most, before the next resource limits:
+- What taking work off the task could buy, at most, before the next resource limits (#192 measured what it
+  bought: [the shipper after #192](#the-shipper-after-192)):
   - parallel stage A alone: 1 / (1 - 0.224) = 1.29 times, about 89,000 spans/s;
   - encoding off the task alone: 1 / (1 - 0.515) = 2.1 times, about 142,000 spans/s;
   - both: 1 / (1 - 0.739) = 3.8 times, about 265,000 spans/s, if Crucible's other cores and ClickHouse keep up (at
@@ -286,22 +290,22 @@ keeps up by definition and shows idle time.
 
 ## Recommendation
 
-**Take work off the shipper task in milestone 2, and start with encoding rather than stage A.**
+The milestone 1 recommendation was to **take work off the shipper task, starting with encoding rather than stage
+A**. #192 did both; [the shipper after #192](#the-shipper-after-192) has what it measured. The reasons, as
+measured then:
 
-- The single task caps a node at about 69,000 spans/s of 1 KiB spans end to end on this rig, a seventh of what its
-  ack path takes in a burst. A node acknowledging at its burst rate fills the WAL's high-water mark (90% of 16 GiB)
-  within about two minutes, then answers 503: the shipper, not the ack path, sets what a node sustains.
-- Encoding is half of the task's time, and the pairs of a sealed batch are independent: each pair's block can be
-  sorted, encoded and compressed by its own blocking job on the batch's task, which already runs apart from the
-  shipper task, and kept for byte-identical retries as contract 5.2 requires. Stage B's order and the batch
-  identities stay as they are.
-- Parallel stage A comes next. Contract 3.2 already defines stage A as pure and parallel per frame; alone it buys at
+- The single task capped a node at about 69,000 spans/s of 1 KiB spans end to end on this rig, a seventh of what its
+  ack path took in a burst. A node acknowledging at its burst rate fills the WAL's high-water mark (90% of 16 GiB)
+  within about two minutes, then answers 503: the shipper, not the ack path, set what a node sustained.
+- Encoding was half of the task's time, and the pairs of a sealed batch are independent: each pair's block can be
+  sorted, encoded and compressed by its own blocking job and kept for byte-identical retries, as contract 5.2
+  requires, with stage B's order and the batch identities unchanged.
+- Parallel stage A came next. Contract 3.2 defines stage A as pure and parallel per frame; alone it could buy at
   most 1.29 times, with encoding moved as well up to 3.8 times.
-- Milestone 2 makes the task's work per span larger: the full span model, GenAI mapping and compatibility mappers
-  add stage A work, and the rollup and fact tables add rows and blocks per span. Waiting for milestone 6 lets the
-  ceiling fall further first; the phase metrics show each step's effect.
-- Milestone 6 keeps the rest: builders that write columns directly instead of rows of cells (`rows` and `encode`
-  together are 65% of the task today), the io_uring WAL backend, and the ack path's flush tail on real disks.
+- Milestone 2 made the task's work per span larger: the full span model, GenAI mapping and compatibility mappers
+  added stage A work, and the rollup and fact tables added rows and blocks per span.
+- The rest was left to milestone 6: builders that write columns directly instead of rows of cells (`rows` and
+  `encode` together were 65% of the task), the io_uring WAL backend, and the ack path's flush tail on real disks.
 
 ## The shipper after #168
 
@@ -339,7 +343,7 @@ trace, 30 s of load, then the drain (`sustained-step 1k plain <spans/s> 30`).
   of 132 ms for `span_core` and 255 ms for `span_payload` on average, in blocks of 60,000 rows, against the 500 ms
   linger), Crucible used 1.19 of its 2 CPUs and ClickHouse 0.70 of its 2.
 - Of the task's busy time, encode is 48%, stage A 22%, rows 17% and stage B 9%. On this rig, encoding off the task
-  can buy at most 1 / (1 - 0.483) = 1.9 times, and encoding with stage A 1 / (1 - 0.704) = 3.4 times, before the
+  could buy at most 1 / (1 - 0.483) = 1.9 times, and encoding with stage A 1 / (1 - 0.704) = 3.4 times, before the
   cost of handing work between tasks and the next limit.
 
 ### The deciding gates
@@ -390,6 +394,188 @@ measurements, each at a low rate, of the base and the candidate:
 rounds: 281.0 ms against 91.1 ms (3.09 times) before, 101.2 ms against 87.7 ms (1.15 times) after, and 96.1 ms
 against 75.1 ms (1.28 times) in a second run after, on the branch merged with `main` at `2a48f47`. The request
 shape of the gate's lanes, one trace per request, never exercised it.
+
+## The shipper after #192
+
+Measured on 2026-11-25 and 2026-11-26 (UTC) on the same laptop, **measured on a laptop, not reference hardware**, at
+the gate's small-rig limits (Crucible on 2 CPUs and 1 GB), with no other container on the machine during the
+deciding runs but the gate's own driver: every gate session's run context names only its driver, and no
+`baseline.sh` step saw another container at its start or its end. #192 takes stage A and encoding off the shipper
+task: stage A runs as a blocking job on the frames the shipper reads ahead, each block of a sealed batch is encoded
+by a blocking job, each under a share of the CPU budget, stage B still takes the frames in LSN order, and while
+ingest holds more requests than its prepare share runs at once the shipper does that work on its task. The base is
+`main` at `8134c64`; `main` since then changes conformance tests and docs, and the 0.1.3 release commit sets
+the version. Every image is the gate's (`crucible-gate:<commit>`), and the `baseline.sh` steps run the `crucible`
+binary of those images.
+
+| Build | Stage A as a job | Encoding as a job |
+|---|---|---|
+| `fd9d0ac` | every frame over 16 KiB | every block |
+| `f21827a` | a frame over 16 KiB that durable frames follow | the blocks of a batch that durable frames follow when it seals |
+| `45daf03` | a frame over 16 KiB that durable frames follow | every block |
+
+The branch ends with `fd9d0ac`'s behaviour: [where this leaves the shipper](#where-this-leaves-the-shipper).
+
+### A batch seals once the batch before it is encoded
+
+The first smoke run of the e2e path killed the candidate for memory: one sustained arm ended with Crucible
+OOM-killed at 1 GB, and the other shipped 38,535 spans/s against about 60,400 for the base while its loss check
+reported 102,400 spans missing from `span_payload` with `span_core` complete (the check reads `span_payload` once
+`span_core` holds every span). A sealed batch kept its rows until a job encoded them, and while both batches in
+flight waited for encoding the open batch grew past its linger toward its size limits. A batch now seals only once
+every batch in flight has its blocks encoded, and a due batch takes no further frame meanwhile, so besides the open
+batch only the batch being encoded holds rows. No arm of any later run was killed or lost a span.
+
+### `fd9d0ac`: the deciding gates
+
+`cargo xtask perf gate --base 8134c64 --candidate fd9d0ac --rig small --pairs 7 --lane 1kb`, with `--path ack` and
+`--path e2e`, from 22:25 to 22:42 UTC. The probe classified the WAL volume `honest`.
+
+| Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first | Result |
+|---|---|---|---|---|---|---|---|
+| ack | Throughput, acknowledged spans/s | 591,073 | 594,940 | +0.7% | 0.34 | +1.0% | no regression |
+| ack | Durable-ack p99, ms | 4.73 | 6.23 | +31.6% | 0.11 | +5.9% | no regression, higher in 6 of 7 pairs |
+| e2e | Sustained, shipped spans/s | 62,238 | 95,374 | +53.2% | | +2.2% | invalid |
+| e2e | Freshness p95, ms | 565.84 | 516.90 | -8.6% | 1.00 | -0.1% | no regression, lower in 7 of 7 pairs |
+
+- **The sustained comparison is invalid on the small rig**: its sustained schedule offers 100,000 spans/s, and 6 of
+  the 7 candidate arms shipped 94,491 to 96,689 of them, past the 90% at which the gate takes the store to have kept
+  up. The candidate kept up with the whole offered rate, so this rig cannot show its capacity.
+- **Durable-ack p99 rose at 10,000 spans/s**, the rate of the ack path's latency arm and of the e2e path's freshness
+  arm: in 6 of 7 pairs of the first, and in 5 of 7 of the second (median 5.06 against 6.23 ms). At that rate the
+  shipper keeps up, so its jobs buy nothing and run beside ingest on the same 2 CPUs.
+
+### Ack latency at 10,000 spans/s
+
+`f21827a` runs the jobs only while the shipper is behind the log. To tell a shift from the small rig's p99 noise,
+three images ran `baseline.sh sustained-step 1k plain 10000 60` in turn (base, `fd9d0ac`, `f21827a`, then each order
+rotated), 6,000 requests per step against the gate's 500, from 23:15 to 23:29 UTC:
+
+| Build | Ack p99 per step, ms | Median p99 | Median p99.9 | Freshness p95 | Jobs per step, stage A and encode |
+|---|---|---|---|---|---|
+| base `8134c64` | 4.79, 4.99, 5.01 | 4.99 | 8.8 | 564 to 567 ms | none |
+| `fd9d0ac` | 7.21, 6.06, 6.62 | 6.62 | 15.6 | 516 ms | 6,000 and 590 |
+| `f21827a` | 5.28, 4.60, 5.36 | 5.28 | 9.5 | 547 to 550 ms | 207 to 222 and 175 to 220 |
+
+Every `fd9d0ac` step is above every base step; `f21827a`'s range overlaps base's. Ack p50 was 2.0 ms in every step.
+
+### `f21827a`: the deciding gates and the shipper under overload
+
+The same gates from 23:29 to 23:46 UTC, probe `honest`:
+
+| Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first | Result |
+|---|---|---|---|---|---|---|---|
+| ack | Throughput, acknowledged spans/s | 611,825 | 600,461 | -1.9% | 0.23 | +0.6% | no regression |
+| ack | Durable-ack p99, ms | 4.93 | 5.26 | +6.7% | 0.47 | -12.4% | no regression |
+| e2e | Sustained, shipped spans/s | 63,116 | 64,187 | +1.7% | 0.66 | -4.2% | no regression |
+| e2e | Freshness p95, ms | 564.47 | 547.85 | -2.9% | 1.00 | +0.1% | no regression |
+
+The candidate's sustained arms ranged from 49,773 to 82,381 spans/s, three of them below their base arm: offered
+100,000 spans/s, the shipper catches up often, and a batch that seals with it caught up is encoded on the task, about
+300 ms of encoding for a batch of 40,000 spans, during which the backlog grows again.
+
+`baseline.sh sustained-step 1k plain 150000 30` keeps the shipper behind for the whole run, so `f21827a` runs
+every frame's stage A and every block's encoding as jobs. Two steps each, from 23:46 to 23:54 UTC; the shares are of
+the window between the metric scrapes around the load (31.3 to 31.6 s):
+
+| | Base | Base | `f21827a` | `f21827a` |
+|---|---|---|---|---|
+| Shipped spans/s, run and drain | 57,376 | 56,166 | 66,225 | 59,492 |
+| Drain after the run | 48.4 s | 50.1 s | 38.0 s | 45.6 s |
+| Ack p50 / p99 ms | 2.8 / 20.8 | 2.7 / 26.6 | 4.3 / 31.7 | 4.0 / 32.2 |
+| Crucible CPUs used of 2 | 1.28 | 1.22 | 1.55 | 1.49 |
+| Task: `encode` | 46.4% | 50.6% | 0.1% | 0.8% |
+| Task: `stage_a` | 21.5% | 20.4% | 9.5% | 11.1% |
+| Task: `rows` | 18.4% | 17.1% | 26.3% | 24.7% |
+| Task: `stage_b` | 8.1% | 7.6% | 29.7% | 21.6% |
+| Task: `read`, `wal_append` | 3.3% | 2.9% | 6.2% | 6.7% |
+| Task: `wait_inserts`, `wait_stage_a`, `wait_frames` | 0.0%, 0.0%, 1.4% | 0.0%, 0.0%, 1.3% | 14.8%, 12.2%, 1.3% | 20.8%, 12.7%, 1.6% |
+| Encoding jobs' hold, share of the window | | | 87.7% | 85.4% |
+| Stage A jobs' hold, share of the window | | | 30.6% | 28.7% |
+
+- Nothing was lost or duplicated in any step.
+- **Under overload the parallel shipper moves 4 to 18% more than base on 2 CPUs**, against a ceiling of 3.4 times for
+  both stages off the task. The encode share has one permit on 2 CPUs (a sixteenth of 16 permits, at least one), and
+  its jobs hold it 85 to 88% of the time, at about 13 to 14 µs of wall time per span where the task spent 8 to 9 µs
+  encoding in base; the task waits for encoding (`wait_inserts`) 15 to 21% of its time under the seal rule.
+- **Stage B and the rows cost about twice as much per span on the task** with stage A in jobs: about 8 µs against
+  about 4.6 µs in base. The records reach the task from another thread, and the rows leave it to another thread to
+  be encoded and freed.
+- Offered 100,000 spans/s, `fd9d0ac` kept up (above); offered 150,000, ingest takes more of the 2 CPUs and the
+  shipper shares them with it.
+
+### `45daf03`: encoding by jobs moves the ack p99
+
+`45daf03` keeps `f21827a`'s gate on stage A and encodes every block by a job, as `fd9d0ac` does. The rule for its
+rotation was written before the run: shifted when every one of its steps has a higher ack p99 than every base step.
+From 00:16 to 00:30 UTC on 2026-11-26:
+
+| Build | Ack p99 per step, ms | Median p99 | Median p99.9 | Freshness p95 | Jobs per step, stage A and encode |
+|---|---|---|---|---|---|
+| base `8134c64` | 5.14, 5.60, 8.90 | 5.60 | 13.5 | 564 to 568 ms | none |
+| `fd9d0ac` | 6.88, 7.01, 7.41 | 7.01 | 16.7 | 516 ms | 6,000 and 590 |
+| `45daf03` | 7.32, 7.54, 6.78 | 7.32 | 14.0 | 515 to 516 ms | 48 to 59 and 590 |
+
+The third base step held seven WAL syncs over 25 ms (p99.9 93.7 ms) with no other container on the machine, so the
+ranges overlap and the rule read "level", and the gates ran, from 00:30 to 00:47 UTC, probe `honest`:
+
+| Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first | Result |
+|---|---|---|---|---|---|---|---|
+| ack | Throughput, acknowledged spans/s | 609,373 | 593,570 | -2.6% | 0.078 | +0.7% | no regression |
+| ack | Durable-ack p99, ms | 5.23 | 6.36 | +21.6% | 0.039 | +10.6% | **regression**, higher in 6 of 7 pairs |
+| e2e | Sustained, shipped spans/s | 63,576 | 95,423 | +50.1% | | -1.1% | invalid: 5 of 7 candidate arms kept up |
+| e2e | Freshness p95, ms | 565.29 | 516.25 | -8.7% | 1.00 | +0.4% | no regression, lower in 7 of 7 pairs |
+
+- The ack p99 of the e2e path's freshness arms, at the same 10,000 spans/s, was higher in 7 of 7 pairs (4.1 to 5.3
+  ms against 6.4 to 7.6 ms).
+- With 48 to 59 stage A jobs per step against `fd9d0ac`'s 6,000, the ack p99 rose as much: encoding by jobs is what
+  moves it, and the gate on stage A buys nothing.
+
+`baseline.sh sustained-step 1k plain 150000 30`, two steps each, from 00:47 to 00:58 UTC:
+
+| | Base | Base | `45daf03` | `45daf03` | `fd9d0ac` | `fd9d0ac` |
+|---|---|---|---|---|---|---|
+| Shipped spans/s, run and drain | 57,288 | 58,901 | 65,208 | 61,551 | 62,665 | 60,918 |
+| Ack p50 / p99 ms | 2.9 / 29.6 | 2.7 / 21.3 | 4.0 / 42.7 | 4.1 / 33.8 | 4.2 / 46.1 | 4.6 / 32.9 |
+| Crucible CPUs used of 2 | 1.24 | 1.26 | 1.59 | 1.45 | 1.52 | 1.56 |
+| Encoding jobs' hold, share of the window | | | 83.5% | 86.9% | 84.9% | 86.0% |
+
+Nothing was lost or duplicated in any step.
+
+**The split the next round starts from** is that of base and `fd9d0ac`, the branch's behaviour, in these steps; the
+shares are of the window between the metric scrapes around the load (31.4 to 31.5 s):
+
+| | Base | Base | `fd9d0ac` | `fd9d0ac` |
+|---|---|---|---|---|
+| Shipped spans/s, run and drain | 57,288 | 58,901 | 62,665 | 60,918 |
+| Task busy | 97.1% | 98.5% | 72.4% | 71.1% |
+| Task: `encode` | 47.3% | 47.4% | 0.4% | 1.2% |
+| Task: `stage_a` | 21.2% | 21.4% | 9.0% | 11.5% |
+| Task: `rows` | 15.4% | 17.5% | 24.5% | 25.0% |
+| Task: `stage_b` | 10.0% | 9.3% | 32.5% | 27.0% |
+| Task: `read`, `wal_append` | 3.2% | 2.9% | 6.0% | 6.5% |
+| Task: `wait_inserts`, `wait_stage_a`, `wait_frames` | 0.0%, 0.0%, 1.5% | 0.0%, 0.0%, 1.5% | 15.4%, 10.5%, 1.6% | 15.1%, 12.4%, 1.4% |
+| Stage A jobs, and their hold as a share of the window | | | 19,810, 29.4% | 19,733, 29.6% |
+| Encoding jobs, and their hold as a share of the window | | | 245, 84.9% | 243, 86.0% |
+
+### Where this leaves the shipper
+
+The branch keeps `fd9d0ac`'s behaviour: stage A as a job on every frame over 16 KiB, encoding by a job for every
+block, the seal rule, and the work on the task while ingest is busy. On the gate's small rig, 2 CPUs:
+
+- **Offered 100,000 spans/s it keeps up**: 6 of the 7 arms of `fd9d0ac`'s gate shipped 94,491 to 96,689 spans/s,
+  the seventh 81,721, where base ships about 62,000. The gate cannot compare the two: its small rig offers 100,000
+  spans/s, and an arm that ships 90% of that counts as not saturated, so a build that gains more than about 45% reads
+  `invalid` there.
+- **Offered 150,000 spans/s**, ingest takes more of the 2 CPUs: about 61,000 to 63,000 against 56,000 to 59,000.
+- **Freshness p95 at 10,000 spans/s** falls from about 565 to about 516 ms: a pair's insert starts once its own block
+  is encoded.
+- **Durable-ack p99 at 10,000 spans/s** rises by about 1 to 2.5 ms, from about 5 ms to 6 to 7.5 ms: every rotation
+  step of a build that encodes by jobs is above the base median, `45daf03`'s gate reads regression, and the
+  freshness arms rose in 12 of 14 pairs. Gating the encoding on the log's state took the rise away, and the gain
+  with it (`f21827a`). The full rig, with 6 CPUs, is where the durable-ack p99 decides ([`perf.md`](perf.md)).
+- Untested lead for the next round: stage B and the rows cost about twice as much per span on the task, and
+  encoding 1.5 to 1.8 times as much, when records and rows are built on one thread and freed on another.
 
 ## Incomplete: remaining runs
 

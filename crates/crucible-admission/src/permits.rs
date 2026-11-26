@@ -16,14 +16,25 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub struct CpuShares {
     /// Ingest's inflate, transcode, scan and frame compression.
     pub ingest_prepare: u32,
+    /// The shipper's stage A: decoding and normalizing the frames it reads ahead of stage B.
+    pub stage_a: u32,
+    /// The shipper's encoding: sorting, encoding and compressing the block of each pair of a sealed batch.
+    pub encode: u32,
 }
 
 impl CpuShares {
-    /// The shares of `total` permits, each at least 1. Ingest's prepare stage is the only one that takes permits
-    /// so far, so it has the whole total; the shipper's stages will take their shares from the same total.
+    /// The shares of `total` permits, each at least 1 (default; revisit): stage A and encoding take a sixteenth
+    /// of the total each, half a permit per CPU at the default of 8 per CPU, and ingest's prepare stage the rest.
+    /// The shipper's jobs never wait on a disk or a peer, so their permits are about the CPUs they may fill, and
+    /// the larger rest keeps a burst of ingest from waiting behind them.
     pub const fn of(total: u32) -> Self {
+        let total = if total == 0 { 1 } else { total };
+        let shipper = if total < 16 { 1 } else { total / 16 };
+        let rest = total.saturating_sub(2 * shipper);
         Self {
-            ingest_prepare: if total == 0 { 1 } else { total },
+            ingest_prepare: if rest == 0 { 1 } else { rest },
+            stage_a: shipper,
+            encode: shipper,
         }
     }
 }
@@ -379,9 +390,31 @@ mod tests {
 
     #[test]
     fn shares_cover_the_total_and_never_drop_to_zero() {
-        assert_eq!(CpuShares::of(6).ingest_prepare, 6);
-        assert_eq!(CpuShares::of(1).ingest_prepare, 1);
-        assert_eq!(CpuShares::of(0).ingest_prepare, 1);
+        let shares = |ingest_prepare, stage_a, encode| CpuShares {
+            ingest_prepare,
+            stage_a,
+            encode,
+        };
+        // The default of 8 per CPU: 2 CPUs and 6 CPUs.
+        assert_eq!(CpuShares::of(16), shares(14, 1, 1));
+        assert_eq!(CpuShares::of(48), shares(42, 3, 3));
+        assert_eq!(CpuShares::of(6), shares(4, 1, 1));
+        assert_eq!(CpuShares::of(2), shares(1, 1, 1));
+        assert_eq!(CpuShares::of(1), shares(1, 1, 1));
+        assert_eq!(CpuShares::of(0), shares(1, 1, 1));
+    }
+
+    proptest! {
+        /// Every share is at least 1, and from 3 permits on the shares add up to the total exactly.
+        #[test]
+        fn shares_add_up_to_the_total(total in 0u32..100_000) {
+            let s = CpuShares::of(total);
+            prop_assert!(s.ingest_prepare >= 1 && s.stage_a >= 1 && s.encode >= 1);
+            prop_assert_eq!(s.stage_a, s.encode);
+            if total >= 3 {
+                prop_assert_eq!(s.ingest_prepare + s.stage_a + s.encode, total);
+            }
+        }
     }
 
     #[test]

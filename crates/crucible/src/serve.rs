@@ -64,8 +64,8 @@ use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_schema::SqlProfile;
 use crucible_shipper::{
-    DeletionRequests, FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, NoDeletions, NoSalts,
-    ProjectSalts, RecentHook, Shipper, ShipperConfig,
+    DeletionRequests, FrameManifest, Hooks, IngestLoad, MANIFEST_FILE, NoBarriers, NoDeletions,
+    NoSalts, ProjectSalts, RecentHook, Shipper, ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
 use crucible_ui_assets::{Catalog, Outcome};
@@ -652,6 +652,16 @@ async fn start(
     })
 }
 
+/// Ingest's load as the shipper reads it.
+#[derive(Debug)]
+struct IngestBusy(Ingest);
+
+impl IngestLoad for IngestBusy {
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
+}
+
 /// What the `telemetry-store` task takes over.
 struct StoreTask {
     config: ClickHouse,
@@ -683,6 +693,10 @@ struct StoreTask {
     lifecycle: Option<Arc<Lifecycle>>,
     /// Media, with an object store and a control plane.
     media: Option<crucible_media::Media>,
+    /// The CPU budget's shares, of which the shipper takes stage A's and encoding's.
+    cpu: CpuShares,
+    /// Ingest, whose load tells the shipper when ingest needs the CPUs.
+    ingest: Ingest,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -772,6 +786,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         alerts,
         lifecycle,
         media,
+        cpu,
+        ingest,
     } = task;
     let store = config.store(&env);
     let mut shutdown = env.shutdown();
@@ -806,6 +822,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
 
     let shipper_config = ShipperConfig {
         flavour: facts.flavour,
+        stage_a_permits: cpu.stage_a,
+        encode_permits: cpu.encode,
         ..ShipperConfig::default()
     };
     let view = Arc::new(WalSpans {
@@ -894,6 +912,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         recent: hook,
         salts,
         deletions,
+        ingest: Some(Arc::new(IngestBusy(ingest))),
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
@@ -1028,6 +1047,14 @@ fn sum<'a>(budgets: impl IntoIterator<Item = &'a Budget>) -> u64 {
         .fold(0u64, |total, budget| total.saturating_add(budget.bytes))
 }
 
+/// `a`, `a and b`, `a, b and c`.
+fn listed(items: &[String]) -> String {
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.join(""),
+    }
+}
+
 /// The warning for budgets that add up to more than [`BUDGET_SHARE_PERCENT`] of `memory`, naming each budget and
 /// what changes it (contract 1.7); `None` when they fit.
 fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
@@ -1062,18 +1089,21 @@ fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
         let together = if settable.len() > 1 { " together" } else { "" };
         advice.push_str(&format!(
             ", or lower {} to at most {} MiB{together}",
-            settable.join(" and "),
+            listed(&settable),
             room >> 20
         ));
     }
     if !fixed.is_empty() {
-        let names: Vec<&str> = fixed.iter().map(|budget| budget.setting).collect();
+        let names: Vec<String> = fixed
+            .iter()
+            .map(|budget| budget.setting.to_owned())
+            .collect();
         let sizes: Vec<String> = fixed.iter().map(|budget| mib(budget.bytes)).collect();
         let verb = if fixed.len() > 1 { "are" } else { "is" };
         advice.push_str(&format!(
             "; {} {verb} fixed at {} in this build",
-            names.join(" and "),
-            sizes.join(" and "),
+            listed(&names),
+            listed(&sizes),
         ));
     }
     Some(format!(
@@ -1245,7 +1275,8 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
             None => service,
         }
     });
-    let ingest = ingest_config(CpuShares::of(cpu_permits).ingest_prepare);
+    let cpu = CpuShares::of(cpu_permits);
+    let ingest = ingest_config(cpu.ingest_prepare);
     let inflight_bytes = ingest.inflight_bytes;
     let (app, report) = open_app(
         env,
@@ -1312,6 +1343,11 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 bytes: ShipperConfig::default().encoded_bytes,
                 changed_by: None,
             },
+            Budget {
+                setting: "normalize.cache_bytes",
+                bytes: ShipperConfig::default().cache_bytes,
+                changed_by: None,
+            },
         ]
     } else {
         vec![ingest_budget]
@@ -1348,6 +1384,8 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 alerts,
                 lifecycle: app.lifecycle.clone(),
                 media: media.as_ref().map(|media| media.service.clone()),
+                cpu,
+                ingest: app.ingest.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1847,6 +1885,17 @@ mod tests {
                      this build"
                 )
         );
+        // Three fixed budgets are listed with commas.
+        let mut three = budgets(0).to_vec();
+        three.push(Budget {
+            setting: "normalize.cache_bytes",
+            bytes: 64 << 20,
+            changed_by: None,
+        });
+        assert!(budget_warning(limited, &three).unwrap().ends_with(
+            "ingest.inflight_bytes, shipper.encoded_bytes and normalize.cache_bytes are fixed at 512 MiB, 1024 MiB \
+             and 64 MiB in this build"
+        ));
     }
 
     #[test]

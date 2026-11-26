@@ -120,6 +120,13 @@ impl FrameFault {
 /// Default `shipper.encoded_bytes` (default; revisit): several times the rows of the largest frame.
 pub const DEFAULT_ENCODED_BYTES: u64 = 1 << 30;
 
+/// Default `normalize.cache_bytes` (default; revisit): the frames read ahead of stage B, by their decompressed
+/// payload. Fixed in the build, like `shipper.encoded_bytes`.
+pub const DEFAULT_CACHE_BYTES: u64 = 64 << 20;
+
+/// Default shares of the CPU budget for stage A and for encoding, which the binary sets from `cpu.permits`.
+pub const DEFAULT_SHIPPER_PERMITS: u32 = 2;
+
 /// The settings of one shipper.
 #[derive(Clone, Debug)]
 pub struct ShipperConfig {
@@ -175,6 +182,17 @@ pub struct ShipperConfig {
     /// A batch that recovery found keeps its recorded boundaries: it takes its next frame once the budget has
     /// any room or nothing else is held, so the rows held never exceed the budget by more than one frame.
     pub encoded_bytes: u64,
+    /// `normalize.cache_bytes`: the budget for the frames read from the WAL ahead of stage B, charged at their
+    /// decompressed payload from the read until stage B takes them. The shipper reads another frame only while
+    /// the frames held are below it, and always into an empty window, so one frame larger than the budget is
+    /// read by itself. Beyond it the frames stay on disk and are read back in LSN order (contract 4.8).
+    pub cache_bytes: u64,
+    /// The stage A share of the CPU budget (`cpu.permits`): the most frames whose stage A runs at once. The
+    /// shipper keeps up to twice as many frames read ahead of stage B, so a job waits for every permit that
+    /// ends.
+    pub stage_a_permits: u32,
+    /// The encode share of the CPU budget: the most blocks of sealed batches encoded at once.
+    pub encode_permits: u32,
     /// A seeded normalizer fault; `None` outside the simulation suite.
     pub frame_fault: Option<FrameFault>,
     /// A seeded defect; `None` outside the simulation suite.
@@ -206,6 +224,9 @@ impl Default for ShipperConfig {
             duplicate_window_keys: DUPLICATE_WINDOW_KEYS,
             first_seen_traces: FIRST_SEEN_TRACES,
             encoded_bytes: DEFAULT_ENCODED_BYTES,
+            cache_bytes: DEFAULT_CACHE_BYTES,
+            stage_a_permits: DEFAULT_SHIPPER_PERMITS,
+            encode_permits: DEFAULT_SHIPPER_PERMITS,
             frame_fault: None,
             mutant: None,
         }

@@ -302,3 +302,35 @@ async fn the_permit_wait_and_hold_are_recorded() {
     drop(router);
     close(prod, wal).await;
 }
+
+/// Ingest is busy while it holds more requests than its share of the CPU budget prepares at once: 16 requests whose
+/// preparations hold their threads, against the default of four permits. It is not busy before or after them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ingest_is_busy_while_it_holds_more_requests_than_its_permits() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = wal_config();
+    let (prod, wal) = open(dir.path(), &config).await;
+    let (env, _jobs) = watched(&prod, Some(16));
+    let ingest = ingest(&env, &wal, &config, IngestConfig::default());
+    assert!(!ingest.busy());
+    let router = ingest.router();
+    let request = Req::protobuf(&spans(20, 1_024, now_nanos(&prod))).gzip();
+    let mut replies = env.spawn("requests", async move {
+        futures::future::join_all((0..16).map(|_| send(&router, request.clone()))).await
+    });
+    let mut busy = false;
+    for _ in 0..2_000 {
+        busy = ingest.busy();
+        if busy {
+            break;
+        }
+        prod.env.clock.sleep(Duration::from_millis(1)).await;
+    }
+    assert!(busy, "ingest never held more requests than its permits");
+    for reply in replies.join().await.unwrap() {
+        assert_eq!(reply.status, StatusCode::OK, "{reply:?}");
+    }
+    assert!(!ingest.busy());
+    drop(ingest);
+    close(prod, wal).await;
+}

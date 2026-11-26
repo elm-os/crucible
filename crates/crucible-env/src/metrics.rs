@@ -211,7 +211,8 @@ pub mod registry {
         labels: &[],
     };
 
-    /// Time a blocking job waited for a permit of the CPU budget, by stage (`ingest_prepare`).
+    /// Time a blocking job waited for a permit of the CPU budget, by stage (`ingest_prepare`, `stage_a`,
+    /// `encode`).
     pub static CPU_PERMIT_WAIT: HistogramDef = HistogramDef {
         name: "crucible_cpu_permit_wait_microseconds",
         help: "Time a blocking job waited for a permit of the CPU budget, in microseconds, by stage.",
@@ -317,8 +318,8 @@ pub mod registry {
     };
 
     /// The shipper task's time by the phase it was in (`read`, `stage_a`, `stage_b`, `rows`, `encode`,
-    /// `wal_append`, `wait_inserts`, `wait_frames`), timed by the task with the `Env` clock. Every moment of the
-    /// task's run falls in exactly one phase, so the phases add up to the time it has run.
+    /// `wal_append`, `wait_inserts`, `wait_frames`, `wait_stage_a`), timed by the task with the `Env` clock.
+    /// Every moment of the task's run falls in exactly one phase, so the phases add up to the time it has run.
     pub static SHIPPER_TASK_TIME: CounterDef = CounterDef {
         name: "crucible_shipper_task_microseconds_total",
         help: "Time the shipper task spent in each phase of its loop, in microseconds.",
@@ -329,6 +330,14 @@ pub mod registry {
     pub static SHIPPER_ENCODED_BYTES: GaugeDef = GaugeDef {
         name: "crucible_shipper_encoded_bytes",
         help: "Estimated bytes of the rows the shipper holds, tracked against the shipper.encoded_bytes budget.",
+        labels: &[],
+    };
+
+    /// Bytes of the frames the shipper read from the WAL ahead of stage B, by their decompressed payload, tracked
+    /// against the `normalize.cache_bytes` budget.
+    pub static NORMALIZE_CACHE_BYTES: GaugeDef = GaugeDef {
+        name: "crucible_normalize_cache_bytes",
+        help: "Bytes of the frames read from the WAL ahead of stage B, tracked against the normalize.cache_bytes budget.",
         labels: &[],
     };
 
@@ -462,6 +471,11 @@ pub mod registry {
             (
                 SHIPPER_ENCODED_BYTES.name,
                 SHIPPER_ENCODED_BYTES.labels,
+                &[],
+            ),
+            (
+                NORMALIZE_CACHE_BYTES.name,
+                NORMALIZE_CACHE_BYTES.labels,
                 &[],
             ),
             (

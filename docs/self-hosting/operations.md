@@ -173,8 +173,9 @@ docker run --rm --network container:crucible-crucible-1 curlimages/curl:8.23.0 -
 | `crucible_shipper_batches_total`, `crucible_shipper_inserts_total`, `crucible_shipper_probes_total`, `crucible_shipper_checkpoints_total` | counter | Batches sealed and shipped, inserts sent and those with an unknown outcome, existence probes, checkpoints |
 | `crucible_shipper_quarantined_frames_total`, `crucible_shipper_quarantined_pairs_total` | counter | Frames this binary could not decode or normalize, copied to the `quarantine` directory, and data that failed repeatedly |
 | `crucible_shipper_deletion_drops_total{kind}` | counter | Spans, MCP operations and facts (`span`, `mcp_operation`, `fact`) that the shipper dropped before they reached ClickHouse because a deletion request selects them |
-| `crucible_shipper_encoded_bytes`, `crucible_shipper_drain_bytes_per_second` | gauge | Rows the shipper holds, against its budget; the rate at which the log drains |
-| `crucible_shipper_task_microseconds_total{phase}` | counter | The shipper's time by what it was doing: reading the log (`read`), normalizing (`stage_a`, `stage_b`), building rows (`rows`), encoding blocks (`encode`), writing its own log records (`wal_append`), waiting for inserts to ClickHouse (`wait_inserts`) and idle (`wait_frames`). The phases add up to the time it ran. While `crucible_wal_unshipped_bytes` grows, little `wait_inserts` and `wait_frames` means the shipper is the limit; much `wait_inserts` means ClickHouse is |
+| `crucible_shipper_encoded_bytes`, `crucible_normalize_cache_bytes`, `crucible_shipper_drain_bytes_per_second` | gauge | Rows the shipper holds, against its budget; the requests it read ahead of normalization, against theirs; the rate at which the log drains |
+| `crucible_shipper_task_microseconds_total{phase}` | counter | The shipper task's time by what it was doing: reading the log (`read`), handing requests to normalization and normalizing small ones (`stage_a`), deduplicating (`stage_b`), building rows (`rows`), handing sealed batches to encoding (`encode`), writing its own log records (`wal_append`), waiting for the normalization of the next request (`wait_stage_a`), waiting for inserts to ClickHouse and for the encoding of the batches in flight (`wait_inserts`) and idle (`wait_frames`). Normalization and encoding run on other threads. The phases add up to the time the task ran. While `crucible_wal_unshipped_bytes` grows, little time waiting means the task is the limit; much `wait_stage_a` means normalization is; much `wait_inserts` means ClickHouse or encoding is, and `crucible_cpu_permit_wait_microseconds{stage="encode"}` tells them apart |
+| `crucible_cpu_permit_wait_microseconds{stage}`, `crucible_cpu_permit_hold_microseconds{stage}` | histogram | How long the blocking jobs of each stage of the CPU budget (`cpu.permits`) waited for a permit and then ran: `ingest_prepare` (inflating, transcoding, scanning and compressing requests), `stage_a` (normalizing) and `encode` (encoding blocks). Waits that grow while the CPUs have room mean the stage's share is short: raise `cpu.permits` |
 | `crucible_clickhouse_connections_opened_total` | counter | Connections opened to ClickHouse |
 | `crucible_auth_key_snapshot_age_seconds` | gauge | Seconds since the API keys last loaded from Postgres; -1 before the first load |
 | `crucible_net_accept_errors_total` | counter | Failed accepts on a listener |
@@ -190,9 +191,10 @@ its response carried in `X-Request-Id`.
 ## Memory and disk
 
 - **Memory.** The server's memory budgets are the recent-span index (`recent.max_bytes`, by default 10% of the
-  memory it may use, at most 1 GiB), 512 MiB of request bytes in flight during ingest and 1 GiB of rows in the
-  shipper. At startup it adds them up and logs a warning when they exceed 90% of the memory it may use, with the
-  amount to give it. With the defaults, give the container at least 2 GiB.
+  memory it may use, at most 1 GiB), 512 MiB of request bytes in flight during ingest, 1 GiB of rows in the
+  shipper and 64 MiB of requests the shipper reads ahead of normalization. At startup it adds them up and logs a
+  warning when they exceed 90% of the memory it may use, with the amount to give it. With the defaults, give the
+  container at least 2 GiB.
 - **Disk.** The write-ahead log lives in `data.dir`. It grows while ClickHouse is unreachable and shrinks as the
   shipper catches up. When the log is above its high-water mark or the disk is nearly full, ingest answers 503 with
   `Retry-After` instead of accepting what it might not keep.

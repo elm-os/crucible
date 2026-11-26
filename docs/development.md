@@ -146,13 +146,17 @@ password_file = "/run/secrets/postgres"
   `_file` twin. Given both in one layer, the file is used and a warning says so.
 - `sql.statements_per_hour` (default 1,800) is the hourly allowance of each project's SQL workspace identity. A run
   through the API is three statements, two checks and the query. The value is applied to ClickHouse at every start.
-- `cpu.permits` (`CRUCIBLE_CPU_PERMITS`) is the CPU budget: how many blocking jobs (the inflate, transcode, scan
-  and frame compression of ingest requests) run at once. The default is 8 per CPU the process may use, which
-  counts its CPU affinity and cgroup quota. A request beyond it waits its turn without holding a thread, and the
-  runtime keeps 8 blocking threads more for the blocking work that takes no permit (disk reads, name lookups,
-  password hashing). The default is a multiple of the CPUs because the jobs share the CPUs with the runtime's
-  workers, which run the rest of ingest and the shipper: with one permit per CPU, a burst on the perf gate's small
-  rig acknowledged 12 to 26% fewer spans per second than with an unbounded blocking pool.
+- `cpu.permits` (`CRUCIBLE_CPU_PERMITS`) is the CPU budget: how many blocking jobs run at once. The shipper's
+  stage A (normalizing the frames it reads ahead) and its encoding of blocks take a sixteenth of the total each, at
+  least one permit, and ingest's preparation of requests (inflate, transcode, scan and frame compression) the rest.
+  The default is 8 per CPU the process may use, which counts its CPU affinity and cgroup quota. A job beyond its
+  stage's share waits its turn without holding a thread, and the runtime keeps 8 blocking threads more for the
+  blocking work that takes no permit (disk reads, name lookups, password hashing). The default is a multiple of the
+  CPUs because ingest's jobs share the CPUs with the runtime's workers, which run the rest of ingest and the
+  shipper's task: with one permit per CPU, a burst on the perf gate's small rig acknowledged 12 to 26% fewer spans
+  per second than with an unbounded blocking pool. The shipper's jobs never wait on a disk or a peer, so their
+  shares are about the CPUs they may fill. While ingest holds more requests than its share prepares at once, as
+  in a burst, the shipper does that work on its own task instead, so the burst keeps the CPUs it had.
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
 - `server.keys_file` is for a server without `[postgres]`; given both, the configuration is refused with what to do.
