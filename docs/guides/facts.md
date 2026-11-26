@@ -8,7 +8,9 @@ which never change, and show wherever the target shows: the trace list, the trac
 
 The trace page has a **Tags, flags and feedback** section. There you add or remove a tag (up to 256 bytes),
 switch **Bookmark** and **Public**, and add a score with a name, a value (a number, `true` or `false`, or a word) and
-a comment. Writing facts needs the member role on the project; viewers see them.
+a comment. Writing facts needs the member role on the project; viewers see them. **Public** is a label, as
+**Bookmark** is: it does not change who can read the trace, which still takes a person signed in with a role on the
+project, or a key with the `read` scope.
 
 ## Scores from an SDK
 
