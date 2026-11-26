@@ -554,8 +554,8 @@ block, the seal rule, and the work on the task while ingest is busy. On the gate
   is encoded.
 - **Durable-ack p99 at 10,000 spans/s** rises by about 1 to 2.5 ms, from about 5 ms to 6 to 7.5 ms: every rotation
   step of a build that encodes by jobs is above the base median, `45daf03`'s gate reads regression, and the
-  freshness arms rose in 12 of 14 pairs. Gating the encoding on the log's state took the rise away, and the gain with it (`f21827a`). The full
-  rig, with 6 CPUs, is where the durable-ack p99 decides ([`perf.md`](perf.md)).
+  freshness arms rose in 12 of 14 pairs. Gating the encoding on the log's state took the rise away, and the gain
+  with it (`f21827a`). The full rig, with 6 CPUs, is where the durable-ack p99 decides ([`perf.md`](perf.md)).
 - Untested lead for the next round: stage B and the rows cost about twice as much per span on the task, and
   encoding 1.5 to 1.8 times as much, when records and rows are built on one thread and freed on another.
 
