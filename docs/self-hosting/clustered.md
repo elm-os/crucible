@@ -35,8 +35,8 @@ flowchart LR
 
 `deploy/compose/compose.cluster.yaml` runs two ClickHouse 26.8 replicas and one ClickHouse Keeper beside Crucible and
 Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need. It
-needs Docker Compose 2.23.1 or newer, which reads that configuration from the file, and step 2 needs `openssl` and a
-POSIX shell.
+needs Docker Compose 2.23.1 or newer, the first version that reads configuration files written inside the Compose
+file, and step 2 needs `openssl` and a POSIX shell.
 
 1. Download the Compose file into a new folder, and work in that folder:
 
@@ -65,17 +65,16 @@ POSIX shell.
    docker compose -f compose.cluster.yaml logs crucible | grep 'setup/?token='
    ```
 
-   Or, without a browser, `crucible admin init` reads the password from standard input: pipe it in, with `-T` so
-   that `docker compose exec` opens no terminal, as a script needs:
+   Or, without a browser: `crucible admin init` reads the password from the first line of standard input. In a
+   script, pipe it in and add `-T`, so that `docker compose exec` passes the pipe on instead of opening a terminal:
 
    ```sh
    printf '%s\n' "$OWNER_PASSWORD" | docker compose -f compose.cluster.yaml exec -T crucible \
      crucible admin init --org-name Acme --email you@example.com --name 'Your Name'
    ```
 
-Every `docker compose` command of the quickstart works here with `-f compose.cluster.yaml` after `docker compose`,
-because the folder holds no `compose.yaml`. Without it, Compose answers `no configuration file provided`. For
-example:
+The folder holds no `compose.yaml`, so every `docker compose` command of the quickstart needs `-f compose.cluster.yaml`
+here; without it, Compose answers `no configuration file provided`. For example:
 
 ```sh
 docker compose -f compose.cluster.yaml exec crucible crucible admin create-key --project default
@@ -88,9 +87,9 @@ Optional settings, in `.env`:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image: a release tag such as `0.1`, or the tag of an image you built |
+| `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image, such as `ghcr.io/elm-os/crucible:0.1` for a release line or `crucible:dev` for an image you built |
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on |
-| `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the web UI, the REST API and OTLP/HTTP ingest |
+| `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the main listener: the UI, the REST API, the MCP server and OTLP/HTTP ingest |
 | `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | The host port of OTLP/HTTP ingest |
 
 The ports are published on every interface, so other machines on your network can send traces and sign in. Add
@@ -98,7 +97,7 @@ The ports are published on every interface, so other machines on your network ca
 
 The file names its Compose project `crucible-cluster`, so a second copy on the same machine would share the first
 one's containers and volumes. Give a second copy its own project name, with `-p <name>` on every command or
-`COMPOSE_PROJECT_NAME=<name>` in its `.env`, and its own ports.
+`COMPOSE_PROJECT_NAME=<name>` in its `.env`, and its own `CRUCIBLE_HTTP_PORT` and `CRUCIBLE_OTLP_HTTP_PORT`.
 
 The file runs these services:
 
