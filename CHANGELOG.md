@@ -16,6 +16,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - On a cluster with a replica down, each read of every replica (the existence probe, the checks of a deletion and of
   a partition drop, and the check before each migration step) tries the stopped replica once instead of three times,
   so it waits for one connection attempt instead of three.
+- The docs at a release's tag install that release: the release pull request writes the new version into every
+  install command in the README, the docs and the SDK READMEs, and the SDK release workflow fails while one names
+  another version. At the tags v0.1.1 to v0.1.3 the install commands name the previous release.
 
 ## [0.1.3] - 2026-11-26
 
