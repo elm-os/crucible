@@ -1,8 +1,8 @@
 //! The shipper's blocking jobs under the CPU budget (contract 2.14): stage A of the frames read ahead of stage B,
 //! and the encoding of the blocks of a sealed batch, each stage under its own share of `cpu.permits`.
 //!
-//! The shipper offers work as jobs only while it is behind the log: one that keeps up does the work on its task,
-//! as one thread, and leaves the CPUs to ingest.
+//! The shipper offers stage A as jobs only while it is behind the log, so one that keeps up normalizes on its task,
+//! one frame at a time, beside ingest; it offers the encoding of every block as a job.
 //!
 //! A job takes a permit of its stage before it is spawned. One that finds none waits without a thread and runs
 //! on the thread of the job that passes its permit on, first come, first served. Each job's wait (from the offer

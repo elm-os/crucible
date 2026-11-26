@@ -801,11 +801,11 @@ fn stage_a_runs_ahead_of_stage_b_and_the_phases_add_up() {
     assert_eq!(encode, deferred.inserts.len() as u64);
 }
 
-/// A shipper that keeps up with the log reads each frame as the last durable one and seals while caught up, so it
-/// runs stage A and encodes on its task, as one thread, and leaves the CPUs to ingest: it offers no job, and its
-/// window holds one frame at a time.
+/// A shipper that keeps up with the log reads each frame as the last durable one, so it runs stage A on its task,
+/// one frame at a time, beside ingest: it offers no stage A job, and its window holds one frame. It encodes every
+/// block by a job all the same.
 #[test]
-fn a_shipper_that_keeps_up_offers_no_jobs() {
+fn a_shipper_that_keeps_up_runs_stage_a_on_its_task() {
     let log = large_requests(12);
     let trickle = Some(50_000);
     let in_place = ship(
@@ -824,11 +824,11 @@ fn a_shipper_that_keeps_up_offers_no_jobs() {
             ..Setup::deferred(40, 2_000)
         },
     );
-    assert_eq!(deferred.jobs, (0, 0));
+    assert!(!deferred.inserts.is_empty());
+    assert_eq!(deferred.jobs, (0, deferred.inserts.len() as u64));
     assert_eq!(deferred.stats.frames_ahead_peak, 1);
     assert_eq!(in_place.tokens(), deferred.tokens());
     assert_eq!(in_place.within_log(), deferred.within_log());
-    assert!(!deferred.inserts.is_empty());
 }
 
 /// A node that starts on a log a node before it shipped rebuilds stage B from the retained prefix with stage A of

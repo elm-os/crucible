@@ -3,10 +3,10 @@
 //! select (contract 13.3, step 3): those of the `Tombstone` frames it has passed, and every request the control
 //! store holds that can select a frame, which it reads before it admits the frame.
 //!
-//! While the shipper is behind the log, stage A of the frames read ahead ([`Window`]) and the encoding of each
-//! sealed batch's blocks run as blocking jobs under their shares of the CPU budget ([`CpuStage`]); the task keeps
-//! reading, stage B, the rows and the WAL's records. A batch seals once the blocks of every batch before it are
-//! encoded.
+//! Stage A of the frames read ahead ([`Window`]) runs as blocking jobs while the shipper is behind the log, and the
+//! encoding of each sealed batch's blocks always does, each under its share of the CPU budget ([`CpuStage`]); the
+//! task keeps reading, stage B, the rows and the WAL's records. A batch seals once the blocks of every batch before
+//! it are encoded.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1197,10 +1197,6 @@ impl Shipper {
             first_lsn: self.open.first_lsn(),
             last_lsn: self.open.last_lsn(),
         };
-        // The blocks are encoded by jobs only while the log holds durable frames past the batch, which the seal's
-        // own frame would add to: a shipper that keeps up encodes on its task, as one thread, and leaves the CPUs
-        // to ingest.
-        let behind = ctx.wal.durable_lsn() > id.last_lsn;
         let next = OpenBatch::new(Lsn::new(id.last_lsn.get().saturating_add(1)));
         let batch = std::mem::replace(&mut self.open, next);
         let (raw_bytes, row_bytes) = (batch.raw_bytes(), batch.row_bytes());
@@ -1256,22 +1252,19 @@ impl Shipper {
             }
             let marker = !(pair.0 == TableId::McpToolRollup && ctx.config.drops_rollup_marker());
             let token = pair_token(&id, pair)?;
-            // The block is encoded once, and every attempt of the pair sends those bytes (contract 5.2).
-            let encode = move || block(&id, pair, rows, marker_at, compression, marker);
-            let block = if behind {
-                // A job owns the rows and frees them, then counts the batch down.
-                unencoded.fetch_add(1, Ordering::AcqRel);
-                let (left, encoded) = (Arc::clone(&unencoded), Arc::clone(&ctx.encoded));
-                ctx.encode.run(&ctx.env, move || {
-                    let block = encode();
-                    if left.fetch_sub(1, Ordering::AcqRel) == 1 {
-                        encoded.notify_one();
-                    }
-                    block
-                })
-            } else {
-                Pending::ready(encode())
-            };
+            unencoded.fetch_add(1, Ordering::AcqRel);
+            let (left, encoded) = (Arc::clone(&unencoded), Arc::clone(&ctx.encoded));
+            // The block is encoded once, by a job that owns the rows and frees them, then counts the batch down;
+            // every attempt of the pair sends those bytes (contract 5.2). Encoding a whole batch on the task when
+            // it seals caught up would stall it for the batch's encoding, so a shipper near its capacity keeps
+            // its jobs.
+            let block = ctx.encode.run(&ctx.env, move || {
+                let block = block(&id, pair, rows, marker_at, compression, marker);
+                if left.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    encoded.notify_one();
+                }
+                block
+            });
             pairs.push(Encoding { token, block });
         }
         let in_doubt = recovered.is_some();
