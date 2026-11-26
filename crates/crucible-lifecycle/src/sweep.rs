@@ -10,9 +10,10 @@
 //! Every `lifecycle.sweep_every` (an hour) the sweep looks at each project deleted in the last [`SWEEP_RECENT`], and
 //! every [`SWEEP_OLD_PERIODS`] of those periods (a day) at the projects deleted before. For each table of a project,
 //! one probe asks whether the table holds a row of it; in a table that does, each partition is probed
-//! ([`find`]). Each partition with rows gets a purge, the action a project deletion plans, unless one that has not
-//! run yet is there already. The deletion executor sends it at its next run, as the delete of the project's rows or
-//! as the drop of a partition that no project can write to, and verifies it. While a project deletion still finds
+//! ([`find`]). Each partition with rows gets a purge, the action a project deletion plans, unless a purge of the
+//! project there is not verified yet: one that has not run removes the rows when it runs, and one whose delete has
+//! run is sent again. The deletion executor sends it at its next run, as the delete of the project's rows or as the
+//! drop of a partition that no project can write to, and verifies it. While a project deletion still finds
 //! where the project's rows are, the sweep looks at the tables it has passed. A request that has completed stays
 //! completed and counts these late purges, with the time of the last. A request that failed is finished here once no
 //! table holds a row of its project: its objects and control-plane rows go, and it completes.
@@ -271,20 +272,38 @@ async fn sweep(
             );
         }
     } else {
-        // A purge of the project that has not run yet removes these rows when it runs.
-        let waiting: BTreeSet<(TableId, PartitionId)> = ctx
+        // A purge of the project on the partition that is not verified yet covers these rows: one that has not run
+        // yet removes them when it runs, and one whose delete has run is sent again, since they landed after it. So
+        // a partition has at most one open purge of the project however long rows keep landing.
+        let open: Vec<LifecycleAction> = ctx
             .store()
             .lifecycle()
             .request_actions(request.id)
             .await?
             .into_iter()
             .filter(|action| {
-                action.state == ActionState::Planned
-                    || (action.state == ActionState::Issued && action.mutation.is_none())
+                !matches!(action.state, ActionState::Verified | ActionState::Failed)
+                    && Detail::parse(&action.detail).is_ok_and(|detail| detail.by_presence())
             })
+            .collect();
+        let again: Vec<LifecycleAction> = open
+            .iter()
+            .filter(|action| {
+                matches!(action.state, ActionState::Done | ActionState::Masked)
+                    && found.contains(&(action.table, action.partition))
+            })
+            .map(|action| LifecycleAction {
+                state: ActionState::Planned,
+                mutation: None,
+                updated_at: now,
+                ..action.clone()
+            })
+            .collect();
+        let covered: BTreeSet<(TableId, PartitionId)> = open
+            .iter()
             .map(|action| (action.table, action.partition))
             .collect();
-        found.retain(|pair| !waiting.contains(pair));
+        found.retain(|pair| !covered.contains(pair));
         let purges: Vec<LifecycleAction> = found
             .iter()
             .map(|(table, partition)| {
@@ -292,18 +311,32 @@ async fn sweep(
             })
             .collect();
         let planned = actions::plan(ctx, purges).await?;
+        let sent_again = again.len();
+        for batch in again.chunks(50) {
+            let batch = batch.to_vec();
+            ctx.fenced(move |tx| {
+                Box::pin(async move {
+                    for action in &batch {
+                        tx.lifecycle().update_action(action).await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
+        }
         let late = matches!(
             request.state,
             DeletionState::Completed | DeletionState::Failed
         );
-        if planned > 0 && late {
+        let purges = planned + sent_again;
+        if purges > 0 && late {
             progress.late = progress
                 .late
-                .saturating_add(u32::try_from(planned).unwrap_or(u32::MAX));
+                .saturating_add(u32::try_from(purges).unwrap_or(u32::MAX));
             progress.late_at = Some(now.micros());
             tracing::info!(
-                request = %request.id, project = %project, purges = planned,
-                "the purge sweep found rows of a deleted project that landed after its purge, and plans their purge"
+                request = %request.id, project = %project, purges,
+                "the purge sweep found rows of a deleted project that landed after its purge, and purges them"
             );
         }
     }

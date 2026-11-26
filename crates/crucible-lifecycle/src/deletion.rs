@@ -1202,7 +1202,7 @@ pub(crate) fn held(live: &[Node]) -> Option<String> {
     (!earlier.is_empty()).then(|| {
         format!(
             "the purge waits until every server runs a version later than 0.1.3, which can read it; still on an \
-             earlier version: {}. Upgrade or stop it, and the purge starts within a minute",
+             earlier version: {}. Upgrade or stop it, and the purge starts within about 90 seconds",
             earlier.join(", ")
         )
     })

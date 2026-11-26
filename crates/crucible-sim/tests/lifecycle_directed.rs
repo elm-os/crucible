@@ -1344,8 +1344,9 @@ fn an_object_store_that_refuses_holds_a_project_deletion_at_verified_and_says_wh
 /// Contract 13.4: rows of a deleted project that keep landing never fail its deletion. A frame of the project lands
 /// every minute for six hours, as from a server cut off from Postgres under `fail_open`, across twelve mask cycles:
 /// rows that a purge's check finds after its delete arrived after it, and the purge, which takes every row of the
-/// project whatever its arrival, runs again without counting a failed attempt. Once the frames stop, the purge
-/// completes with the project's objects and control-plane rows.
+/// project whatever its arrival, runs again without counting a failed attempt. The sweep sends a purge whose delete
+/// has run again rather than add one each hour, so a partition never has more than two purges at once. Once the
+/// frames stop, the purge completes with the project's objects and control-plane rows.
 #[test]
 fn rows_that_keep_landing_never_fail_a_project_deletion() {
     directed(|node| async move {
@@ -1367,6 +1368,18 @@ fn rows_that_keep_landing_never_fail_a_project_deletion() {
                 "after {minute} minutes of late rows: {now:?}"
             );
         }
+        let mut purges: BTreeMap<(TableId, PartitionId), usize> = BTreeMap::new();
+        for action in node
+            .pg
+            .lifecycle()
+            .request_actions(request.id)
+            .await
+            .unwrap()
+        {
+            *purges.entry((action.table, action.partition)).or_default() += 1;
+        }
+        let most = purges.values().copied().max().unwrap_or(0);
+        assert!(most <= 2, "purges of one partition piled up: {purges:?}");
         let done = node
             .wait_for(
                 request.id,

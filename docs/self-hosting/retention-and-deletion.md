@@ -51,7 +51,7 @@ A request moves through these states, which the settings page shows with the pla
 | `logged` | Deleting | Every server has recorded it; the deletes are running |
 | `applied` | Deleted | Every place reports its delete done, and the data is gone from every read, the SQL workspace included |
 | `verified`, `completed` | Removed | Each place was counted again and is empty, and the deleted rows are removed from storage |
-| `failed` | Failed | A step ran out of attempts; the server log says which. Some of the data may be readable again |
+| `failed` | Failed | A step ran out of attempts; the server log says which. Some of the data may be readable again. A project deletion still finishes once no table holds a row of the project ([the purge sweep](#the-purge-sweep)) |
 
 The places a request reaches are the span tables, the trace heads and trace statistics, the session and user
 rollups, the four fact tables (scores, tags, flags, corrections), the MCP operations and their arguments and
@@ -179,7 +179,8 @@ minute), no project deletion request is made:
 - Deleting a project still answers at once, hides the project and revokes its keys. The deleted project's list of
   deletion requests shows its request of kind `project` as `pending`, with an `error` that names each server it
   waits for by its WAL epoch and version.
-- Once no such server is live, the server that holds the `lifecycle` lease makes the request within a minute, under
+- Once no such server is live, the server that holds the `lifecycle` lease makes the request within about 90 seconds
+  of that server's last report (a server counts as live for 60 seconds, and the lease holder looks every 30), under
   the id the list showed and with `requested_by` set to `system:upgrade`, and the purge runs as above.
 - Each server registers its version in Postgres every 5 seconds: an earlier server registers its release number, such
   as `0.1.3`, and a later one a later release, or the release number followed by `+project-deletions`.

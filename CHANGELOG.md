@@ -28,8 +28,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   the failed attempts, and the server tries again every 30 seconds.
 - During a rolling upgrade from 0.1.3 or earlier, which cannot read a project deletion request, no such request is
   made while a server of those versions runs: the deleted project's list of deletion requests shows it as pending and
-  names the servers it waits for, and the server that holds the `lifecycle` lease makes it within a minute of the last
-  one stopping. Servers register their version as the release number followed by `+project-deletions`.
+  names the servers it waits for, and the server that holds the `lifecycle` lease makes it within about 90 seconds of
+  the last one stopping. Servers register their version as the release number followed by `+project-deletions`.
 - Each server reports its clock with its heartbeat (Postgres migration `V12__node_clock` adds the column). While a
   running server's clock is more than 30 minutes from the Postgres server's clock, a project deletion deletes the
   project's rows instead of dropping partitions, and the log names the server and how far its clock is off. Keep
