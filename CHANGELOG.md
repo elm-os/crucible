@@ -20,20 +20,23 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   days, a pass that runs past its hour does not delay the next, and while a deletion still finds the project's rows
   the sweep checks the tables it has finished.
 - A deleted project that the purge sweep cannot check holds back no other: its request shows the error and the
-  failed attempts, the pass goes on, and the next pass checks it again.
+  failed attempts, after the reason a failed request already gives, the pass goes on, and the next pass checks it
+  again.
 - Rows of a deleted project that keep landing never fail its deletion: a purge that finds rows of the project that
   landed after its delete runs again without counting a failed attempt. A project deletion that failed for good is
-  finished by the purge sweep once no table holds a row of the project: its objects and its rows in Postgres go.
+  finished by the purge sweep once no table holds a row of the project and the rows its deletes hid are removed from
+  storage: its objects and its rows in Postgres go, and the request completes.
 - While the object store refuses, a project deletion whose telemetry is removed stays `verified`, shows the error and
   the failed attempts, and the server tries again every 30 seconds.
 - During a rolling upgrade from 0.1.3 or earlier, which cannot read a project deletion request, no such request is
   made while a server of those versions runs: the deleted project's list of deletion requests shows it as pending and
   names the servers it waits for, and the server that holds the `lifecycle` lease makes it within about 90 seconds of
-  the last one stopping. Servers register their version as the release number followed by `+project-deletions`.
+  the last one stopping. Servers register their version as the release number followed by `+project-deletions`, and
+  a server that registers a bare release number counts as one that cannot read the request.
 - Each server reports its clock with its heartbeat (Postgres migration `V12__node_clock` adds the column). While a
-  running server's clock is more than 30 minutes from the Postgres server's clock, a project deletion deletes the
-  project's rows instead of dropping partitions, and the log names the server and how far its clock is off. Keep
-  server clocks within an hour of the Postgres server's clock.
+  running server's clock is more than 30 minutes from the Postgres server's clock, or a running server reports none,
+  a project deletion deletes the project's rows instead of dropping partitions, and while it runs the log names the
+  server and how far its clock is off. Keep server clocks within an hour of the Postgres server's clock.
 - A project deletion finds the partitions that hold the project's rows from ClickHouse's list of partitions and a
   check that stops at the first row of the project in each, so a project of any size is found. A read that keeps
   failing shows on the request as `error` with `attempts`, and the Settings list says that the server keeps trying.

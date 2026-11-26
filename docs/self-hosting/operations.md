@@ -84,10 +84,11 @@ of each span against it, and retention and project deletion allow an hour betwee
 server's.
 
 Each server reports its clock with its heartbeat, every 5 seconds. While a running server's clock is more than 30
-minutes from the Postgres server's clock, a project deletion deletes the project's rows instead of dropping whole
-partitions, which is slower but correct whatever the clocks say, and the server that holds the `lifecycle` lease logs
-a warning with that server's WAL epoch and how far its clock is off, in seconds. Set the clock right and the next
-deletion drops partitions again.
+minutes from the Postgres server's clock, or a server of 0.1.3 or earlier, which reports none, is running, a project
+deletion deletes the project's rows instead of dropping whole partitions, which is slower but correct whatever the
+clocks say. While a project deletion runs, the server that holds the `lifecycle` lease then logs a warning with each
+such server's WAL epoch and how far its clock is off, in seconds. Set the clock right and the next deletion drops
+partitions again.
 
 ## Backups
 

@@ -14,8 +14,9 @@ use async_trait::async_trait;
 use crucible_auth::test_support::scope;
 use crucible_chfmt::EncodedBlock;
 use crucible_control::{
-    ActionKind, ControlStore, DeletionRequest, DeletionSelector, ExportCommit, ExportFormat,
-    JsonDoc, MediaObject, MediaRef, MediaState, NewExport, Project, Queue, Repos as _,
+    ActionKind, ActionState, ControlStore, DeletionRequest, DeletionSelector, ExportCommit,
+    ExportFormat, JsonDoc, MediaObject, MediaRef, MediaState, NewExport, Project, Queue,
+    Repos as _,
 };
 use crucible_env::{
     InsertError, InsertSettings, MutationId, MutationStatus, QueryError, RetryReason, RowStream,
@@ -1396,17 +1397,77 @@ fn rows_that_keep_landing_never_fail_a_project_deletion() {
 
 /// Contract 13.4: a project deletion that failed for good still finishes. The server refuses every delete of
 /// `span_core` until that purge is given up and the request fails; the purge sweep then deletes the rows the purge
-/// left, and once it finds no row of the project in any table, the project's objects and control-plane rows go and
-/// the request completes.
+/// left, and once it finds no row of the project in any table and every delete of the request is removed from
+/// storage, the project's objects and control-plane rows go and the request completes. With the mask cycle at six
+/// hours, the sweep's probes find nothing hours before the mask removes the deleted rows, and the request waits for
+/// it.
 #[test]
 fn a_failed_project_deletion_finishes_once_the_sweep_finds_every_table_empty() {
+    directed_with(
+        |config| config.mask_cycle = Duration::from_secs(6 * 3_600),
+        |node| async move {
+            let project = ProjectId::from_bytes(PROJECT);
+            node.ingest(1, 0..2).await;
+            node.sleep(Duration::from_secs(2)).await;
+            node.plant_project_rows(project).await;
+            *node.hooked.refused_deletes.lock().unwrap() = Some((TableId::SpanCore, 8));
+            let request = purge_of(&node, project, 0x28);
+            node.mark_deleted(project, Some(request.clone())).await;
+            let failed = node
+                .wait_for(
+                    request.id,
+                    DeletionState::Failed,
+                    Duration::from_secs(1_800),
+                )
+                .await;
+            assert_eq!(failed.state, DeletionState::Failed, "{failed:?}");
+            let done = node
+                .wait_for(
+                    request.id,
+                    DeletionState::Completed,
+                    Duration::from_secs(9 * 3_600),
+                )
+                .await;
+            assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+            let open: Vec<(TableId, PartitionId, ActionState)> = node
+                .pg
+                .lifecycle()
+                .request_actions(request.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|action| {
+                    !matches!(action.state, ActionState::Verified | ActionState::Failed)
+                })
+                .map(|action| (action.table, action.partition, action.state))
+                .collect();
+            assert!(
+                open.is_empty(),
+                "completed before its deletes were removed from storage: {open:?}"
+            );
+            assert_eq!(node.project_rows_gone(project).await, (true, true));
+            assert!(
+                done.places.contains("\"control_plane\":\"done\""),
+                "{}",
+                done.places
+            );
+            node.assert_purged(project);
+        },
+    );
+}
+
+/// Contract 13.4: a failed project deletion keeps saying why it failed while the purge sweep cannot look at its
+/// project. The request fails as above; then the probes of its project fail for one sweep pass, which the request
+/// records after its reason, with the table and that the sweep tries again. The next pass that goes through takes
+/// that away and leaves the reason.
+#[test]
+fn a_failed_project_deletion_keeps_its_reason_while_the_sweep_cannot_look() {
     directed(|node| async move {
         let project = ProjectId::from_bytes(PROJECT);
         node.ingest(1, 0..2).await;
         node.sleep(Duration::from_secs(2)).await;
-        node.plant_project_rows(project).await;
         *node.hooked.refused_deletes.lock().unwrap() = Some((TableId::SpanCore, 8));
-        let request = purge_of(&node, project, 0x28);
+        let request = purge_of(&node, project, 0x2b);
         node.mark_deleted(project, Some(request.clone())).await;
         let failed = node
             .wait_for(
@@ -1416,22 +1477,25 @@ fn a_failed_project_deletion_finishes_once_the_sweep_finds_every_table_empty() {
             )
             .await;
         assert_eq!(failed.state, DeletionState::Failed, "{failed:?}");
-        let done = node
-            .wait_for(
-                request.id,
-                DeletionState::Completed,
-                Duration::from_secs(3 * 3_600),
-            )
-            .await;
-        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
-        assert_eq!(node.project_rows_gone(project).await, (true, true));
+        let reason = failed.error.clone().unwrap();
+        assert!(reason.contains("given up"), "{reason}");
+        *node.hooked.failing_project.lock().unwrap() = Some(project);
+        node.sleep(SWEEP_EVERY + Duration::from_secs(90)).await;
+        let recorded = node.request(request.id).await;
+        let error = recorded.error.clone().unwrap_or_default();
         assert!(
-            done.places.contains("\"control_plane\":\"done\""),
-            "{}",
-            done.places
+            error.starts_with(&reason) && error.contains("span_core") && error.contains("again"),
+            "{recorded:?}"
         );
-        node.sleep(Duration::from_secs(2 * 1_800)).await;
-        node.assert_purged(project);
+        assert!(recorded.attempts > failed.attempts, "{recorded:?}");
+        *node.hooked.failing_project.lock().unwrap() = None;
+        node.sleep(SWEEP_EVERY + Duration::from_secs(90)).await;
+        let cleared = node.request(request.id).await;
+        assert_eq!(
+            (cleared.state, cleared.error.as_deref()),
+            (DeletionState::Failed, Some(reason.as_str())),
+            "{cleared:?}"
+        );
     });
 }
 

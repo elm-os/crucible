@@ -178,12 +178,13 @@ After a deletion request or a retention expiry:
   allowance, or took before it and shipped after the purge, is deleted within one sweep interval of landing (an
   hour, for 30 days after the deletion; a day after that) and removed from storage after the next mask cycle.
   Rows that keep landing never fail the deletion, and a deletion that failed for good finishes once no table holds
-  a row of the project. Every other project keeps every row, also a row it writes while the deletion runs: a
-  partition is dropped only when it ends before every project, live or made later, can write (`ingest.max_event_age`
-  and a clock margin before the database clock, and before the making of the oldest live project), every live node's
-  clock is within half that margin of the database clock, and every project with rows there is deleted; everywhere
-  else the purge and the sweep delete by the deleted project's id. A project deleted before deletions made their
-  project deletion request gets one, once no live node runs a version that cannot read it.
+  a row of the project and each of its deletes is removed from storage. Every other project keeps every row, also a
+  row it writes while the deletion runs: a partition is dropped only when it ends before every project, live or made
+  later, can write (`ingest.max_event_age` and a clock margin before the database clock, and before the making of
+  the oldest live project), every live node's clock is within half that margin of the database clock, and every
+  project with rows there is deleted; everywhere else the purge and the sweep delete by the deleted project's id. A
+  project deleted before deletions made their project deletion request gets one, once no live node runs a version
+  that cannot read it.
 
 Minute rollups keep their counts by contract, unless the whole project is deleted.
 
@@ -196,7 +197,7 @@ Minute rollups keep their counts by contract, unless the whole project is delete
 | Project deletion: every table of the project empty whatever the rows' arrival, its control-plane rows gone, the other projects' rows kept in the partitions it dropped or deleted from, late rows of a live project included; a project deleted without a request gets one (lifecycle simulation and its directed scenarios over the real WAL and shipper) | Quiescence |
 | Project deletion, eventual: a row of the project that lands after its request completed is deleted within one sweep interval and gone at the end (lifecycle simulation and its directed scenarios) | Continuous and quiescence |
 | No project writes before the drop horizon, however late its spans ship (property, `crucible-lifecycle`) | Property |
-| Project deletion under failures: a project whose probes fail holds back no other and no daily pass; a refusing object store holds the request at `verified` with its error; rows that keep landing never fail it nor pile up purges; a failed deletion finishes once every table is empty; a node registered as 0.1.3 holds the request; a node whose clock is more than half the margin off turns drops into deletes (directed scenarios) | Quiescence |
+| Project deletion under failures: a project whose probes fail holds back no other and no daily pass; a refusing object store holds the request at `verified` with its error; rows that keep landing never fail it nor pile up purges; a failed deletion keeps its reason and finishes once every table is empty and each of its deletes is removed from storage; a node registered as 0.1.3 holds the request; a node whose clock is more than half the margin off turns drops into deletes (directed scenarios) | Quiescence |
 | C9 delete visibility; "mask application" (`APPLY DELETED MASK`, `DELETE ... IN PARTITION`); no masked parts within the cycle | Conformance |
 | W11 lifecycle races (retention change, policy rewrite) | Conformance (`sqliso`) |
 | Retention boundary arithmetic | Proof (Kani) |

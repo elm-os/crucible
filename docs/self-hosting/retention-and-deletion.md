@@ -115,11 +115,11 @@ deletion makes in the same transaction:
    fact takes the start time of a span its project sent, so no project writes into a partition that ends more than
    400 days before the oldest live project was made, or more than 400 days ago for a project made later. An hour on
    each side allows for server clocks, so every server's clock must be within an hour of the Postgres server's clock.
-   Each server reports its clock with its heartbeat, every 5 seconds; while a running server's clock is more than 30
-   minutes from the Postgres server's clock, or a server does not report one, nothing is dropped, and the log warns
-   with the server's WAL epoch and how far its clock is off. Every other partition gets a delete of the project's
-   rows, which keeps the rows of every other project, also those written while the deletion runs. In practice a
-   partition is dropped only when its data is more than 400 days older than every live project.
+   Each server reports its clock with its heartbeat, every 5 seconds. While a running server's clock is more than 30
+   minutes from the Postgres server's clock, or a server reports none, nothing is dropped, and while a project
+   deletion runs the log warns with that server's WAL epoch and how far its clock is off. Every other partition gets a
+   delete of the project's rows, which keeps the rows of every other project, also those written while the deletion
+   runs. In practice a partition is dropped only when its data is more than 400 days older than every live project.
 4. After the next mask cycle, within 24 hours, every table is checked to hold no row of the project and no deleted
    row on disk, and the request is `verified`. A partition that holds rows of the project again, rows that landed
    after its delete, gets the delete again; this never counts as a failed attempt, so rows that keep landing, from a
@@ -161,14 +161,16 @@ keys after 5 seconds.
 - **Scale.** A deleted project with no late rows costs 17 checks, one per table, plus one per partition of a table
   that holds late rows. The sweep sends at most 1,000 checks every 30 seconds, so one hourly pass covers about 7,000
   projects deleted in the last 30 days. With more, a pass takes longer than an hour and each project is checked once
-  per pass; the daily pass over older deletions runs once the hourly one has finished.
+  per pass, and the daily pass over older deletions gets only the checks that an hourly pass leaves when it
+  finishes, so it takes longer too.
 - **A project that cannot be checked holds back no other.** When a check of one project fails, or the object store
-  refuses, the project's request shows the error with how many attempts failed, the pass goes on with the next
-  project, and the next pass checks that project again. A pass that runs past the end of its hour does not delay the
-  next one.
+  refuses, the project's request shows the error after anything it showed before, with how many attempts failed,
+  the pass goes on with the next project, and the next pass checks that project again; once a check gets through,
+  the error goes. A pass that runs past the end of its hour does not delay the next one.
 - **A failed project deletion still finishes.** If a step of the purge ran out of attempts, the request is `failed`,
-  and the sweep keeps checking the project. Once no table holds a row of it, the sweep removes the project's objects
-  and its rows in Postgres, as step 5 does, and the request is `completed`.
+  says which step, and the sweep keeps checking the project. Once no table holds a row of it and the rows its
+  deletes hid are removed from storage, at the mask cycle after the last of them, the sweep removes the project's
+  objects and its rows in Postgres, as step 5 does, and the request is `completed`.
 
 ### Rolling upgrades from 0.1.3 or earlier
 
@@ -182,8 +184,9 @@ minute), no project deletion request is made:
 - Once no such server is live, the server that holds the `lifecycle` lease makes the request within about 90 seconds
   of that server's last report (a server counts as live for 60 seconds, and the lease holder looks every 30), under
   the id the list showed and with `requested_by` set to `system:upgrade`, and the purge runs as above.
-- Each server registers its version in Postgres every 5 seconds: an earlier server registers its release number, such
-  as `0.1.3`, and a later one a later release, or the release number followed by `+project-deletions`.
+- Each server registers its version in Postgres every 5 seconds: an earlier server registers its bare release
+  number, such as `0.1.3`, and a later one its release number followed by `+project-deletions`. Any server that
+  registers a bare release number counts as an earlier one.
 
 Once a project deletion request exists, do not start a server of 0.1.3 or earlier against the same Postgres. While a
 project deletion is in progress, or when one was made after the oldest data in that server's write-ahead log arrived,

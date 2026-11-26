@@ -256,7 +256,9 @@ pub(crate) struct Purges {
 /// Whether every node of `live` reported, at its latest heartbeat, a clock within half of `margin` of the database
 /// clock. The drop rule ([`write_horizon`]) holds while every clock is within the margin, so a node whose clock is
 /// further off, or that reports none (a version before nodes reported their clocks), keeps every partition from
-/// being dropped: the purge deletes the project's rows instead, which is correct whatever the clocks say.
+/// being dropped: the purge deletes the project's rows instead, which is correct whatever the clocks say. So does a
+/// registry without a live node, in which no clock was checked: the leader itself heartbeats, so such a registry has
+/// not been written yet.
 pub(crate) fn clocks_agree(live: &[Node], margin: Duration) -> Result<(), Vec<&Node>> {
     let limit = duration_micros(margin) / 2;
     let off: Vec<&Node> = live
@@ -266,7 +268,11 @@ pub(crate) fn clocks_agree(live: &[Node], margin: Duration) -> Result<(), Vec<&N
                 .is_none_or(|skew| skew.saturating_abs() > limit)
         })
         .collect();
-    if off.is_empty() { Ok(()) } else { Err(off) }
+    if off.is_empty() && !live.is_empty() {
+        Ok(())
+    } else {
+        Err(off)
+    }
 }
 
 impl Purges {
@@ -294,11 +300,12 @@ impl Purges {
         if config.drops_shared_partitions() {
             return Ok(ActionKind::Drop);
         }
-        if !config.drops_within_event_age() && window.to() > self.horizon(ctx, config).await? {
+        // The horizon holds only while every server's clock is close to the database clock. This is asked first, so
+        // that a clock that is off is logged whenever a project deletion runs, not only when a partition could drop.
+        if !self.clocks(ctx, config).await? {
             return Ok(ActionKind::Delete);
         }
-        // The horizon holds only while every server's clock is close to the database clock.
-        if !self.clocks(ctx, config).await? {
+        if !config.drops_within_event_age() && window.to() > self.horizon(ctx, config).await? {
             return Ok(ActionKind::Delete);
         }
         // While the store cannot list the partition's projects, the delete is the safe choice.
@@ -355,6 +362,12 @@ impl Purges {
         let agree = match clocks_agree(&live, config.clock_margin) {
             Ok(()) => true,
             Err(off) => {
+                if off.is_empty() {
+                    tracing::warn!(
+                        "no server has reported its clock within the last minute, so a project deletion deletes the \
+                         project's rows instead of dropping partitions"
+                    );
+                }
                 for node in off {
                     // Ahead of the database clock when positive; none from a version that does not report it.
                     let skew_seconds = node.clock_skew().map(|micros| micros / 1_000_000);
@@ -1405,7 +1418,8 @@ mod tests {
     }
 
     /// Contract 13.4: a live node whose clock was more than half the clock margin from the database clock at its latest
-    /// heartbeat, or that reported no clock, keeps every partition from being dropped.
+    /// heartbeat, or that reported no clock, keeps every partition from being dropped, and so does a registry with no
+    /// live node, in which no clock was checked.
     #[test]
     fn a_node_whose_clock_is_off_by_more_than_half_the_margin_keeps_every_partition() {
         let hour = Duration::from_secs(3_600);
@@ -1413,7 +1427,7 @@ mod tests {
             node_clock: minutes.map(|minutes| Timestamp::from_micros(minutes * 60_000_000)),
             ..node(1)
         };
-        assert!(clocks_agree(&[], hour).is_ok());
+        assert!(clocks_agree(&[], hour).is_err());
         assert!(
             clocks_agree(
                 &[off_by(Some(0)), off_by(Some(30)), off_by(Some(-30))],
@@ -1431,8 +1445,9 @@ mod tests {
         assert!(clocks_agree(&[off_by(None)], hour).is_err());
     }
 
-    /// Contract 13.4: a project deletion request is held while a live node runs 0.1.3 or earlier, and the reason names
-    /// each such node with its version.
+    /// Contract 13.4: a project deletion request is held while a live node registered a bare release number (0.1.3 or
+    /// earlier, or a release cut without project deletion requests), and the reason names each such node with its
+    /// version.
     #[test]
     fn a_project_deletion_is_held_while_a_live_node_cannot_read_it() {
         let running = |version: &str| Node {
@@ -1441,15 +1456,19 @@ mod tests {
         };
         assert_eq!(held(&[]), None);
         assert_eq!(
-            held(&[running("0.1.4"), running("0.1.3+project-deletions")]),
+            held(&[
+                running("0.1.4+project-deletions"),
+                running("0.1.3+project-deletions")
+            ]),
             None
         );
-        let why = held(&[running("0.1.4"), running("0.1.2")]).unwrap();
+        let why = held(&[running("0.1.4+project-deletions"), running("0.1.2")]).unwrap();
         assert!(
             why.contains(&format!("{} (0.1.2)", node(2).wal_epoch)),
             "{why}"
         );
         assert!(why.contains("Upgrade or stop"), "{why}");
+        assert!(held(&[running("0.1.4")]).is_some());
     }
 
     #[test]

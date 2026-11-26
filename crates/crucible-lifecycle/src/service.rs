@@ -462,7 +462,8 @@ impl Service {
 
     /// The deletion requests of a project with a sequence number below `before`, newest first. While a live node runs
     /// a version that cannot read a project deletion request, a deleted project has none (contract 13.4); its first
-    /// page then starts with that request as the server will make it, pending, with what it waits for as its error.
+    /// page then starts with that request in the form the leader makes it later, pending, with what it waits for as
+    /// its error.
     pub async fn deletions(
         &self,
         scope: ProjectScope,
@@ -484,9 +485,9 @@ impl Service {
     }
 
     /// The project deletion request of a deleted project that has none because a live node cannot read one ([`held`]),
-    /// as the server that holds the `lifecycle` lease will make it, with why it waits as its error. `newest` is the
-    /// project's newest requests: a project deletion request, once made, is the newest, since a deleted project takes
-    /// no other request.
+    /// in the form the server that holds the `lifecycle` lease makes it once none is live, with why it waits as its
+    /// error. `newest` is the project's newest requests: a project deletion request, once made, is the newest, since a
+    /// deleted project takes no other request.
     async fn held_purge(
         &self,
         project_id: ProjectId,

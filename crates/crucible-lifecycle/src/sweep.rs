@@ -16,10 +16,12 @@
 //! drop of a partition that no project can write to, and verifies it. While a project deletion still finds
 //! where the project's rows are, the sweep looks at the tables it has passed. A request that has completed stays
 //! completed and counts these late purges, with the time of the last. A request that failed is finished here once no
-//! table holds a row of its project: its objects and control-plane rows go, and it completes.
+//! table holds a row of its project and each of its deletes is removed from storage: its objects and control-plane
+//! rows go, and it completes.
 //!
 //! A project that cannot be looked at now, because a probe fails or the object store refuses, is recorded on its
-//! request with one more failed attempt, and the pass goes on with the next project; the next pass looks at it again.
+//! request with one more failed attempt, after what the request said before, and the pass goes on with the next
+//! project; the next pass looks at it again, and once it gets through, takes the record away.
 //! A wake sends at most [`MAX_PROBES_PER_RUN`] probes and records how far its pass got, so a pass over many deleted
 //! projects is spread over the wakes of its period. A pass counts for the period it began in, so one that runs past
 //! the end of that period does not delay the next. A project with no late row costs one probe per table, 17, so at a
@@ -52,9 +54,9 @@ pub const SWEEP_RECENT: Duration = Duration::from_secs(30 * 86_400);
 /// of each deleted project a day.
 pub const SWEEP_OLD_PERIODS: u64 = 24;
 
-/// The start of the error the sweep records when its probes of a project fail. A later look whose probes answer
-/// clears an error that starts with it.
-const LOOK_FAILED: &str = "looking again for rows of the deleted project";
+/// How the part of a request's error that the sweep records begins. What the request said before stays in front of
+/// it, so a failed request still says why it failed, and the next pass that gets through takes the sweep's part away.
+const STOPPED: &str = "the purge sweep stopped at this project: ";
 
 /// The deleted projects one pass looks at.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -168,8 +170,32 @@ fn span(every: Duration) -> String {
     }
 }
 
+/// The error of a request without the part that the sweep recorded.
+fn without_sweep(error: Option<&str>) -> Option<String> {
+    let error = error?;
+    let kept = error
+        .split_once(STOPPED)
+        .map_or(error, |(kept, _)| kept)
+        .trim_end_matches("; ");
+    (!kept.is_empty()).then(|| kept.to_owned())
+}
+
+/// The error the sweep records on a request it could not look at or finish: what the request said before, then why
+/// the sweep stopped at it and that its next pass, within `every`, tries again.
+fn with_sweep(error: Option<&str>, why: &JobError, every: Duration) -> String {
+    let stopped = format!(
+        "{STOPPED}{why}; it tries again at its next pass, within {}",
+        span(every)
+    );
+    match without_sweep(error) {
+        Some(kept) => format!("{kept}; {stopped}"),
+        None => stopped,
+    }
+}
+
 /// Records on a project deletion that the sweep could not look at its project, or not finish it: one more failed
-/// attempt and the error, which the list of deletion requests shows. The next pass looks again, within `every`.
+/// attempt and the error ([`with_sweep`]), which the list of deletion requests shows. The next pass looks again,
+/// within `every`.
 async fn record(
     ctx: &LeaderCtx,
     request: &DeletionRequest,
@@ -183,10 +209,7 @@ async fn record(
     );
     let row = DeletionRequest {
         attempts,
-        error: Some(format!(
-            "{error}; the purge sweep looks again at its next pass, within {}",
-            span(every)
-        )),
+        error: Some(with_sweep(request.error.as_deref(), error, every)),
         updated_at: ctx.env.clock.wall_now(),
         ..request.clone()
     };
@@ -202,8 +225,8 @@ async fn record(
 /// Looks for rows of the project of one project deletion and plans a purge of each partition that holds some. A
 /// pending request is left to the executor, which finds the project's rows itself; of a request still finding them,
 /// only the tables it has passed are looked at; and a project that is not deleted is never swept. A failed request
-/// whose project no table holds is finished: its project's objects and control-plane rows go, and it completes. On an
-/// error the stored request is as it was.
+/// whose project no table holds, and whose deletes are all verified or given up, is finished: its project's objects
+/// and control-plane rows go, and it completes. On an error the stored request is as it was.
 async fn sweep(
     ctx: &LeaderCtx,
     shared: &Shared,
@@ -240,7 +263,7 @@ async fn sweep(
         *probes = probes.saturating_sub(usize::MAX - left);
         let held = held.map_err(|error| {
             JobError::Failed(format!(
-                "{LOOK_FAILED} in {} failed ({error})",
+                "looking for its rows in {} failed ({error})",
                 table.name()
             ))
         })?;
@@ -250,19 +273,25 @@ async fn sweep(
                 .map(|partition| (table, partition)),
         );
     }
-    let mut row = request.clone();
-    if row
-        .error
-        .as_deref()
-        .is_some_and(|error| error.starts_with(LOOK_FAILED))
-    {
-        row.error = None;
-    }
+    // This look got through.
+    let mut row = DeletionRequest {
+        error: without_sweep(request.error.as_deref()),
+        ..request.clone()
+    };
     let now = ctx.env.clock.wall_now();
     if found.is_empty() {
-        if request.state == DeletionState::Failed {
-            // The purge gave up an action, and no table holds a row of the project now: what is left is the rest
-            // of the request, which nothing else does.
+        // Of a failed request, whose purge gave up an action, no table holds a visible row of the project now. A
+        // delete that has run hides its rows from the probes until the mask cycle removes them, so the rest of the
+        // request, which nothing else does, waits until every delete of it is verified (or given up).
+        let finishing = request.state == DeletionState::Failed
+            && ctx
+                .store()
+                .lifecycle()
+                .request_actions(request.id)
+                .await?
+                .iter()
+                .all(|action| matches!(action.state, ActionState::Verified | ActionState::Failed));
+        if finishing {
             finish(ctx, shared, request, &mut progress).await?;
             row.state = DeletionState::Completed;
             row.error = None;
@@ -428,5 +457,34 @@ mod tests {
         assert_eq!(span(Duration::from_secs(3_600)), "1 h");
         assert_eq!(span(Duration::from_secs(24 * 3_600)), "24 h");
         assert_eq!(span(Duration::from_secs(600)), "10 min");
+    }
+
+    /// What the sweep records goes after what the request said, replaces what the sweep recorded before, and is
+    /// taken away whole by a pass that gets through, which leaves what the request said.
+    #[test]
+    fn the_sweep_records_its_error_after_the_request_and_takes_it_away_again() {
+        let hour = Duration::from_secs(3_600);
+        let timed_out =
+            JobError::Failed("looking for its rows in span_core failed (timed out)".to_owned());
+        let alone = with_sweep(None, &timed_out, hour);
+        assert_eq!(
+            alone,
+            "the purge sweep stopped at this project: looking for its rows in span_core failed (timed out); it \
+             tries again at its next pass, within 1 h"
+        );
+        assert_eq!(without_sweep(Some(&alone)), None);
+        let reason = "the delete on span_core partition 20270115 was given up after 8 attempts";
+        let after = with_sweep(Some(reason), &timed_out, hour);
+        assert_eq!(after, format!("{reason}; {alone}"));
+        assert_eq!(without_sweep(Some(&after)).as_deref(), Some(reason));
+        let refused = JobError::Failed("the object store refused".to_owned());
+        let again = with_sweep(Some(&after), &refused, hour);
+        assert!(
+            again.starts_with(&format!("{reason}; {STOPPED}the object store refused")),
+            "{again}"
+        );
+        assert!(!again.contains("span_core failed"), "{again}");
+        assert_eq!(without_sweep(Some(reason)).as_deref(), Some(reason));
+        assert_eq!(without_sweep(None), None);
     }
 }

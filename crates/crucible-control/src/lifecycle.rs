@@ -51,10 +51,6 @@ text_enum! {
 /// A node is live while its latest heartbeat is at most this old on the database clock (contract 13.3).
 pub const LIVE_WITHIN: Duration = Duration::from_secs(60);
 
-/// The newest release whose servers cannot read a deletion request of kind `project`: they refuse its selector, and
-/// one such row fails their every read of deletion requests (contract 13.4).
-const LAST_RELEASE_WITHOUT_PROJECT_REQUESTS: (u64, u64, u64) = (0, 1, 3);
-
 /// A node of the deployment (contract 11.1): one WAL directory.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Node {
@@ -62,8 +58,9 @@ pub struct Node {
     pub wal_epoch: WalEpoch,
     /// The database clock at its latest heartbeat. Written by the store, not by the node.
     pub heartbeat_at: Timestamp,
-    /// The build version. A server of 0.1.3 or earlier registers its bare release number; a later build registers
-    /// a later release or more than the number (`0.1.3+project-deletions`).
+    /// The build version. A server that cannot read a deletion request of kind `project` (0.1.3 and earlier)
+    /// registers its bare release number, `0.1.3`; a server that reads them registers its release number followed
+    /// by `+project-deletions`.
     pub version: String,
     /// The node's checkpoint watermark at the heartbeat.
     pub checkpoint_lsn: Lsn,
@@ -75,9 +72,12 @@ pub struct Node {
 }
 
 impl Node {
-    /// Whether the node's server reads deletion requests of kind `project`: every build after 0.1.3 does.
+    /// Whether the node's server reads deletion requests of kind `project`. A server that cannot refuses the
+    /// request's selector, and one such row fails its every read of deletion requests (contract 13.4). Those servers
+    /// register a bare release number, and every server that reads them registers more than that, so a bare release
+    /// number is a server that cannot, whichever release first carries project deletion requests.
     pub fn reads_project_requests(&self) -> bool {
-        release(&self.version).is_none_or(|version| version > LAST_RELEASE_WITHOUT_PROJECT_REQUESTS)
+        !bare_release(&self.version)
     }
 
     /// How far the node's clock was ahead of the database clock at its latest heartbeat, in microseconds (behind
@@ -88,16 +88,13 @@ impl Node {
     }
 }
 
-/// `major.minor.patch` of a bare release number such as `0.1.3`; `None` for any other version.
-fn release(version: &str) -> Option<(u64, u64, u64)> {
-    let mut numbers = version.split('.').map(|part| {
-        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        part.parse::<u64>().ok()
-    });
-    let found = (numbers.next()??, numbers.next()??, numbers.next()??);
-    numbers.next().is_none().then_some(found)
+/// Whether `version` is a bare release number, three numbers such as `0.1.3` and nothing more.
+fn bare_release(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// What a deletion request removes inside its project (contract 13.3).
@@ -519,21 +516,21 @@ mod tests {
         }
     }
 
-    /// Contract 13.4: the releases up to 0.1.3, which register their bare release number, cannot read a deletion
-    /// request of kind `project`; a later release, and any build that registers more than a release number (a build
-    /// of the source between releases, or a test), can.
+    /// Contract 13.4: a server that cannot read a deletion request of kind `project` registers its bare release
+    /// number, and every server that reads them registers more than that (its release number followed by
+    /// `+project-deletions`, or a test's name). So a bare release number is a server that cannot read them, whatever
+    /// the release: one cut before they shipped registers a bare number too.
     #[test]
-    fn only_releases_up_to_0_1_3_cannot_read_project_deletions() {
-        for old in ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.0.9"] {
+    fn a_bare_release_number_is_a_server_that_cannot_read_project_deletions() {
+        for old in [
+            "0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.0.9", "0.1.4", "1.0.0",
+        ] {
             assert!(!node(old, 0, None).reads_project_requests(), "{old}");
         }
         for new in [
-            "0.1.4",
-            "0.2.0",
-            "1.0.0",
             "0.1.3+project-deletions",
-            "0.1.2+project-deletions",
-            "0.1.3-rc.1",
+            "0.1.4+project-deletions",
+            "1.0.0+project-deletions",
             "test",
             "sim",
             "",

@@ -32,8 +32,9 @@ use crucible_wal::Wal;
 use futures::future::BoxFuture;
 
 /// The version this node writes into the node registry: the release number with build metadata that says the node
-/// reads deletion requests of kind `project`, which servers of 0.1.3 and earlier, registered by their bare release
-/// number, cannot (contract 13.4).
+/// reads deletion requests of kind `project`. Servers of 0.1.3 and earlier cannot, and register their bare release
+/// number, so the leader holds those requests while a node registered by a bare release number is live (contract
+/// 13.4); without the metadata this node would count as one of them.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+project-deletions");
 
 /// The deletion requests read in one statement.
