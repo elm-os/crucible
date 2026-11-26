@@ -77,7 +77,10 @@ the first start ([adding a replica](#adding-a-replica)).
 1. Set up every replica the cluster will have, each as the list below says. Crucible creates its tables, users and
    row policies only on the replicas that are in the cluster when it first migrates, and nothing on a replica added
    later ([adding a replica](#adding-a-replica)).
-2. Set `clickhouse.url` and `clickhouse.cluster`, as the table below says.
+2. Set `clickhouse.url` and `clickhouse.cluster`, as the table below says, and give the deployment a Postgres
+   database of its own. The migrations ledger in the database of a deployment on another ClickHouse, such as a
+   single-server one, records steps that created service users the cluster does not hold, and Crucible refuses it
+   and names the fix ([troubleshooting](troubleshooting.md#the-server-is-not-ready)).
 3. Start Crucible once with `--migrate`, or run `crucible migrate`. It checks the cluster first and, when something is
    missing, refuses with a message that names what to change; otherwise it creates its databases, tables, users and
    row policies on every replica.

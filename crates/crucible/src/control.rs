@@ -23,7 +23,7 @@ use crucible_control::{
 };
 use crucible_control_pg::{PgConfig, PgControlStore};
 use crucible_env::{ClockExt as _, Env, Instant};
-use crucible_schema::{LEDGER_ORDER, MigrationStep, StepKind, without_secrets};
+use crucible_schema::{ACCESS_SERVICE, LEDGER_ORDER, MigrationStep, StepKind, without_secrets};
 use sha2::{Digest, Sha256};
 
 /// How long a migration waits for another node's `migrations` lease before it gives up.
@@ -39,6 +39,10 @@ pub(crate) type Applying<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> +
 /// Why the service identities refuse this node's master key, or `None` when they accept it.
 pub(crate) type Refusal<'a> = Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
 
+/// Why the migrations ledger does not fit this ClickHouse, or `None` when it does.
+pub(crate) type Misfit<'a> =
+    Pin<Box<dyn Future<Output = anyhow::Result<Option<String>>> + Send + 'a>>;
+
 /// What applies a step to ClickHouse.
 pub(crate) trait ApplyStep: Sync {
     /// Applies the step. It is idempotent, so a step that failed part-way is applied again.
@@ -48,6 +52,12 @@ pub(crate) trait ApplyStep: Sync {
     /// ledger records with other content applies again only under a key they accept: a start with another master
     /// key applies nothing that a start with the right key recorded (contract 6.6).
     fn refusal(&self) -> Refusal<'_>;
+
+    /// Why a ledger that records access step A1 does not fit this ClickHouse: it holds none of the service users that
+    /// A1 creates, so the steps the ledger records were applied to another ClickHouse, such as a single-server
+    /// deployment's when a new cluster was given its Postgres. `None` when it holds any of them; then a refused key is
+    /// a wrong master key (contract 1.7).
+    fn without_service_users(&self) -> Misfit<'_>;
 }
 
 /// The steps that changed since the ledger recorded them and were not applied again, because the service identities
@@ -300,15 +310,24 @@ async fn apply_holding(
     }
 }
 
-/// Refuses unless the ledger records every step of this version (`crucible_schema::LEDGER_ORDER`). A server
-/// started without `--migrate` checks it before it takes ingest, so its shipper never writes before another node or
-/// `crucible migrate` has applied the steps it writes for, such as the copy of the minute rollup that step 0005
-/// makes before the shipper fills the hourly rollup (contract 6.6).
-pub(crate) async fn ensure_migrated(store: &dyn ControlStore) -> anyhow::Result<()> {
+/// Refuses unless the ledger records every step of this version (`crucible_schema::LEDGER_ORDER`), and when it
+/// records steps that `clickhouse` does not hold ([`ApplyStep::without_service_users`]). A server started without
+/// `--migrate` checks it before it takes ingest, so its shipper never writes before another node or `crucible
+/// migrate` has applied the steps it writes for, such as the copy of the minute rollup that step 0005 makes before
+/// the shipper fills the hourly rollup (contract 6.6).
+pub(crate) async fn ensure_migrated(
+    store: &dyn ControlStore,
+    clickhouse: &dyn ApplyStep,
+) -> anyhow::Result<()> {
     let recorded =
         store.migrations().applied().await.context(
             "reading the migrations ledger in Postgres, which `crucible migrate` creates",
         )?;
+    if recorded.iter().any(|row| row.id == ACCESS_SERVICE)
+        && let Some(reason) = clickhouse.without_service_users().await?
+    {
+        anyhow::bail!(reason);
+    }
     let missing: Vec<&str> = LEDGER_ORDER
         .iter()
         .map(|(id, _)| *id)
@@ -347,6 +366,13 @@ pub(crate) async fn apply_steps(
             .into_iter()
             .map(|entry| (entry.id, entry.checksum))
             .collect();
+        // A ledger of another ClickHouse would pass over the steps it records with this content, and take the
+        // missing service users for a refused master key when they changed.
+        if ledger.contains_key(ACCESS_SERVICE)
+            && let Some(reason) = apply.without_service_users().await?
+        {
+            anyhow::bail!(reason);
+        }
         // Asked once, and only when a recorded step changed.
         let mut refusal = None;
         let mut deferred = Vec::new();
@@ -457,6 +483,8 @@ mod tests {
         refuse_access: bool,
         /// The service identities refuse this node's master key.
         refuse_key: bool,
+        /// ClickHouse holds none of the service users.
+        without_users: bool,
         /// Run for three lease lifetimes on this clock while another node tries every second to take the lease.
         outlive: Option<(Arc<dyn crucible_env::Clock>, PgModel)>,
         /// Step the database clock past the lease, let another node take it, and finish at once.
@@ -523,6 +551,11 @@ mod tests {
                 .refuse_key
                 .then(|| "AUTHENTICATION_FAILED for crucible_maint".to_owned());
             Box::pin(async move { refused })
+        }
+
+        fn without_service_users(&self) -> Misfit<'_> {
+            let without = self.without_users.then(|| "no service users".to_owned());
+            Box::pin(async move { Ok(without) })
         }
     }
 
@@ -1033,7 +1066,10 @@ mod tests {
     fn a_server_without_migrate_waits_until_every_step_is_recorded() {
         sim(PgFaults::default(), async |env, model| {
             record_0_1_1(&env, &model).await;
-            let error = format!("{:#}", ensure_migrated(&model).await.unwrap_err());
+            let error = format!(
+                "{:#}",
+                ensure_migrated(&model, &Fake::default()).await.unwrap_err()
+            );
             assert!(
                 error.contains("step 0005_mcp_tool_rollup_hourly")
                     && error.contains("run `crucible migrate`")
@@ -1049,7 +1085,80 @@ mod tests {
             )
             .await
             .unwrap();
-            ensure_migrated(&model).await.unwrap();
+            ensure_migrated(&model, &Fake::default()).await.unwrap();
+        });
+    }
+
+    /// A ledger that records access step A1 over a ClickHouse that holds none of the service users, such as a
+    /// single-server deployment's ledger beside a new cluster, is refused before any step with the reason: with the
+    /// steps it records unchanged, which a migration used to pass over and report applied, and with steps that
+    /// changed, whose missing users used to read as a refused master key. A server without `--migrate` refuses it
+    /// too, although every step is recorded.
+    #[test]
+    fn a_ledger_of_another_clickhouse_is_refused_before_any_step() {
+        let empty = || Fake {
+            without_users: true,
+            refuse_key: true,
+            ..Fake::default()
+        };
+        sim(PgFaults::default(), async move |env, model| {
+            apply_steps(
+                &env,
+                &model,
+                "node-a",
+                &release_steps(KEY),
+                &Fake::default(),
+            )
+            .await
+            .unwrap();
+            let recorded = ledger(&model).await;
+            let clickhouse = empty();
+            let error = apply_steps(&env, &model, "node-b", &release_steps(KEY), &clickhouse)
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), "no service users");
+            assert!(clickhouse.steps().is_empty());
+            assert_eq!(ledger(&model).await, recorded);
+            let error = ensure_migrated(&model, &empty()).await.unwrap_err();
+            assert_eq!(error.to_string(), "no service users");
+        });
+        sim(PgFaults::default(), async move |env, model| {
+            record_0_1_1(&env, &model).await;
+            let clickhouse = empty();
+            let error = apply_steps(&env, &model, "node-a", &release_steps(KEY), &clickhouse)
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), "no service users");
+            assert!(clickhouse.steps().is_empty());
+        });
+    }
+
+    /// A ClickHouse without the service users is what a first migration finds, also after a run that failed between
+    /// step 0001 and access step A1, which creates them: a ledger that does not record A1 applies every step, and its
+    /// Postgres rows do not count.
+    #[test]
+    fn a_ledger_without_access_step_a1_migrates_a_clickhouse_without_service_users() {
+        sim(PgFaults::default(), async |env, model| {
+            let postgres = LedgerEntry {
+                id: "V1__init".to_owned(),
+                kind: MigrationKind::Postgres,
+                applied_at: env.clock.wall_now(),
+                checksum: "0".repeat(64),
+            };
+            assert!(model.migrations().apply(&postgres).await.unwrap());
+            let new = Fake {
+                without_users: true,
+                ..Fake::default()
+            };
+            let steps = release_steps(KEY);
+            apply_steps(&env, &model, "node-a", &steps[..1], &new)
+                .await
+                .unwrap();
+            apply_steps(&env, &model, "node-a", &steps, &new)
+                .await
+                .unwrap();
+            let ids: Vec<&str> = LEDGER_ORDER.iter().map(|(id, _)| *id).collect();
+            assert_eq!(new.steps(), ids);
         });
     }
 

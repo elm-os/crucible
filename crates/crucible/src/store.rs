@@ -34,7 +34,7 @@ use crucible_schema::{
     schema_span_usage_aggregate, workspace_user,
 };
 
-use crate::control::{ApplyStep, Applying, Control, Deferred, Refusal};
+use crate::control::{ApplyStep, Applying, Control, Deferred, Misfit, Refusal};
 use crucible_store_clickhouse::{
     ClickHouseSqlStore, ClickHouseStore, ClusterFacts, Credentials, ReplicaHoldings, SqlPasswords,
     SqlStoreConfig, StoreConfig,
@@ -298,6 +298,37 @@ impl ApplyStep for ClickHouseStore {
             }
         })
     }
+
+    /// None of the service users exists on this server, or on any replica in the cluster that answers.
+    fn without_service_users(&self) -> Misfit<'_> {
+        Box::pin(async move {
+            let held = self
+                .service_users()
+                .await
+                .context("reading which of Crucible's service users ClickHouse holds")?;
+            Ok((held == 0).then(|| missing_service_users(self.cluster())))
+        })
+    }
+}
+
+/// The refusal of a migrations ledger that records access step A1 over a ClickHouse that holds none of the service
+/// users A1 creates (contract 1.7): the ledger records the steps of another ClickHouse.
+fn missing_service_users(cluster: Option<&Ident>) -> String {
+    let holds = match cluster {
+        Some(cluster) => format!("no replica in cluster {cluster} holds any of them"),
+        None => "ClickHouse holds none of them".to_owned(),
+    };
+    format!(
+        "the migrations ledger in Postgres records ClickHouse migration step {}, which creates Crucible's ClickHouse \
+         service users (crucible_ingest, crucible_read_ui, crucible_read_agent and crucible_maint), but {holds}: the \
+         ledger records the steps of another ClickHouse, such as a single-server deployment's when a new cluster was \
+         given its Postgres, or of one whose data was lost. Give a new ClickHouse server or cluster a Postgres \
+         database of its own (postgres.url, --postgres-url or CRUCIBLE_POSTGRES_URL), or start from an empty ledger \
+         to keep this database's projects, users and API keys without the old telemetry: stop the servers that use \
+         the other ClickHouse, run DELETE FROM schema_migrations WHERE kind LIKE 'clickhouse%' in this database, and \
+         migrate again",
+        crucible_schema::ACCESS_SERVICE
+    )
 }
 
 /// Applies the ClickHouse schema and access steps. With a control plane, the Postgres migrations run first and
@@ -578,7 +609,7 @@ pub(crate) async fn bring_up(
     } else {
         let _silent = config.check_cluster(store).await?;
         if let Some(control) = control {
-            crate::control::ensure_migrated(&control.store).await?;
+            crate::control::ensure_migrated(&control.store, store).await?;
         }
     }
     // `detect` includes the check that every service identity sees a known row.
@@ -971,6 +1002,7 @@ mod tests {
             replica: format!("clickhouse-{n}:9000"),
             local: n == 1,
             unreplicated: Vec::new(),
+            service_users: 4,
         };
         let fits = ClusterFacts {
             cloud: false,
@@ -1067,6 +1099,35 @@ mod tests {
             fan_out.contains("Code: 516") && fan_out.contains("<secret>"),
             "{fan_out}"
         );
+    }
+
+    /// A ledger that records access step A1 over a ClickHouse without any of the service users says that the ledger
+    /// records another ClickHouse's steps and how to fix that, not that the master key is wrong (contract 1.7).
+    #[test]
+    fn a_ledger_of_another_clickhouse_names_the_fix_and_not_the_master_key() {
+        let cluster = Ident::new("crucible").unwrap();
+        for (said, holds) in [
+            (
+                missing_service_users(None),
+                "but ClickHouse holds none of them",
+            ),
+            (
+                missing_service_users(Some(&cluster)),
+                "but no replica in cluster crucible holds any of them",
+            ),
+        ] {
+            for needed in [
+                "records ClickHouse migration step 0002_access_service",
+                holds,
+                "a Postgres database of its own",
+                "--postgres-url",
+                "DELETE FROM schema_migrations WHERE kind LIKE 'clickhouse%'",
+                "migrate again",
+            ] {
+                assert!(said.contains(needed), "{needed:?} is missing from: {said}");
+            }
+            assert!(!said.contains("master key"), "{said}");
+        }
     }
 
     /// With `clickhouse.cluster` set, every step renders for the cluster: replicated engines, `ON CLUSTER`.

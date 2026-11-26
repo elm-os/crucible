@@ -412,24 +412,27 @@ pub struct ReplicaHoldings {
     /// Its tables of database `crucible` whose engine is not replicated, by name: tables created for a single
     /// server, which `CREATE TABLE IF NOT EXISTS ... ON CLUSTER` leaves as they are.
     pub unreplicated: Vec<String>,
+    /// How many of the four generated service users (contract 7.1) it holds.
+    pub service_users: u64,
 }
 
 /// The holdings in the answer of [`ClickHouseStore::holdings`]: one line per replica that answered, its place in
-/// `remote_servers` (1 for the first) and its unreplicated tables, comma-separated.
+/// `remote_servers` (1 for the first), its unreplicated tables, comma-separated, and its service users.
 fn holdings(answer: &str, replicas: &[Replica]) -> Result<Vec<ReplicaHoldings>, StoreError> {
+    let unexpected = || unexpected("the holdings of every replica", answer);
     lines(answer)
         .into_iter()
         .filter(|line| line != &[""])
         .map(|line| {
-            let [place, unreplicated] = line.as_slice() else {
-                return Err(unexpected("the holdings of every replica", answer));
+            let [place, unreplicated, service_users] = line.as_slice() else {
+                return Err(unexpected());
             };
             let replica = place
                 .parse::<usize>()
                 .ok()
                 .and_then(|place| place.checked_sub(1))
                 .and_then(|n| replicas.get(n))
-                .ok_or_else(|| unexpected("the holdings of every replica", answer))?;
+                .ok_or_else(unexpected)?;
             Ok(ReplicaHoldings {
                 replica: replica.host.clone(),
                 local: replica.local,
@@ -438,9 +441,15 @@ fn holdings(answer: &str, replicas: &[Replica]) -> Result<Vec<ReplicaHoldings>, 
                     .filter(|name| !name.is_empty())
                     .map(str::to_owned)
                     .collect(),
+                service_users: service_users.parse().map_err(|_| unexpected())?,
             })
         })
         .collect()
+}
+
+/// The names of the four generated service users.
+fn service_user_names() -> [&'static str; 4] {
+    ServiceIdentity::GENERATED.map(ServiceIdentity::name)
 }
 
 /// What the startup checks of a replicated deployment read through the replica the store talks to, as
@@ -1047,18 +1056,52 @@ impl ClickHouseStore {
         let mut b = Binder::default();
         let database = b.string(DATABASE);
         let replicated = b.string("Replicated");
+        let users = b.strings(&service_user_names());
+        // Two aggregates joined, not scalar subqueries, so that each replica reads its own system tables.
         let select = format!(
-            "SELECT arrayStringConcat(arraySort(groupArrayIf(name, NOT startsWith(engine, {replicated}))), ',') AS \
-             unreplicated FROM system.tables WHERE database = {database}"
+            "SELECT unreplicated, service_users FROM (SELECT arrayStringConcat(arraySort(groupArrayIf(name, NOT \
+             startsWith(engine, {replicated}))), ',') AS unreplicated FROM system.tables WHERE database = \
+             {database}) AS tables CROSS JOIN (SELECT count() AS service_users FROM system.users WHERE has({users}, \
+             name)) AS users"
         );
         let statement = b.finish(format!(
-            "SELECT _shard_num, unreplicated FROM {} ORDER BY _shard_num",
+            "SELECT _shard_num, unreplicated, service_users FROM {} ORDER BY _shard_num",
             on_every_replica(cluster, &select)
         ));
         let answer = self
             .every_replica_lookup(ServiceIdentity::Admin, statement)
             .await?;
         holdings(&answer, replicas)
+    }
+
+    /// The cluster of a replicated deployment (`clickhouse.cluster`), when one is configured.
+    pub fn cluster(&self) -> Option<&Ident> {
+        self.inner.config.cluster.as_ref()
+    }
+
+    /// How many of the four generated service users (contract 7.1) the store holds, read as `crucible_admin`: on
+    /// one server, those it holds; with a cluster configured, those of the replica that answers with the most.
+    pub async fn service_users(&self) -> Result<u64, StoreError> {
+        if let Some(cluster) = &self.inner.config.cluster {
+            let replicas = self.cluster_replicas(cluster).await?;
+            let holdings = self.holdings(cluster, &replicas).await?;
+            return Ok(holdings
+                .iter()
+                .map(|holding| holding.service_users)
+                .max()
+                .unwrap_or(0));
+        }
+        let mut b = Binder::default();
+        let users = b.strings(&service_user_names());
+        let answer = self
+            .lookup(
+                ServiceIdentity::Admin,
+                &b.finish(format!(
+                    "SELECT count() FROM system.users WHERE has({users}, name)"
+                )),
+            )
+            .await?;
+        count("the service users", &answer)
     }
 
     /// What the startup checks of a replicated deployment need from the server (contract 5.8), read as
@@ -2078,12 +2121,12 @@ mod tests {
         })
     }
 
-    /// Each line of the read of every replica's holdings names a replica by its place in `remote_servers`, and lists
-    /// its tables that are not replicated; a replica with none lists nothing.
+    /// Each line of the read of every replica's holdings names a replica by its place in `remote_servers`, lists
+    /// its tables that are not replicated (a replica with none lists nothing) and counts its service users.
     #[test]
     fn the_holdings_of_every_replica_name_each_replica_and_its_unreplicated_tables() {
         let replicas = three_replicas();
-        let read = holdings("1\t\n3\tspan_core,span_payload\n", &replicas).unwrap();
+        let read = holdings("1\t\t4\n3\tspan_core,span_payload\t0\n", &replicas).unwrap();
         assert_eq!(
             read,
             [
@@ -2091,17 +2134,25 @@ mod tests {
                     replica: "clickhouse-1:9000".to_owned(),
                     local: true,
                     unreplicated: Vec::new(),
+                    service_users: 4,
                 },
                 ReplicaHoldings {
                     replica: "clickhouse-3:9000".to_owned(),
                     local: false,
                     unreplicated: vec!["span_core".to_owned(), "span_payload".to_owned()],
+                    service_users: 0,
                 },
             ]
         );
         assert!(holdings("", &replicas).unwrap().is_empty());
         // A place outside the cluster, or a line of another shape, is an unexpected answer.
-        for unexpected in ["4\t\n", "0\t\n", "1\n", "x\tspan_core\n"] {
+        for unexpected in [
+            "4\t\t4\n",
+            "0\t\t4\n",
+            "1\t\n",
+            "x\tspan_core\t4\n",
+            "1\t\tfour\n",
+        ] {
             assert!(holdings(unexpected, &replicas).is_err(), "{unexpected:?}");
         }
     }
