@@ -397,9 +397,10 @@ shape of the gate's lanes, one trace per request, never exercised it.
 
 ## The shipper after #192
 
-Measured on 2026-11-25 (UTC) on the same laptop, **measured on a laptop, not reference hardware**, at the gate's
-small-rig limits (Crucible on 2 CPUs and 1 GB), with no other track's containers on the machine during the deciding
-runs except the gate's own driver. #192 takes stage A and encoding off the shipper task: stage A runs as a blocking
+Measured on 2026-11-25 and 2026-11-26 (UTC) on the same laptop, **measured on a laptop, not reference hardware**,
+at the gate's small-rig limits (Crucible on 2 CPUs and 1 GB), with no other container on the machine during the
+deciding runs but the gate's own driver: every gate session's run context names only its driver, and no
+`baseline.sh` step saw another container at its start or its end. #192 takes stage A and encoding off the shipper task: stage A runs as a blocking
 job on the frames the shipper reads ahead, each block of a sealed batch is encoded by a blocking job, each under a
 share of the CPU budget, stage B still takes the frames in LSN order, and while ingest holds more requests than its
 prepare share runs at once the shipper does that work on its task. The base is `main` at `8134c64`; `main` since then
@@ -514,8 +515,8 @@ From 00:16 to 00:30 UTC on 2026-11-26:
 | `fd9d0ac` | 6.88, 7.01, 7.41 | 7.01 | 16.7 | 516 ms | 6,000 and 590 |
 | `45daf03` | 7.32, 7.54, 6.78 | 7.32 | 14.0 | 515 to 516 ms | 48 to 59 and 590 |
 
-The third base step held a stall (p99.9 93.7 ms), so the ranges overlap and the rule read "level", and the gates ran,
-from 00:30 to 00:47 UTC, probe `honest`:
+The third base step held seven WAL syncs over 25 ms (p99.9 93.7 ms) with no other container on the machine, so the
+ranges overlap and the rule read "level", and the gates ran, from 00:30 to 00:47 UTC, probe `honest`:
 
 | Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first | Result |
 |---|---|---|---|---|---|---|---|
@@ -539,6 +540,22 @@ from 00:30 to 00:47 UTC, probe `honest`:
 | Encoding jobs' hold, share of the window | | | 83.5% | 86.9% | 84.9% | 86.0% |
 
 Nothing was lost or duplicated in any step.
+
+**The split the next round starts from** is that of base and `fd9d0ac`, the branch's behaviour, in these steps; the
+shares are of the window between the metric scrapes around the load (31.4 to 31.5 s):
+
+| | Base | Base | `fd9d0ac` | `fd9d0ac` |
+|---|---|---|---|---|
+| Shipped spans/s, run and drain | 57,288 | 58,901 | 62,665 | 60,918 |
+| Task busy | 97.1% | 98.5% | 72.4% | 71.1% |
+| Task: `encode` | 47.3% | 47.4% | 0.4% | 1.2% |
+| Task: `stage_a` | 21.2% | 21.4% | 9.0% | 11.5% |
+| Task: `rows` | 15.4% | 17.5% | 24.5% | 25.0% |
+| Task: `stage_b` | 10.0% | 9.3% | 32.5% | 27.0% |
+| Task: `read`, `wal_append` | 3.2% | 2.9% | 6.0% | 6.5% |
+| Task: `wait_inserts`, `wait_stage_a`, `wait_frames` | 0.0%, 0.0%, 1.5% | 0.0%, 0.0%, 1.5% | 15.4%, 10.5%, 1.6% | 15.1%, 12.4%, 1.4% |
+| Stage A jobs, and their hold as a share of the window | | | 19,810, 29.4% | 19,733, 29.6% |
+| Encoding jobs, and their hold as a share of the window | | | 245, 84.9% | 243, 86.0% |
 
 ### Where this leaves the shipper
 

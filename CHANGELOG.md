@@ -10,8 +10,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   so ingest keeps the CPUs it had. A batch seals once the batch before it is encoded, so the shipper holds the rows
   of at most one batch besides the one it fills. Requests still reach deduplication in log order, and every attempt
   of an insert still sends the same bytes. On the perf gate's small rig (2 CPUs), measured on a laptop, a node keeps
-  up end to end with 100,000 spans/s of 1 KiB spans, where it shipped about 62,000 before; at 10,000 spans/s its
-  durable-ack p99 is about 1 to 2.5 ms higher, because encoding runs beside ingest.
+  up end to end with 100,000 spans/s of 1 KiB spans, where it shipped about 62,000 before, and offered 150,000 it
+  ships about 61,000 to 63,000 against 56,000 to 59,000 before; at 10,000 spans/s its durable-ack p99 is about 1 to
+  2.5 ms higher.
 - `cpu.permits` also bounds the shipper: its normalizing and its encoding of blocks take a sixteenth of the budget
   each, at least one permit, and ingest's preparation of requests the rest. The histograms
   `crucible_cpu_permit_wait_microseconds` and `crucible_cpu_permit_hold_microseconds` have the stages `stage_a` and
