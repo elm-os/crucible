@@ -261,7 +261,10 @@ pub(crate) fn clocks_agree(live: &[Node], margin: Duration) -> Result<(), Vec<&N
     let limit = duration_micros(margin) / 2;
     let off: Vec<&Node> = live
         .iter()
-        .filter(|node| node.clock_skew().is_none_or(|skew| skew.saturating_abs() > limit))
+        .filter(|node| {
+            node.clock_skew()
+                .is_none_or(|skew| skew.saturating_abs() > limit)
+        })
         .collect();
     if off.is_empty() { Ok(()) } else { Err(off) }
 }
@@ -336,11 +339,19 @@ impl Purges {
     }
 
     /// [`clocks_agree`] over the live nodes; when one is off, a warning names it with how far its clock is off.
-    async fn clocks(&mut self, ctx: &LeaderCtx, config: &LifecycleConfig) -> Result<bool, JobError> {
+    async fn clocks(
+        &mut self,
+        ctx: &LeaderCtx,
+        config: &LifecycleConfig,
+    ) -> Result<bool, JobError> {
         if let Some(agree) = self.clocks {
             return Ok(agree);
         }
-        let live = ctx.store().lifecycle().live_nodes(config.live_within).await?;
+        let live = ctx
+            .store()
+            .lifecycle()
+            .live_nodes(config.live_within)
+            .await?;
         let agree = match clocks_agree(&live, config.clock_margin) {
             Ok(()) => true,
             Err(off) => {
@@ -1181,7 +1192,12 @@ pub(crate) fn held(live: &[Node]) -> Option<String> {
     let earlier: Vec<String> = live
         .iter()
         .filter(|node| !node.reads_project_requests())
-        .map(|node| format!("the server with WAL epoch {} ({})", node.wal_epoch, node.version))
+        .map(|node| {
+            format!(
+                "the server with WAL epoch {} ({})",
+                node.wal_epoch, node.version
+            )
+        })
         .collect();
     (!earlier.is_empty()).then(|| {
         format!(
@@ -1398,7 +1414,13 @@ mod tests {
             ..node(1)
         };
         assert!(clocks_agree(&[], hour).is_ok());
-        assert!(clocks_agree(&[off_by(Some(0)), off_by(Some(30)), off_by(Some(-30))], hour).is_ok());
+        assert!(
+            clocks_agree(
+                &[off_by(Some(0)), off_by(Some(30)), off_by(Some(-30))],
+                hour
+            )
+            .is_ok()
+        );
         assert_eq!(
             clocks_agree(&[off_by(Some(0)), off_by(Some(31))], hour)
                 .unwrap_err()
@@ -1418,9 +1440,15 @@ mod tests {
             ..node(2)
         };
         assert_eq!(held(&[]), None);
-        assert_eq!(held(&[running("0.1.4"), running("0.1.3+project-deletions")]), None);
+        assert_eq!(
+            held(&[running("0.1.4"), running("0.1.3+project-deletions")]),
+            None
+        );
         let why = held(&[running("0.1.4"), running("0.1.2")]).unwrap();
-        assert!(why.contains(&format!("{} (0.1.2)", node(2).wal_epoch)), "{why}");
+        assert!(
+            why.contains(&format!("{} (0.1.2)", node(2).wal_epoch)),
+            "{why}"
+        );
         assert!(why.contains("Upgrade or stop"), "{why}");
     }
 

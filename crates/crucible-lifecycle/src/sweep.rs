@@ -238,7 +238,10 @@ async fn sweep(
         let held = find(shared, table, project, None, &mut left).await;
         *probes = probes.saturating_sub(usize::MAX - left);
         let held = held.map_err(|error| {
-            JobError::Failed(format!("{LOOK_FAILED} in {} failed ({error})", table.name()))
+            JobError::Failed(format!(
+                "{LOOK_FAILED} in {} failed ({error})",
+                table.name()
+            ))
         })?;
         found.extend(
             held.partitions
@@ -284,7 +287,9 @@ async fn sweep(
         found.retain(|pair| !waiting.contains(pair));
         let purges: Vec<LifecycleAction> = found
             .iter()
-            .map(|(table, partition)| purge(ctx, shared, request, (*table, *partition), period, now))
+            .map(|(table, partition)| {
+                purge(ctx, shared, request, (*table, *partition), period, now)
+            })
             .collect();
         let planned = actions::plan(ctx, purges).await?;
         let late = matches!(

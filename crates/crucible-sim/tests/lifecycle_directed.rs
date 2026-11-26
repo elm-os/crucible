@@ -802,7 +802,12 @@ impl Node {
     }
 
     /// [`Node::delete_and_purge`] for a project deleted at `at`.
-    async fn delete_at_and_purge(&self, project: ProjectId, id: u8, at: Timestamp) -> DeletionRequest {
+    async fn delete_at_and_purge(
+        &self,
+        project: ProjectId,
+        id: u8,
+        at: Timestamp,
+    ) -> DeletionRequest {
         let request = DeletionRequest::project(
             crucible_records::DeletionRequestId::from_bytes([id; 16]),
             project,
@@ -1363,7 +1368,11 @@ fn rows_that_keep_landing_never_fail_a_project_deletion() {
             );
         }
         let done = node
-            .wait_for(request.id, DeletionState::Completed, Duration::from_secs(4 * 3_600))
+            .wait_for(
+                request.id,
+                DeletionState::Completed,
+                Duration::from_secs(4 * 3_600),
+            )
             .await;
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
         assert_eq!(node.project_rows_gone(project).await, (true, true));
@@ -1387,11 +1396,19 @@ fn a_failed_project_deletion_finishes_once_the_sweep_finds_every_table_empty() {
         let request = purge_of(&node, project, 0x28);
         node.mark_deleted(project, Some(request.clone())).await;
         let failed = node
-            .wait_for(request.id, DeletionState::Failed, Duration::from_secs(1_800))
+            .wait_for(
+                request.id,
+                DeletionState::Failed,
+                Duration::from_secs(1_800),
+            )
             .await;
         assert_eq!(failed.state, DeletionState::Failed, "{failed:?}");
         let done = node
-            .wait_for(request.id, DeletionState::Completed, Duration::from_secs(3 * 3_600))
+            .wait_for(
+                request.id,
+                DeletionState::Completed,
+                Duration::from_secs(3 * 3_600),
+            )
             .await;
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
         assert_eq!(node.project_rows_gone(project).await, (true, true));
@@ -1440,7 +1457,11 @@ fn the_sweep_removes_late_rows_from_the_tables_discovery_has_passed() {
         assert!(!Progress::parse(&still.places).planned, "{still:?}");
         *node.hooked.failing_table.lock().unwrap() = None;
         let done = node
-            .wait_for(request.id, DeletionState::Completed, Duration::from_secs(3 * 1_800))
+            .wait_for(
+                request.id,
+                DeletionState::Completed,
+                Duration::from_secs(3 * 1_800),
+            )
             .await;
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
         node.sleep(Duration::from_secs(2 * 1_800)).await;
@@ -1495,7 +1516,11 @@ fn a_server_of_an_earlier_version_holds_project_deletions_until_it_is_gone() {
             assert_eq!(made.len(), 1, "{made:?}");
             assert_eq!(made[0].id, listed[0].id);
             let done = node
-                .wait_for(made[0].id, DeletionState::Completed, Duration::from_secs(3 * 1_800))
+                .wait_for(
+                    made[0].id,
+                    DeletionState::Completed,
+                    Duration::from_secs(3 * 1_800),
+                )
                 .await;
             assert_eq!(done.state, DeletionState::Completed, "{done:?}");
             node.assert_purged(project);
