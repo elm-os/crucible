@@ -568,6 +568,50 @@ fn deleting_a_project_starts_the_purge_of_its_data() {
     });
 }
 
+/// Contract 13.4: a server of 0.1.3 or earlier cannot read a deletion request of kind `project`, and one such row
+/// fails its every read of deletion requests. While such a server is live (its heartbeat is at most a minute old),
+/// deleting a project makes no such request, and the server that holds the `lifecycle` lease makes it later; once
+/// none is live, the deletion makes it again.
+#[test]
+fn deleting_a_project_while_a_server_of_an_earlier_version_runs_holds_its_purge() {
+    sim(43, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        let by = owner(&identity).await.principal.user.id;
+        let held = identity.create_project("Held", "held").await.unwrap();
+        let later = identity.create_project("Later", "later").await.unwrap();
+        model
+            .lifecycle()
+            .heartbeat(&crucible_control::Node {
+                wal_epoch: crucible_records::WalEpoch::from_bytes([7; 16]),
+                heartbeat_at: Timestamp::EPOCH,
+                version: "0.1.3".to_owned(),
+                checkpoint_lsn: crucible_records::Lsn::ZERO,
+                address: String::new(),
+            })
+            .await
+            .unwrap();
+        let requests = |model: PgModel, project: ProjectId| async move {
+            model
+                .lifecycle()
+                .list_requests(project, None, 10)
+                .await
+                .unwrap()
+        };
+        let deleted = identity
+            .delete_project(held.id, held.version, by)
+            .await
+            .unwrap();
+        assert!(deleted.deleted_at.is_some());
+        assert!(requests(model.clone(), held.id).await.is_empty());
+        env.clock.sleep(Duration::from_secs(61)).await;
+        identity
+            .delete_project(later.id, later.version, by)
+            .await
+            .unwrap();
+        assert_eq!(requests(model.clone(), later.id).await.len(), 1);
+    });
+}
+
 /// The salt of `project` as the control store holds it, opened as the sealer of [`identity`] opens it, with the
 /// associated data that binds it to the project: `None` when the project has no salt row.
 async fn stored_salt(model: &PgModel, project: ProjectId) -> Option<Result<Vec<u8>, Unsealable>> {

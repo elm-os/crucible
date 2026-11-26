@@ -104,19 +104,46 @@ pub(crate) async fn run(ctx: LeaderCtx, shared: Arc<Shared>) -> JobResult {
             }
         }
         // Each job of the lease writes its own fields of the shared cursor, read just before.
-        let mut stored = Schedule::load(&ctx).await?;
-        match (pass, whole) {
-            (Pass::Recent, true) => (stored.sweep, stored.sweep_after) = (period, 0),
-            (Pass::Recent, false) => stored.sweep_after = last,
-            (Pass::Old, true) => (stored.sweep_old, stored.sweep_old_after) = (period, 0),
-            (Pass::Old, false) => stored.sweep_old_after = last,
-        }
-        stored.store(&ctx).await?;
+        advanced(Schedule::load(&ctx).await?, pass, period, whole, last)
+            .store(&ctx)
+            .await?;
         if !whole {
             return Ok(());
         }
     }
     Ok(())
+}
+
+/// The cursor after a wake in the period `period` that took `pass` as far as the request with the sequence number
+/// `last`; `whole` when the pass is complete.
+fn advanced(mut stored: Schedule, pass: Pass, period: u64, whole: bool, last: u64) -> Schedule {
+    match (pass, whole) {
+        (Pass::Recent, true) => (stored.sweep, stored.sweep_after) = (period, 0),
+        (Pass::Recent, false) => stored.sweep_after = last,
+        (Pass::Old, true) => (stored.sweep_old, stored.sweep_old_after) = (period, 0),
+        (Pass::Old, false) => stored.sweep_old_after = last,
+    }
+    stored
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pass that runs past the end of the period it began in counts for that period, so the next pass begins in
+    /// the period after, not one period later.
+    #[test]
+    fn a_pass_counts_for_the_period_it_began_in() {
+        for pass in [Pass::Recent, Pass::Old] {
+            let begun = advanced(Schedule::default(), pass, 100, false, 7);
+            let done = advanced(begun, pass, 101, true, 9);
+            let (period, after) = match pass {
+                Pass::Recent => (done.sweep, done.sweep_after),
+                Pass::Old => (done.sweep_old, done.sweep_old_after),
+            };
+            assert_eq!((period, after), (100, 0), "{pass:?}");
+        }
+    }
 }
 
 /// Looks for rows of the project of one project deletion and plans a purge of each partition that holds some. A

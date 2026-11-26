@@ -6,7 +6,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,8 +23,8 @@ use crucible_env::{
 };
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
-    EARLIER_DELETION_BY, ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, NewDeletion,
-    NodeLog as _, NodeState, Progress, Service, Subjects, WalLog, leader_jobs, node_job,
+    EARLIER_DELETION_BY, ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, LogError,
+    NewDeletion, NodeLog, NodeState, Progress, Service, Subjects, WalLog, leader_jobs, node_job,
 };
 use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, Value};
 use crucible_records::{
@@ -75,6 +75,12 @@ struct Hooked {
     /// Whether a read over every instant of a table is refused as too broad, as a server refuses a read of more
     /// rows than its class allows.
     refuse_wide: Arc<AtomicBool>,
+    /// A project whose probes fail, as a probe that reads past many hidden rows runs into the read deadline.
+    failing_project: Arc<Mutex<Option<ProjectId>>>,
+    /// A table whose partition list and probes fail.
+    failing_table: Arc<Mutex<Option<TableId>>>,
+    /// A table and how many more of its deletes the server refuses outright.
+    refused_deletes: Arc<Mutex<Option<(TableId, u32)>>>,
 }
 
 impl std::fmt::Debug for Hooked {
@@ -102,6 +108,24 @@ impl Hooked {
                 left.checked_sub(1)
             })
             .is_ok()
+    }
+
+    /// Whether a probe of `project` in `table` fails.
+    fn probe_fails(&self, table_id: TableId, project: Option<ProjectId>) -> bool {
+        *self.failing_table.lock().unwrap() == Some(table_id)
+            || project.is_some_and(|project| *self.failing_project.lock().unwrap() == Some(project))
+    }
+
+    /// Whether the server refuses this delete outright.
+    fn refuses(&self, table_id: TableId) -> bool {
+        let mut refused = self.refused_deletes.lock().unwrap();
+        match refused.as_mut() {
+            Some((table, left)) if *table == table_id && *left > 0 => {
+                *left -= 1;
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -133,6 +157,12 @@ impl TelemetryStore for Hooked {
 
     async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
         self.before(plan.table(), plan.partition()).await;
+        if self.refuses(plan.table()) {
+            return Err(StoreError::Rejected {
+                code: 241,
+                message: "memory limit exceeded".to_owned(),
+            });
+        }
         self.ch.delete(plan).await
     }
 
@@ -174,7 +204,7 @@ impl TelemetryStore for Hooked {
     }
 
     async fn partitions(&self, table_id: TableId) -> Result<Vec<PartitionId>, StoreError> {
-        if self.fails() {
+        if self.fails() || self.probe_fails(table_id, None) {
             return Err(StoreError::Unavailable("the read timed out".to_owned()));
         }
         self.ch.partitions(table_id).await
@@ -186,7 +216,7 @@ impl TelemetryStore for Hooked {
         partition: Option<PartitionId>,
         project: ProjectId,
     ) -> Result<bool, StoreError> {
-        if self.fails() {
+        if self.fails() || self.probe_fails(table_id, Some(project)) {
             return Err(StoreError::Unavailable("the read timed out".to_owned()));
         }
         self.ch.holds_project(table_id, partition, project).await
@@ -425,8 +455,19 @@ where
     F: FnOnce(Node) -> Fut,
     Fut: Future<Output = ()>,
 {
+    directed_beside(configure, None, |node, _| body(node));
+}
+
+/// [`directed_with`] and, when `skew` is given, the host of a second server, whose wall clock is `skew` microseconds
+/// ahead of the first's.
+fn directed_beside<F, Fut>(configure: impl FnOnce(&mut LifecycleConfig), skew: Option<i64>, body: F)
+where
+    F: FnOnce(Node, Option<Host>) -> Fut,
+    Fut: Future<Output = ()>,
+{
     run(11, |sim| async move {
         let host = sim.host("node", &sim.disk("node"), 0);
+        let second = skew.map(|skew| sim.host("node-2", &sim.disk("node-2"), skew));
         let ch = ChModel::new(
             sim.rng("store").as_ref(),
             StoreFlavour::SingleNode,
@@ -493,6 +534,9 @@ where
             hook: Arc::default(),
             failing: Arc::default(),
             refuse_wide: Arc::default(),
+            failing_project: Arc::default(),
+            failing_table: Arc::default(),
+            refused_deletes: Arc::default(),
         };
         let stores = LeaderStores {
             telemetry: Arc::new(hooked.clone()),
@@ -516,8 +560,44 @@ where
             log,
             objects,
         };
-        body(node).await;
+        body(node, second).await;
     });
+}
+
+/// The log of a second server: a tombstone is durable at once, and the checkpoint passes it at once.
+#[derive(Debug)]
+struct MemLog {
+    epoch: WalEpoch,
+    last: AtomicU64,
+}
+
+#[async_trait]
+impl NodeLog for MemLog {
+    fn epoch(&self) -> WalEpoch {
+        self.epoch
+    }
+
+    async fn append_tombstone(&self, _: &DeletionRequest) -> Result<Lsn, LogError> {
+        Ok(Lsn::new(self.last.fetch_add(1, Ordering::SeqCst) + 1))
+    }
+
+    fn watermark(&self) -> Lsn {
+        Lsn::new(self.last.load(Ordering::SeqCst))
+    }
+}
+
+/// Starts the node timer of a second server on `host`, which registers `version` in the node registry: it
+/// heartbeats with its own clock, records every tombstone and passes it at once.
+fn second_node(node: &Node, host: &Host, version: &str) -> crucible_jobs::Running {
+    let log = MemLog {
+        epoch: WalEpoch::from_uuid(Uuid::from_v7_parts(1_700_000_000_000, 2)),
+        last: AtomicU64::new(0),
+    };
+    let state = Arc::new(NodeState::new(Arc::new(log), version, ""));
+    let mut registry = Registry::new();
+    registry.register(node_job(state, &LifecycleConfig::default()));
+    let control: Arc<dyn ControlStore> = Arc::new(node.pg.clone());
+    registry.start(&host.env, Some(control), "node#2")
 }
 
 #[test]
@@ -717,19 +797,104 @@ impl Node {
 
     /// Deletes the project as `DELETE projects/{id}` does and waits two mask cycles, by which the purge is complete.
     async fn delete_and_purge(&self, project: ProjectId, id: u8) -> DeletionRequest {
+        self.delete_at_and_purge(project, id, self.host.env.clock.wall_now())
+            .await
+    }
+
+    /// [`Node::delete_and_purge`] for a project deleted at `at`.
+    async fn delete_at_and_purge(&self, project: ProjectId, id: u8, at: Timestamp) -> DeletionRequest {
         let request = DeletionRequest::project(
             crucible_records::DeletionRequestId::from_bytes([id; 16]),
             project,
-            self.host.env.clock.wall_now(),
+            at,
             "user:test".to_owned(),
         );
         self.mark_deleted(project, Some(request.clone())).await;
         self.sleep(Duration::from_secs(2 * 1_800 + 180)).await;
-        let done = self.request(request.id).await;
+        let done = self.request_of(project, request.id).await;
         assert_eq!(done.state, DeletionState::Completed, "{done:?}");
         self.assert_purged(project);
         done
     }
+
+    /// The request `id` of `project`.
+    async fn request_of(
+        &self,
+        project: ProjectId,
+        id: crucible_records::DeletionRequestId,
+    ) -> DeletionRequest {
+        self.pg
+            .lifecycle()
+            .request(project, id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Plants an object under the project's key prefix, as an export file or a media object leaves one, and gives
+    /// the project a salt.
+    async fn plant_project_rows(&self, project: ProjectId) {
+        let key = format!("media/{project}/exports/x/1/crucible-export-x.jsonl");
+        let now = self.host.env.clock.wall_now();
+        self.objects
+            .plant(&key, bytes::Bytes::from_static(b"{}\n"), now);
+        self.pg
+            .project_salts()
+            .insert_if_absent(&crucible_control::SealedProjectSalt {
+                project_id: project,
+                key_id: "master-0".to_owned(),
+                nonce: vec![1; 24],
+                ciphertext: vec![1; 48],
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Whether the project's salt and every object under its key prefix are gone.
+    async fn project_rows_gone(&self, project: ProjectId) -> (bool, bool) {
+        let salt = self
+            .pg
+            .project_salts()
+            .get(project)
+            .await
+            .unwrap()
+            .is_none();
+        let objects = !self
+            .objects
+            .objects()
+            .keys()
+            .any(|key| key.starts_with(&format!("media/{project}/")));
+        (salt, objects)
+    }
+
+    /// Waits up to `limit` for the request to reach `state`, looking every 30 s, and returns it as it then stands.
+    async fn wait_for(
+        &self,
+        id: crucible_records::DeletionRequestId,
+        state: DeletionState,
+        limit: Duration,
+    ) -> DeletionRequest {
+        let mut waited = Duration::ZERO;
+        let mut now = self.request(id).await;
+        while now.state != state && waited < limit {
+            self.sleep(Duration::from_secs(30)).await;
+            waited += Duration::from_secs(30);
+            now = self.request(id).await;
+        }
+        now
+    }
+}
+
+const SWEEP_EVERY: Duration = Duration::from_secs(3_600);
+
+/// A project deletion request of the project, made now.
+fn purge_of(node: &Node, project: ProjectId, id: u8) -> DeletionRequest {
+    DeletionRequest::project(
+        crucible_records::DeletionRequestId::from_bytes([id; 16]),
+        project,
+        node.host.env.clock.wall_now(),
+        "user:test".to_owned(),
+    )
 }
 
 /// Contract 13.4: a project deletion drops a partition only when the partition ends before the oldest instant at which
@@ -1057,6 +1222,318 @@ fn a_project_deleted_by_an_older_version_gets_one_project_deletion_and_is_purged
         let unrequested = node.pg.lifecycle().deleted_without_request().await.unwrap();
         assert!(unrequested.is_empty(), "{unrequested:?}");
     });
+}
+
+/// Contract 13.4: a deleted project whose probes keep failing holds back no other deleted project. The probes of the
+/// second of three deleted projects fail, as a probe that reads past many hidden rows runs into the read deadline.
+/// Late rows of the first and of the third are still removed within one sweep interval, and the failure is recorded
+/// on the second's request, with the table and that the sweep looks again, until a pass whose probes answer clears it.
+#[test]
+fn a_deleted_project_whose_probes_fail_holds_back_no_other() {
+    directed(|node| async move {
+        let first = ProjectId::from_bytes(PROJECT);
+        let (second, third) = (project(2, "Two"), project(3, "Three"));
+        node.pg.projects().insert(&second).await.unwrap();
+        node.pg.projects().insert(&third).await.unwrap();
+        node.ingest(1, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        node.delete_and_purge(first, 0x21).await;
+        let failing = node.delete_and_purge(second.id, 0x22).await;
+        node.delete_and_purge(third.id, 0x23).await;
+        *node.hooked.failing_project.lock().unwrap() = Some(second.id);
+        let now = node.host.env.clock.wall_now();
+        land_span(&node.ch, first, 31, now, 31).await;
+        land_span(&node.ch, third.id, 33, now, 33).await;
+        node.sleep(SWEEP_EVERY + Duration::from_secs(90)).await;
+        assert_eq!(
+            (node.visible(first), node.visible(third.id)),
+            (0, 0),
+            "late rows of the first and the third project are still visible"
+        );
+        let recorded = node.request_of(second.id, failing.id).await;
+        assert_eq!(recorded.state, DeletionState::Completed, "{recorded:?}");
+        assert!(recorded.attempts > 0, "{recorded:?}");
+        assert!(
+            recorded
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("span_core") && error.contains("again")),
+            "{recorded:?}"
+        );
+        *node.hooked.failing_project.lock().unwrap() = None;
+        node.sleep(SWEEP_EVERY + Duration::from_secs(90)).await;
+        let cleared = node.request_of(second.id, failing.id).await;
+        assert_eq!(cleared.error, None, "{cleared:?}");
+    });
+}
+
+/// Contract 13.4: the daily pass over the projects deleted more than 30 days ago runs whatever the hourly pass meets.
+/// The probes of a recent deletion fail, and a late row of a project deleted 31 days ago is still removed within a
+/// day.
+#[test]
+fn a_deleted_project_whose_probes_fail_holds_back_no_daily_pass() {
+    directed(|node| async move {
+        let old = ProjectId::from_bytes(PROJECT);
+        let recent = project(2, "Two");
+        node.pg.projects().insert(&recent).await.unwrap();
+        let month_ago = node
+            .host
+            .env
+            .clock
+            .wall_now()
+            .saturating_add_micros(-31 * DAY);
+        node.delete_at_and_purge(old, 0x24, month_ago).await;
+        node.delete_and_purge(recent.id, 0x25).await;
+        *node.hooked.failing_project.lock().unwrap() = Some(recent.id);
+        land_span(&node.ch, old, 34, node.host.env.clock.wall_now(), 34).await;
+        let mut hours = 0;
+        while node.visible(old) > 0 && hours < 26 {
+            node.sleep(Duration::from_secs(3_600)).await;
+            hours += 1;
+        }
+        assert_eq!(
+            node.visible(old),
+            0,
+            "the late row of the project deleted 31 days ago is still visible after {hours} h"
+        );
+    });
+}
+
+/// Contract 13.4: while the object store refuses calls, a project deletion whose telemetry is verified waits at
+/// `verified`, with how many attempts failed and an error that says the object store refused and what to check, and
+/// tries again. Once the store answers, the project's objects and control-plane rows go and the request completes.
+#[test]
+fn an_object_store_that_refuses_holds_a_project_deletion_at_verified_and_says_why() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        node.plant_project_rows(project).await;
+        node.objects.set_faults(ObjectFaults {
+            throttle_ppm: 1_000_000,
+            ..ObjectFaults::default()
+        });
+        let request = purge_of(&node, project, 0x26);
+        node.mark_deleted(project, Some(request.clone())).await;
+        node.sleep(Duration::from_secs(4 * 1_800 + 180)).await;
+        let held = node.request(request.id).await;
+        assert_eq!(held.state, DeletionState::Verified, "{held:?}");
+        assert!(held.attempts > 0, "{held:?}");
+        assert!(
+            held.error
+                .as_deref()
+                .is_some_and(|error| error.contains("object store") && error.contains("check")),
+            "{held:?}"
+        );
+        assert_eq!(node.project_rows_gone(project).await, (false, false));
+        node.objects.set_faults(ObjectFaults::default());
+        node.sleep(Duration::from_secs(90)).await;
+        let done = node.request(request.id).await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        assert_eq!(done.error, None, "{done:?}");
+        assert_eq!(node.project_rows_gone(project).await, (true, true));
+        node.assert_purged(project);
+    });
+}
+
+/// Contract 13.4: rows of a deleted project that keep landing never fail its deletion. A frame of the project lands
+/// every minute for six hours, as from a server cut off from Postgres under `fail_open`, across twelve mask cycles:
+/// rows that a purge's check finds after its delete arrived after it, and the purge, which takes every row of the
+/// project whatever its arrival, runs again without counting a failed attempt. Once the frames stop, the purge
+/// completes with the project's objects and control-plane rows.
+#[test]
+fn rows_that_keep_landing_never_fail_a_project_deletion() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        node.plant_project_rows(project).await;
+        let request = purge_of(&node, project, 0x27);
+        node.mark_deleted(project, Some(request.clone())).await;
+        for minute in 0..360_u32 {
+            let tag = 10 + u8::try_from(minute / 250).unwrap();
+            let span = u8::try_from(minute % 250).unwrap();
+            node.ingest(tag, span..span + 1).await;
+            node.sleep(Duration::from_secs(60)).await;
+            let now = node.request(request.id).await;
+            assert_ne!(
+                now.state,
+                DeletionState::Failed,
+                "after {minute} minutes of late rows: {now:?}"
+            );
+        }
+        let done = node
+            .wait_for(request.id, DeletionState::Completed, Duration::from_secs(4 * 3_600))
+            .await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        assert_eq!(node.project_rows_gone(project).await, (true, true));
+        node.sleep(Duration::from_secs(2 * 1_800)).await;
+        node.assert_purged(project);
+    });
+}
+
+/// Contract 13.4: a project deletion that failed for good still finishes. The server refuses every delete of
+/// `span_core` until that purge is given up and the request fails; the purge sweep then deletes the rows the purge
+/// left, and once it finds no row of the project in any table, the project's objects and control-plane rows go and
+/// the request completes.
+#[test]
+fn a_failed_project_deletion_finishes_once_the_sweep_finds_every_table_empty() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        node.plant_project_rows(project).await;
+        *node.hooked.refused_deletes.lock().unwrap() = Some((TableId::SpanCore, 8));
+        let request = purge_of(&node, project, 0x28);
+        node.mark_deleted(project, Some(request.clone())).await;
+        let failed = node
+            .wait_for(request.id, DeletionState::Failed, Duration::from_secs(1_800))
+            .await;
+        assert_eq!(failed.state, DeletionState::Failed, "{failed:?}");
+        let done = node
+            .wait_for(request.id, DeletionState::Completed, Duration::from_secs(3 * 3_600))
+            .await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        assert_eq!(node.project_rows_gone(project).await, (true, true));
+        assert!(
+            done.places.contains("\"control_plane\":\"done\""),
+            "{}",
+            done.places
+        );
+        node.sleep(Duration::from_secs(2 * 1_800)).await;
+        node.assert_purged(project);
+    });
+}
+
+/// Contract 13.4: the purge sweep also looks at the tables that a project deletion's discovery has passed, while
+/// discovery goes on with the rest. Discovery is held at `trace_stats`, and a row of the project that lands in a
+/// `span_core` partition that discovery did not find is removed within one sweep interval.
+#[test]
+fn the_sweep_removes_late_rows_from_the_tables_discovery_has_passed() {
+    directed(|node| async move {
+        let project = ProjectId::from_bytes(PROJECT);
+        node.ingest(1, 0..2).await;
+        node.sleep(Duration::from_secs(2)).await;
+        *node.hooked.failing_table.lock().unwrap() = Some(TableId::TraceStats);
+        let request = purge_of(&node, project, 0x29);
+        node.mark_deleted(project, Some(request.clone())).await;
+        let passed = |request: &DeletionRequest| {
+            Progress::parse(&request.places)
+                .purged
+                .iter()
+                .any(|table| table == "trace_heads")
+        };
+        let mut waiting = node.request(request.id).await;
+        for _ in 0..60 {
+            if passed(&waiting) {
+                break;
+            }
+            node.sleep(Duration::from_secs(5)).await;
+            waiting = node.request(request.id).await;
+        }
+        assert!(passed(&waiting), "{waiting:?}");
+        let start = SIM_EPOCH_MICROS - 3 * DAY + 3_600_000_000;
+        land_span(&node.ch, project, 35, Timestamp::from_micros(start), 35).await;
+        node.sleep(SWEEP_EVERY + Duration::from_secs(90)).await;
+        assert_eq!(node.visible(project), 0, "the late row is still visible");
+        let still = node.request(request.id).await;
+        assert!(!Progress::parse(&still.places).planned, "{still:?}");
+        *node.hooked.failing_table.lock().unwrap() = None;
+        let done = node
+            .wait_for(request.id, DeletionState::Completed, Duration::from_secs(3 * 1_800))
+            .await;
+        assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+        node.sleep(Duration::from_secs(2 * 1_800)).await;
+        node.assert_purged(project);
+    });
+}
+
+/// Contract 13.4: a server of 0.1.3 or earlier cannot read a deletion request of kind `project`, and one such row fails
+/// its every read of deletion requests. While a server that registered such a version is live, the server that holds
+/// the `lifecycle` lease makes no project deletion request, and the deleted project's list of deletion requests says
+/// what its purge waits for. Once that server is gone, the request is made under the id the list showed, and the
+/// purge completes.
+#[test]
+fn a_server_of_an_earlier_version_holds_project_deletions_until_it_is_gone() {
+    directed_beside(
+        |_| {},
+        Some(0),
+        |node, second| async move {
+            let project = ProjectId::from_bytes(PROJECT);
+            let second = second.unwrap();
+            let _old = second_node(&node, &second, "0.1.3");
+            node.ingest(1, 0..2).await;
+            node.sleep(Duration::from_secs(10)).await;
+            node.mark_deleted(project, None).await;
+            node.sleep(Duration::from_secs(120)).await;
+            let repo = node.pg.lifecycle();
+            let made = repo.list_requests(project, None, 10).await.unwrap();
+            assert!(
+                made.is_empty(),
+                "a project deletion request was made while a server of 0.1.3 runs: {made:?}"
+            );
+            let scope = scope(project).unwrap();
+            let listed = node.service.deletions(scope, None, 10).await.unwrap();
+            assert_eq!(listed.len(), 1, "{listed:?}");
+            assert_eq!(
+                (listed[0].selector.clone(), listed[0].state),
+                (DeletionSelector::Project, DeletionState::Pending)
+            );
+            assert!(
+                listed[0]
+                    .error
+                    .as_deref()
+                    .is_some_and(|why| why.contains("0.1.3")),
+                "{listed:?}"
+            );
+            let one = node.service.deletion(scope, listed[0].id).await.unwrap();
+            assert_eq!(one.as_ref(), Some(&listed[0]));
+
+            second.stop().await;
+            node.sleep(Duration::from_secs(120)).await;
+            let made = repo.list_requests(project, None, 10).await.unwrap();
+            assert_eq!(made.len(), 1, "{made:?}");
+            assert_eq!(made[0].id, listed[0].id);
+            let done = node
+                .wait_for(made[0].id, DeletionState::Completed, Duration::from_secs(3 * 1_800))
+                .await;
+            assert_eq!(done.state, DeletionState::Completed, "{done:?}");
+            node.assert_purged(project);
+        },
+    );
+}
+
+/// Contract 13.4: the drop rule counts on every server's clock being within the clock margin of the database clock,
+/// and the leader checks it at each heartbeat's record. A second server's clock is 45 minutes ahead, more than half of
+/// the hour's margin, so the partition of ten days ago, which the deletion drops while the clocks agree
+/// (`a_project_deletion_drops_a_partition_only_where_no_project_can_write_any_more`), gets a delete of the project's
+/// rows instead.
+#[test]
+fn a_server_clock_far_off_the_database_clock_makes_a_purge_delete_instead_of_drop() {
+    directed_beside(
+        five_days,
+        Some(45 * 60_000_000),
+        |node, second| async move {
+            let project = ProjectId::from_bytes(PROJECT);
+            let second = second.unwrap();
+            let _ahead = second_node(&node, &second, "test");
+            node.pg
+                .projects()
+                .insert(&made(2, "Two", SIM_EPOCH_MICROS))
+                .await
+                .unwrap();
+            for (tag, back) in [(1, 10), (3, 0)] {
+                node.ingest_at(tag, 0..2, SIM_EPOCH_MICROS - back * DAY)
+                    .await;
+            }
+            node.sleep(Duration::from_secs(10)).await;
+            let done = node.delete_and_purge(project, 0x2a).await;
+            assert_eq!(
+                node.span_core_kinds(done.id).await,
+                BTreeMap::from([(day(10), ActionKind::Delete), (day(0), ActionKind::Delete)])
+            );
+        },
+    );
 }
 
 #[test]
