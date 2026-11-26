@@ -39,6 +39,23 @@ its spans.
   images, audio, video and files the span references, when the server has object storage
   ([media](media.md#in-the-span-panel)).
 
+The overview of a failed span shows its status and level. The trace views and the span rows of the REST API and the
+MCP server don't show a span's status message or the `service.name` of the service that sent it; the SQL workspace
+has both, as the `status_message` and `service_name` columns of `crucible_sql.spans`
+([SQL workspace](sql-workspace.md)):
+
+```sql
+SELECT start_time, service_name, name, status_message
+FROM crucible_sql.spans
+WHERE start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)} AND status_code = 'error'
+ORDER BY start_time DESC
+```
+
+Exceptions recorded on a span, OpenTelemetry's `exception` events with their type, message and stack trace, are in
+the **Events** tab. They are the span's `events` payload field, which the REST API's
+[payload route](../api/README.md#payloads) (`field=events`) and the MCP server's
+[`get_span_payload`](mcp-server.md#tools) return.
+
 The **Tags, flags and feedback** section of the trace page adds tags, the bookmark and public flags, and scores
 ([facts](facts.md)).
 

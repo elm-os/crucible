@@ -23,8 +23,14 @@ A rule has:
   30 seconds before it, which gives the rollup time to receive that minute.
 - **A `for` duration**: how long the condition must hold before the series fires. With 0 it fires at the first
   check that breaches.
-- **A no-data setting**: what a series becomes after it has had no rows for a while. It keeps its state (the
-  default), counts as OK, or goes to `no_data` with one notification.
+- **A no-data setting** (**When there is no data**): what a series becomes after it has had no rows for a while
+  (**After no data for**, 5 minutes by default). It keeps its state (**Keep the current state**, the default),
+  counts as OK (**Treat it as OK**), or goes to `no_data` with one notification (**Notify that there is no data**);
+  the API's `no_data` takes `keep`, `ok` or `no_data`. A series has no rows while none of its spans or calls
+  arrive. For a rule on errors or on a count that fires above its threshold, choose **Treat it as OK**: with the
+  default, a series that fired keeps firing while traffic has stopped, and is notified again at each repeat. For a
+  rule that fires below its threshold, such as too few spans, choose **Notify that there is no data**, since stopped
+  traffic leaves no rows to compare.
 - **A repeat interval** (`renotify`, default 4 hours, minimum 5 minutes): how often a series that keeps firing is
   notified again.
 
@@ -57,6 +63,11 @@ then those rules skip it.
 
 "Send test" makes one attempt and reports whether the receiver accepted it, the class of its status and how long
 it took. It never shows what the receiver answered. A channel takes 6 tests a minute.
+
+Crucible calls a webhook URL from where it runs. Under Docker Compose, `127.0.0.1` and `localhost` are the Crucible
+container itself, so a receiver on your machine at `http://127.0.0.1:<port>` fails the test with "Crucible couldn't
+connect to the receiver". Give an address the container can reach: the receiver's container name on the Compose
+network, or, with Docker Desktop, `host.docker.internal` for your machine.
 
 A notification that fails is retried after 5 seconds, doubling to 1 hour. After 50 failed deliveries in a row the
 channel is turned off and shows the reason. Fix the receiver, send a test, then turn the channel on again: a

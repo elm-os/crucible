@@ -17,17 +17,23 @@ Install the package, `crucible-sdk`, from the GitHub release of Crucible 0.1.3 i
 SDK has the server's version:
 
 ```sh
+pip install "crucible-sdk @ https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible_sdk-0.1.3-py3-none-any.whl"
+```
+
+For MCP servers and clients, install it with the `mcp` extra, which adds `crucible_sdk.mcp` and the `mcp` package;
+without it, `import crucible_sdk.mcp` raises an `ImportError` that names the missing `mcp` package:
+
+```sh
 pip install "crucible-sdk[mcp] @ https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible_sdk-0.1.3-py3-none-any.whl"
 ```
 
-`uv add` and `uv pip install` take the same requirement. To install from a checkout of the repository instead:
+`uv add` and `uv pip install` take the same requirements. To install from a checkout of the repository instead:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
 uv pip install "./crucible/sdk/python[mcp]"   # or: pip install "./crucible/sdk/python[mcp]"
 ```
 
-The `mcp` extra adds `crucible_sdk.mcp` and the `mcp` package; agent tracing alone needs only the core package.
 The examples on this page are complete files. Each was run with Python 3.12 and `mcp` 2.3.0, in an environment
 installed this way, with only the endpoint changed to the SDK's test collector.
 
@@ -294,10 +300,11 @@ state.
 Never sent: `requestState` values, raw session ids, raw IP addresses, Authorization values, cookies and baggage.
 Error messages and exception events of MCP spans are cut to 8,192 and 16,384 characters and scrubbed before export.
 
-On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
-as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
+Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
+with status `error`, and captured arguments and results become the span's input and output. Crucible also records
+each such span as an MCP operation on the server side, which takes the other MCP keys: they show on the MCP
+**Operation** page ([MCP analytics](mcp-analytics.md#pages)) and in the SQL workspace's `crucible_sql.mcp_operations`,
+not among the span's attributes.
 
 ### Errors and identity in tool handlers
 

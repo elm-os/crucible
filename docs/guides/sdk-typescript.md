@@ -325,18 +325,26 @@ classifier of [contract 9.2](../architecture/contracts.md#92-error-taxonomy) rea
 the multi-round state hashes, the request size and user agent on HTTP, and the number of content blocks of each
 type. A `traceparent` in `params._meta` makes the span a child of the caller's span; baggage is never read.
 
-On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
-as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
+Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
+with status `error`, and captured arguments and results become the span's input and output. Crucible also records
+each such span as an MCP operation on the server side, which takes the other MCP keys: they show on the MCP
+**Operation** page ([MCP analytics](mcp-analytics.md#pages)) and in the SQL workspace's `crucible_sql.mcp_operations`,
+not among the span's attributes.
 
 | Option of `instrument` | Effect |
 |---|---|
 | `capture` | Content capture rules by tool glob; see below |
-| `handleParams` | Per tool, the argument whose string value is the operation's handle id, for example `{ lookup_order: "order_id" }`. It is scrubbed and cut at 256 bytes, and it groups the operations that work on one thing |
+| `handleParams` | Per tool, the argument whose string value is the operation's session handle, for example `{ lookup_order: "order_id" }`. It is scrubbed and cut at 256 bytes, and it groups the operations that work on one thing on the MCP **Sessions** page; see below |
 | `identify` | Called once per inbound message with the transport's `authInfo` and HTTP request; returns an identity |
 | `identity: "none"` | Sends no identity keys at all, the OAuth client id included |
 | `transport` | Overrides the transport label: `stdio`, `streamable_http`, `sse` or `unknown` |
+
+The MCP **Sessions** page groups a server's operations by the first of these that an operation has: the session id
+of a session-based HTTP connection, its session handle, the trace of the client span that made the call, and the
+server process. So on stdio, `handleParams` makes each value, each order id in the example above, a session of its
+own, shown as grouped by **Session handle**. The operations without a session handle, such as `initialize`,
+`tools/list` and calls to tools that `handleParams` does not name, are grouped by the client's trace when an
+instrumented client made them, and otherwise form one **Process** session.
 
 ### Errors and identity in tool handlers
 
@@ -372,9 +380,9 @@ straddles the cap is still matched, and a cut never keeps the prefix of a token 
 The scrub rules are the shared list of `conformance/scrub-rules.json`, packaged as `src/scrub-rules.json`, which a test
 keeps equal: PEM blocks, JWTs, Bearer tokens, Crucible secret keys, card numbers that pass the Luhn check, email
 addresses, IP addresses and phone numbers. Each match is replaced with a marker such as `[redacted:card]`. Error
-messages and handle ids are scrubbed with the same rules. The rules match values only, so a secret under a key such as
-`password` is sent unless its value matches a rule. A `requestState` is never sent in any form other than its keyed
-hash.
+messages and session handles are scrubbed with the same rules. The rules match values only, so a secret under a key
+such as `password` is sent unless its value matches a rule. A `requestState` is never sent in any form other than its
+keyed hash.
 
 ## Instrument an MCP client
 
