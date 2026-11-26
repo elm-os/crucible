@@ -1,21 +1,27 @@
 # Operations
 
 Upgrades, backups, health checks, metrics and logs of a running deployment. The commands assume the Compose setup
-of the [quickstart](quickstart.md), run from `deploy/compose/` in a POSIX shell (Linux, macOS, or WSL on Windows).
+of the [quickstart](quickstart.md), run from the folder that holds the Compose file in a POSIX shell (Linux, macOS,
+or WSL on Windows).
 
 ## Upgrades
 
-An upgrade is a new image and a restart. In the folder of the Compose file:
+An upgrade is a new image and a restart. In the folder that holds the Compose file, set `CRUCIBLE_IMAGE` in `.env`
+to the new version, for example `CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1.3` (add the line if `.env` has none),
+then download the Compose file of the same release and start it:
 
 ```sh
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.3/deploy/compose/compose.yaml
 docker compose pull && docker compose up -d
 curl -s http://127.0.0.1:8080/readyz     # "ready" once the new server is up
 ```
 
-The Compose file runs `ghcr.io/elm-os/crucible:latest`, so `pull` fetches the newest release. To stay on a release
-line, set `CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1` in `.env`, or a full version such as
-`ghcr.io/elm-os/crucible:0.1.3` to choose each upgrade yourself. The image is published for linux/amd64 and
-linux/arm64. For an image you build yourself, build the new version under a new tag
+The download replaces `compose.yaml`: make your changes to it again, such as a published port or a line in
+`environment`, or keep them in `compose.override.yaml` beside it, which Compose also reads when no `-f` is given.
+Pinning the version keeps the image and the Compose file of one release together. Without `CRUCIBLE_IMAGE`, the
+Compose file runs `ghcr.io/elm-os/crucible:latest`, so `pull` moves to the newest release under the Compose file you
+have, and `ghcr.io/elm-os/crucible:0.1` moves along that release line the same way. The image is published for
+linux/amd64 and linux/arm64. For an image you build yourself, build the new version under a new tag
 ([building the image from source](quickstart.md#building-the-image-from-source)), set `CRUCIBLE_IMAGE` to it and run
 `docker compose up -d`.
 

@@ -7,6 +7,13 @@ limit the calls it makes. Creating rules and channels, and verifying a webhook's
 ## How notifications leave the server
 
 - Rules are evaluated on schedule by the servers of the deployment; each evaluation is claimed by one server.
+- A rule's no-data setting decides what a series becomes once it has had no rows for the no-data time (5 minutes
+  by default). With the default, **Keep the current state** (`"no_data": "keep"` in the API), a firing series stays
+  firing, and is notified again at each repeat interval (4 hours by default), while no data arrives. For a rule
+  that fires above a threshold of errors or of a count, choose **Treat it as OK** (`"no_data": "ok"`), so that the
+  series resolves when traffic stops. For a rule that fires below a threshold, such as one that watches for traffic
+  to drop, choose **Notify that there is no data** (`"no_data": "no_data"`) instead: when traffic stops altogether
+  the series has no rows, which **Treat it as OK** reads as no breach.
 - A notification is written to an outbox in Postgres in the same transaction as the state change that caused it,
   so a restart loses none. Each server delivers from the outbox.
 - A failed delivery is retried after 5 seconds, doubling up to 1 hour. After 50 failed deliveries in a row the
@@ -15,6 +22,9 @@ limit the calls it makes. Creating rules and channels, and verifying a webhook's
   They never follow a redirect.
 - Each delivery resolves the target's host, checks every address it resolves to against the egress policy below,
   and connects to the address it checked.
+- Crucible calls a channel's URL from where it runs. Under Docker Compose, `127.0.0.1` and `localhost` are the
+  Crucible container itself, so a receiver on the Docker host is reached at the host's address on your network, or
+  at `host.docker.internal` on Docker Desktop.
 
 ## The egress policy
 

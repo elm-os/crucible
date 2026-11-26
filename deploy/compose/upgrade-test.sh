@@ -184,7 +184,9 @@ case "$upgrade_log" in
   *'ingest is open'*) ;;
   *) echo "the server's log shows no start of $image" >&2; exit 1 ;;
 esac
-for step in $(comm -13 <(printf '%s\n' "$before" | sort) <(recorded_steps | sort)); do
+# Read here, not inside the process substitution, whose failure set -e would not see.
+after=$(recorded_steps)
+for step in $(comm -13 <(printf '%s\n' "$before" | sort) <(printf '%s\n' "$after" | sort)); do
   if ! printf '%s\n' "$upgrade_log" | grep -q "migration step applied.*$step"; then
     echo "the ledger gained step $step, and the first start of $image did not log that it applied it" >&2
     exit 1
