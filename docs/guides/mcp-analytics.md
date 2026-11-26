@@ -24,7 +24,7 @@ The time range is the shell's, at most the project's maximum window (30 days by 
 | Page | What it shows |
 |---|---|
 | Servers | For each server: calls, errors, error rate, caller faults, p50, p90 and p99 latency, the last call, how many clients called it, its version and its deploys |
-| Tools | For each tool: the same measures, its response bytes, and the hash of its latest listed schema; tools a server listed that nobody called are marked unused |
+| Tools | For each tool: the same measures and its response bytes. Tools a server listed that nobody called are under **Unused**, with the hash of their latest listed schema |
 | Tool | One tool: calls and errors over time as bars, p50, p90 and p99 latency as lines, with deploy markers and a table view; its error classes and its top clients |
 | Errors | Calls by error class, and the failing methods and targets; the breakdown groups the errors by message and JSON-RPC code |
 | Clients | Calls by client name, or by name and version; names and versions are what the clients reported about themselves |
