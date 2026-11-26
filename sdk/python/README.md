@@ -12,11 +12,11 @@
 
 ## Install
 
-Install it from the GitHub release of Crucible 0.1.2; the SDK has the server's version, and `uv add` and
+Install it from the GitHub release of Crucible 0.1.3; the SDK has the server's version, and `uv add` and
 `uv pip install` take the same requirement:
 
 ```sh
-pip install "crucible-sdk[mcp] @ https://github.com/elm-os/crucible/releases/download/v0.1.2/crucible_sdk-0.1.2-py3-none-any.whl"
+pip install "crucible-sdk[mcp] @ https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible_sdk-0.1.3-py3-none-any.whl"
 ```
 
 or, from a checkout of this repository:

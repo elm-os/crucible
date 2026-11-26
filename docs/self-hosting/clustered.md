@@ -1,8 +1,9 @@
 # Clustered ClickHouse
 
-Crucible stores its telemetry on a self-hosted ClickHouse cluster of one shard with two or more replicas, coordinated
-by ClickHouse Keeper. Every replica holds a copy of every table, and inserts continue while a majority of the
-replicas is up, with the limits in [failure behaviour](#failure-behaviour). ClickHouse Cloud is refused at startup.
+Crucible stores its telemetry on a self-hosted ClickHouse cluster of one shard with two or more replicas,
+coordinated by ClickHouse Keeper. Every replica holds a copy of every table, and inserts continue while a majority
+of the replicas is up, with the limits in [failure behaviour](#failure-behaviour). It needs Crucible 0.1.3 or newer;
+ClickHouse Cloud is refused at startup.
 
 ## How it works
 
@@ -33,9 +34,17 @@ flowchart LR
 ## Run it with Docker Compose
 
 `deploy/compose/compose.cluster.yaml` runs two ClickHouse 26.8 replicas and one ClickHouse Keeper beside Crucible and
-Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need.
+Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need. It
+needs Docker Compose 2.23.1 or newer, the first version that reads configuration files written inside the Compose
+file, and step 2 needs `openssl` and a POSIX shell.
 
-1. Copy `deploy/compose/compose.cluster.yaml` from the repository into a new folder, and work in that folder.
+1. Download the Compose file into a new folder, and work in that folder:
+
+   ```sh
+   mkdir crucible-cluster && cd crucible-cluster
+   curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.3/deploy/compose/compose.cluster.yaml
+   ```
+
 2. Make the `.env` file beside it, once:
 
    ```sh
@@ -50,11 +59,51 @@ Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so i
    ```
 
 4. Create the organization and its owner as in the
-   [quickstart](quickstart.md#3-create-the-organization-and-its-owner), with
-   `docker compose -f compose.cluster.yaml exec crucible crucible admin init ...`.
+   [quickstart](quickstart.md#3-create-the-organization-and-its-owner). The setup link is in the logs:
 
-The optional settings of `compose.yaml` (`CRUCIBLE_IMAGE`, `CRUCIBLE_BIND_ADDRESS`, `CRUCIBLE_HTTP_PORT`,
-`CRUCIBLE_OTLP_HTTP_PORT`) work the same way here.
+   ```sh
+   docker compose -f compose.cluster.yaml logs crucible | grep 'setup/?token='
+   ```
+
+   Or, without a browser: `crucible admin init` reads the password from the first line of standard input. In a
+   script, pipe it in and add `-T`, so that `docker compose exec` passes the pipe on instead of opening a terminal:
+
+   ```sh
+   printf '%s\n' "$OWNER_PASSWORD" | docker compose -f compose.cluster.yaml exec -T crucible \
+     crucible admin init --org-name Acme --email you@example.com --name 'Your Name'
+   ```
+
+The folder holds no `compose.yaml`, so every `docker compose` command of the quickstart needs `-f compose.cluster.yaml`
+here; without it, Compose answers `no configuration file provided`. For example, an API key and a password-reset
+link:
+
+```sh
+docker compose -f compose.cluster.yaml exec crucible crucible admin create-key --project default
+docker compose -f compose.cluster.yaml exec crucible crucible admin reset-password you@example.com
+```
+
+And to stop it:
+
+```sh
+docker compose -f compose.cluster.yaml down        # keeps the data
+docker compose -f compose.cluster.yaml down -v     # removes it
+```
+
+Optional settings, in `.env`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image, such as `ghcr.io/elm-os/crucible:0.1` for a release line or `crucible:dev` for an image you built |
+| `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on |
+| `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the main listener: the UI, the REST API, the MCP server and OTLP/HTTP ingest |
+| `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | The host port of OTLP/HTTP ingest |
+
+The ports are published on every interface, so other machines on your network can send traces and sign in. Add
+`CRUCIBLE_BIND_ADDRESS=127.0.0.1` to `.env` to keep them on this machine.
+
+The file names its Compose project `crucible-cluster`, so a second copy on the same machine would share the first
+one's containers and volumes. Give a second copy its own project name, with `-p <name>` on every command or
+`COMPOSE_PROJECT_NAME=<name>` in its `.env`, and its own `CRUCIBLE_HTTP_PORT` and `CRUCIBLE_OTLP_HTTP_PORT`.
 
 The file runs these services:
 
