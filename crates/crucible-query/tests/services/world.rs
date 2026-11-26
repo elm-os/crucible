@@ -239,7 +239,13 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
                     ("span_count", Value::UInt(members.len() as u64)),
                     (
                         "error_count",
-                        Value::UInt(summaries().filter(|s| s.level == Level::Error).count() as u64),
+                        Value::UInt(
+                            summaries()
+                                .filter(|s| {
+                                    s.level == Level::Error || s.status_code == StatusCode::Error
+                                })
+                                .count() as u64,
+                        ),
                     ),
                     (
                         "total_cost_nusd",

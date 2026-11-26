@@ -17655,6 +17655,8 @@
           "total_tokens",
           "child_count",
           "io_shape",
+          "input_truncated",
+          "output_truncated",
           "saturated"
         ],
         "properties": {
@@ -17681,6 +17683,13 @@
           "input_tokens": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Input tokens."
+          },
+          "input_truncated": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the span's input was cut at the size limit, which leaves it as opaque text (a cut JSON value no\nlonger parses); null for a span that has not reached ClickHouse."
           },
           "io_shape": {
             "oneOf": [
@@ -17712,6 +17721,13 @@
           "output_tokens": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Output tokens."
+          },
+          "output_truncated": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the span's output was cut at the size limit, as `input_truncated` says of the input."
           },
           "parent_span_id": {
             "type": [
@@ -18510,6 +18526,7 @@
           "trace_id",
           "span_count",
           "paged",
+          "summary",
           "spans",
           "facts",
           "meta",
@@ -18542,6 +18559,17 @@
               "$ref": "#/components/schemas/Span"
             },
             "description": "The spans in start order. Empty only when `meta` says the response is partial or lagging."
+          },
+          "summary": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TraceSummary",
+                "description": "The trace's name, totals and identity, for the whole trace even when `paged` is true; null when `spans`\nis empty."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "trace_id": {
             "type": "string",
@@ -18635,7 +18663,7 @@
           },
           "error_count": {
             "$ref": "#/components/schemas/SafeU64",
-            "description": "Spans of level `error`."
+            "description": "Spans whose status or level is `error`."
           },
           "facts": {
             "$ref": "#/components/schemas/TraceFacts",
@@ -18761,6 +18789,106 @@
               "null"
             ],
             "description": "The cursor of the next page; null on the last page and on live-tail responses."
+          }
+        }
+      },
+      "TraceSummary": {
+        "type": "object",
+        "description": "What a trace's header shows: its name, totals and identity, worked out the way the trace list works out\nits rows.",
+        "required": [
+          "name",
+          "trace_name",
+          "head_kind",
+          "start_time",
+          "duration_us",
+          "status_code",
+          "level",
+          "span_count",
+          "error_count",
+          "total_cost_usd",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "user_id",
+          "session_id",
+          "environment",
+          "release",
+          "saturated"
+        ],
+        "properties": {
+          "duration_us": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "From the trace's first span start to its last span end, in microseconds."
+          },
+          "environment": {
+            "type": "string",
+            "description": "The head span's environment."
+          },
+          "error_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans whose status or level is `error`."
+          },
+          "head_kind": {
+            "$ref": "#/components/schemas/HeadKind",
+            "description": "Whether the head is the root span (`root`), or the earliest span of a trace whose root span was not\nreceived (`provisional`)."
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Input tokens across the trace, summed like the cost."
+          },
+          "level": {
+            "$ref": "#/components/schemas/Level",
+            "description": "The head span's level."
+          },
+          "name": {
+            "type": "string",
+            "description": "The head span's name. The head is the trace's root span (the earliest one when there are several), else\nits earliest span."
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Output tokens across the trace, summed like the cost."
+          },
+          "release": {
+            "type": "string",
+            "description": "The head span's release; empty until the store serves the head span."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The trace's session, picked like the trace name."
+          },
+          "span_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans in the trace: the response's `span_count`."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The trace's start: the start of its earliest span."
+          },
+          "status_code": {
+            "$ref": "#/components/schemas/StatusCode",
+            "description": "The head span's status."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "The trace's total cost in USD. A span whose child spans report usage is left out, so a parent that\nrepeats its children's usage is not counted twice. The trace list's `total_cost_usd` is summed the same\nway."
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Total tokens across the trace, summed like the cost."
+          },
+          "trace_name": {
+            "type": "string",
+            "description": "The trace name: the root span's, else the latest non-empty one; empty when no span set one."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The trace's user, picked like the trace name."
           }
         }
       },

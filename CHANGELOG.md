@@ -16,6 +16,15 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - On a cluster with a replica down, each read of every replica (the existence probe, the checks of a deletion and of
   a partition drop, and the check before each migration step) tries the stopped replica once instead of three times,
   so it waits for one connection attempt instead of three.
+- `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
+  status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
+  its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's
+  usage is counted once. It covers the whole trace, also when the response is paged, and is null when the response
+  holds no span.
+- The spans of a trace, the children of a span and search hits carry `input_truncated` and `output_truncated`:
+  whether the span's input or output was cut at the size limit, null for a span that has not reached ClickHouse.
+- A trace list row's `error_count` counts a span with an error status and an explicit level other than `error` as
+  soon as the span is received. In 0.1.3 such a span counted only once ClickHouse stored it.
 
 ## [0.1.3] - 2026-11-26
 

@@ -47,7 +47,7 @@ level: Level,
  */
 span_count: SafeU64, 
 /**
- * Spans of level `error`.
+ * Spans whose status or level is `error`.
  */
 error_count: SafeU64, 
 /**

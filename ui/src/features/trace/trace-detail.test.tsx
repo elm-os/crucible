@@ -57,6 +57,8 @@ function span(fields: Partial<Span>): Span {
     total_tokens: 0,
     child_count: null,
     io_shape: null,
+    input_truncated: null,
+    output_truncated: null,
     saturated: false,
     ...fields,
   };
@@ -94,6 +96,7 @@ function detail(fields: Partial<TraceDetailBody> = {}): TraceDetailBody {
     trace_id: TRACE,
     span_count: SPANS.length,
     paged: false,
+    summary: null,
     spans: SPANS,
     facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },

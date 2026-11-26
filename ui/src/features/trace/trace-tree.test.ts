@@ -46,6 +46,8 @@ function span(
     total_tokens: 0,
     child_count: null,
     io_shape: null,
+    input_truncated: null,
+    output_truncated: null,
     saturated: false,
     ...fields,
   };

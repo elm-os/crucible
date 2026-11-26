@@ -110,7 +110,7 @@ pub use sql::{
     SqlExportRequest, SqlLimits, SqlRelation, SqlResult, SqlRun, SqlRunKind, SqlRunList,
     SqlRunOutcome, SqlRunRequest, SqlRunStats, SqlSchema, SqlWorkspaceStatus,
 };
-pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
+pub use trace_detail::{Span, TraceDetail, TraceDetailParams, TraceSummary};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
 pub use users::{UserDetail, UserItem, UserListParams, UserPage, UserSessionItem, UserSessionPage};
 pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};

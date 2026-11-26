@@ -53,6 +53,8 @@ export function span(
     total_tokens: 0,
     child_count: null,
     io_shape: null,
+    input_truncated: null,
+    output_truncated: null,
     saturated: false,
     ...fields,
   };
@@ -111,6 +113,7 @@ export function traceDetail(fields: Partial<TraceDetail> = {}): TraceDetail {
     trace_id: TRACE,
     span_count: spans.length,
     paged: false,
+    summary: null,
     spans,
     facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: AS_OF, partial: false, consistency: "strong" },
