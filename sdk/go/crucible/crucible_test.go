@@ -1,14 +1,22 @@
 package crucible_test
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/elm-os/crucible/sdk/go/crucible"
 	"github.com/elm-os/crucible/sdk/go/internal/collectortest"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 const testKey = "csk_0123456789abcdefghijABCDEFGHIJ0123456789abc"
@@ -250,5 +258,67 @@ func TestRefusedExportIsCountedAndReturned(t *testing.T) {
 	}
 	if s := crucible.CurrentStats(); s.ExportFailed != 1 {
 		t.Errorf("stats = %+v", s)
+	}
+}
+
+// lockedBuffer is a log destination that the export goroutine and the test can share.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// The first refused export logs one warning with the endpoint, the status and the message of Crucible's
+// google.rpc.Status; later failures are only counted.
+func TestARefusedExportWarnsOnceWithCrucibleMessage(t *testing.T) {
+	const message = "this server does not accept the secret key; check that it was copied whole and that the server lists it"
+	refusal := protowire.AppendTag(nil, 1, protowire.VarintType)
+	refusal = protowire.AppendVarint(refusal, 16)
+	refusal = protowire.AppendTag(refusal, 2, protowire.BytesType)
+	refusal = protowire.AppendString(refusal, message)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write(refusal)
+	}))
+	defer server.Close()
+	logged := &lockedBuffer{}
+	log.SetOutput(logged)
+	defer log.SetOutput(os.Stderr)
+	if err := crucible.Init(crucible.Options{Endpoint: server.URL, SecretKey: testKey}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for range 3 {
+		_, o := crucible.Observe(ctx, "step", crucible.Span)
+		o.End()
+		if err := crucible.Flush(ctx); err == nil {
+			t.Fatal("Flush to a collector that refuses the key reported success")
+		}
+	}
+	_ = crucible.Shutdown(ctx)
+	got := logged.String()
+	if n := strings.Count(got, "crucible: could not send spans: "); n != 1 {
+		t.Fatalf("logged %d warnings, want 1:\n%s", n, got)
+	}
+	for _, want := range []string{server.URL + "/v1/traces", "401 Unauthorized (" + message + ")", "Options.SecretKey", "CurrentStats().ExportFailed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the warning %q does not say %q", got, want)
+		}
+	}
+	if strings.ContainsRune(got, 0x12) {
+		t.Errorf("the warning %q holds the protobuf framing of the refusal", got)
 	}
 }
