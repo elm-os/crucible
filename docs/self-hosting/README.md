@@ -41,8 +41,10 @@ To get a server running, follow the [quickstart](quickstart.md).
 ## The image
 
 Each release is published as `ghcr.io/elm-os/crucible` for linux/amd64 and linux/arm64, with SBOM and provenance
-attestations. A version such as `v0.1.0` is tagged `0.1.0`, `0.1` and `latest`; the Compose files run `latest`
-unless `CRUCIBLE_IMAGE` in `.env` names another tag.
+attestations. A version such as `v0.1.0` is tagged `0.1.0`, `0.1` and `latest`. The Compose files run
+`ghcr.io/elm-os/crucible:latest` unless `CRUCIBLE_IMAGE` in `.env` names another image by its full reference, such
+as `ghcr.io/elm-os/crucible:0.1` for a release line, or `ghcr.io/elm-os/crucible:0.1.3` for one version, which the
+[quickstart](quickstart.md#1-get-the-compose-file-and-make-env) writes.
 
 ```sh
 docker pull ghcr.io/elm-os/crucible:0.1.3
