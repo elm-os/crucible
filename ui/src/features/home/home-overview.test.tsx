@@ -111,12 +111,16 @@ function member(fields: Partial<OrgMember> = {}): OrgMember {
 
 const TEAM = [member(), member({ user_id: "u-2", email: "grace@example.com", role: "member" })];
 
+type Answer = () => Response | Promise<Response>;
+
 interface Server {
   metrics?: (measures: string[]) => Response;
-  bounds?: () => Response;
-  keys?: () => Response;
-  members?: () => Response;
+  bounds?: Answer;
+  keys?: Answer;
+  members?: Answer;
 }
+
+const NEVER: Answer = () => new Promise<Response>(() => {});
 
 const path = (url: unknown) => new URL(String(url), "http://localhost").pathname;
 
@@ -177,6 +181,28 @@ function renderHome() {
 }
 
 const section = (name: string) => screen.getByRole("region", { name });
+
+const problem = (status: number, code: string) =>
+  new Response(JSON.stringify({ code, title: "raw server title", request_id: "req-1" }), {
+    status,
+    headers: { "content-type": "application/problem+json" },
+  });
+
+const setupRegion = () => screen.queryByRole("region", { name: "Set up" });
+const setupLink = (name: string) => within(section("Set up")).getByRole("link", { name });
+const setupHref = (name: string) =>
+  new URL(setupLink(name).getAttribute("href") ?? "", "http://localhost");
+const precedes = (a: HTMLElement, b: HTMLElement) =>
+  (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+// Waits until the tiles have their answers and every set-up read was asked, then lets those answers land.
+async function settled(reads: string[]) {
+  expect(await within(section("Traces")).findByText("1")).toBeTruthy();
+  await waitFor(() => {
+    for (const read of reads) expect(requested(read)).toBe(1);
+  });
+  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+}
 
 describe("the home tiles and charts", () => {
   test("each tile shows its headline from its own query", async () => {
@@ -363,11 +389,7 @@ describe("the set-up steps", () => {
     signIn({ org: { ...sessionInfo().org, role: "viewer" } });
     serve({
       bounds: () => json(EMPTY),
-      members: () =>
-        new Response(JSON.stringify({ code: "forbidden" }), {
-          status: 403,
-          headers: { "content-type": "application/problem+json" },
-        }),
+      members: () => problem(403, "forbidden"),
     });
     renderHome();
     await waitFor(() =>
@@ -404,9 +426,6 @@ describe("the set-up links", () => {
   const TRACES_GUIDE = "https://github.com/elm-os/crucible/blob/main/docs/guides/sending-traces.md";
   const MCP_GUIDE = "https://github.com/elm-os/crucible/blob/main/docs/guides/mcp.md";
 
-  const link = (name: string) => within(section("Set up")).getByRole("link", { name });
-  const href = (name: string) => new URL(link(name).getAttribute("href") ?? "", "http://localhost");
-
   test("each step to do links to where it is done", async () => {
     signIn();
     serve({
@@ -417,18 +436,18 @@ describe("the set-up links", () => {
     renderHome();
     await expectStep("Create an API key", "To do");
     await expectStep("Invite your team", "To do");
-    expect(href("API keys").pathname).toMatch(/^\/settings\/api-keys\/?$/);
-    expect(href("API keys").searchParams.get("project")).toBe(PROJECT_A);
-    expect(href("Members").pathname).toMatch(/^\/settings\/members\/?$/);
-    expect(href("Members").searchParams.get("project")).toBe(PROJECT_A);
+    expect(setupHref("API keys").pathname).toMatch(/^\/settings\/api-keys\/?$/);
+    expect(setupHref("API keys").searchParams.get("project")).toBe(PROJECT_A);
+    expect(setupHref("Members").pathname).toMatch(/^\/settings\/members\/?$/);
+    expect(setupHref("Members").searchParams.get("project")).toBe(PROJECT_A);
     // The guides open beside Crucible.
     for (const [name, guide] of [
       ["How to send traces", TRACES_GUIDE],
       ["How to instrument an MCP server", MCP_GUIDE],
     ] as const) {
-      expect(link(name).getAttribute("href")).toBe(guide);
-      expect(link(name).getAttribute("target")).toBe("_blank");
-      expect(link(name).getAttribute("rel")).toBe("noreferrer");
+      expect(setupLink(name).getAttribute("href")).toBe(guide);
+      expect(setupLink(name).getAttribute("target")).toBe("_blank");
+      expect(setupLink(name).getAttribute("rel")).toBe("noreferrer");
     }
   });
 
@@ -447,29 +466,16 @@ describe("the set-up links", () => {
       within(section("Set up")).queryByRole("link", { name: "How to send traces" }),
     ).toBeNull();
     expect(within(section("Set up")).queryByRole("link", { name: "Members" })).toBeNull();
-    expect(link("How to instrument an MCP server").getAttribute("href")).toBe(MCP_GUIDE);
+    expect(setupLink("How to instrument an MCP server").getAttribute("href")).toBe(MCP_GUIDE);
   });
 });
 
 describe("where the set-up card sits", () => {
-  const before = (a: HTMLElement, b: HTMLElement) =>
-    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-  const card = () => screen.queryByRole("region", { name: "Set up" });
-
-  // Waits until the tiles have their answers and every set-up read was asked, then lets those answers land.
-  async function settled(reads: string[]) {
-    expect(await within(section("Traces")).findByText("1")).toBeTruthy();
-    await waitFor(() => {
-      for (const read of reads) expect(requested(read)).toBe(1);
-    });
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-  }
-
   test("a project with no data leads with it, above the empty tiles", async () => {
     serve({ bounds: () => json(EMPTY) });
     renderHome();
     await expectStep("Send your first trace", "To do");
-    expect(before(section("Set up"), section("Traces"))).toBe(true);
+    expect(precedes(section("Set up"), section("Traces"))).toBe(true);
   });
 
   test("a project with data keeps it below the charts while a step is left", async () => {
@@ -477,7 +483,7 @@ describe("where the set-up card sits", () => {
     serve({ keys: () => json({ data: [] }) });
     renderHome();
     await expectStep("Create an API key", "To do");
-    expect(before(section("Latency percentiles"), section("Set up"))).toBe(true);
+    expect(precedes(section("Latency percentiles"), section("Set up"))).toBe(true);
   });
 
   test("once every step is done it is gone", async () => {
@@ -485,20 +491,96 @@ describe("where the set-up card sits", () => {
     serve({});
     renderHome();
     await settled(["/data-bounds", "/api-keys", "/org/members"]);
-    expect(card()).toBeNull();
+    expect(setupRegion()).toBeNull();
   });
 
   test("steps nobody here can do don't hold it open", async () => {
     serve({});
     renderHome();
     await settled(["/data-bounds"]);
-    expect(card()).toBeNull();
+    expect(setupRegion()).toBeNull();
   });
 
   test("nothing shows while the steps are checked, so a set-up project never flashes it", () => {
     fetchMock.mockImplementation(() => new Promise(() => {}));
     renderHome();
     expect(section("Traces").getAttribute("aria-busy")).toBe("true");
-    expect(card()).toBeNull();
+    expect(setupRegion()).toBeNull();
+  });
+});
+
+describe("the set-up card's states", () => {
+  test("loading: rows still being checked hold their place while the card is busy", async () => {
+    signIn();
+    serve({
+      bounds: () => json(EMPTY),
+      keys: NEVER,
+      members: NEVER,
+    });
+    renderHome();
+    await expectStep("Send your first trace", "To do");
+    const setup = section("Set up");
+    expect(setup.getAttribute("aria-busy")).toBe("true");
+    expect(within(step("Create an API key")).queryByText("To do")).toBeNull();
+    expect(within(step("Create an API key")).queryByText("Done")).toBeNull();
+    expect(await within(setup).findByText("Checking the set-up steps")).toBeTruthy();
+  });
+
+  test("error: a failed read says so in its rows, and Check again asks only it again", async () => {
+    let failing = true;
+    serve({ bounds: () => (failing ? problem(500, "internal_error") : json(EMPTY)) });
+    renderHome();
+    await expectStep("Send your first trace", "Couldn't check");
+    await expectStep("Instrument an MCP server", "Couldn't check");
+    const trace = step("Send your first trace");
+    expect(within(trace).getByText("This section couldn't load.")).toBeTruthy();
+    expect(within(trace).getByText("req-1")).toBeTruthy();
+    expect(within(section("Set up")).queryByText("raw server title")).toBeNull();
+    // The tiles don't depend on it.
+    expect(await within(section("Traces")).findByText("1")).toBeTruthy();
+    // Every control keeps a name of its own.
+    const labels = createAgent()
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more")
+      .map((entry) => entry.label);
+    expect(labels).toContain("Check again: Send your first trace");
+    expect(new Set(labels).size).toBe(labels.length);
+
+    failing = false;
+    const metricsBefore = requested("/metrics/query");
+    await act(async () =>
+      within(trace).getByRole("button", { name: "Check again: Send your first trace" }).click(),
+    );
+    await expectStep("Send your first trace", "To do");
+    expect(requested("/data-bounds")).toBe(2);
+    expect(requested("/metrics/query")).toBe(metricsBefore);
+  });
+
+  test("error: an answer that may miss data is never read as no data", async () => {
+    serve({
+      bounds: () => json(bounds({ spans: NONE, server: NONE, meta: { ...WHOLE, partial: true } })),
+    });
+    renderHome();
+    await expectStep("Send your first trace", "Couldn't check");
+    expect(
+      within(step("Send your first trace")).getByText("Some data may be missing from the answer."),
+    ).toBeTruthy();
+    expect(
+      within(step("Send your first trace")).getByRole("button", {
+        name: "Check again: Send your first trace",
+      }),
+    ).toBeTruthy();
+  });
+
+  test("error: a failed key or members read stays in its own row", async () => {
+    signIn();
+    serve({
+      keys: () => problem(503, "control_plane_unavailable"),
+      members: () => json({ data: TEAM }),
+    });
+    renderHome();
+    await expectStep("Create an API key", "Couldn't check");
+    await expectStep("Send your first trace", "Done");
+    await expectStep("Invite your team", "Done");
   });
 });

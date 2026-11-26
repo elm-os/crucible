@@ -17,7 +17,6 @@ import {
   mcpStep,
   placement,
   type Read,
-  type StepId,
   type StepState,
   traceStep,
 } from "./home-setup";
@@ -221,22 +220,20 @@ describe("whatever the role and the answers, a step someone can't do is never to
   });
 });
 
+// The four steps in the card's order, by state.
+const steps = (apiKey: StepState, trace: StepState, mcp: StepState, invite: StepState) => [
+  { id: "api-key" as const, state: apiKey },
+  { id: "first-trace" as const, state: trace },
+  { id: "mcp-server" as const, state: mcp },
+  { id: "invite" as const, state: invite },
+];
+
 describe("where the card sits", () => {
   const DONE: StepState = { status: "done" };
   const TODO: StepState = { status: "todo" };
   const CHECKING: StepState = { status: "checking" };
   const UNKNOWN: StepState = { status: "unknown", error: null };
   const ELSEWHERE: StepState = { status: "unavailable", note: "Someone else does it." };
-
-  const steps = (key: StepState, trace: StepState, mcp: StepState, invite: StepState) =>
-    (
-      [
-        ["api-key", key],
-        ["first-trace", trace],
-        ["mcp-server", mcp],
-        ["invite", invite],
-      ] as [StepId, StepState][]
-    ).map(([id, state]) => ({ id, state }));
 
   test("hidden once every step is done or someone else's", () => {
     expect(placement(steps(DONE, DONE, DONE, DONE))).toBe("hidden");
