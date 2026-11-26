@@ -19,6 +19,13 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The docs at a release's tag install that release: the release pull request writes the new version into every
   install command in the README, the docs and the SDK READMEs, and the SDK release workflow fails while one names
   another version. At the tags v0.1.1 to v0.1.3 the install commands name the previous release.
+- The Set up card on Home marks each step from the project's state: Create an API key is done once the project has
+  an active key, Send your first trace once spans arrive, Instrument an MCP server once MCP operations arrive on
+  either side, and Invite your team once the organization has a second member. A step the viewer's role or the
+  server doesn't do names who or what does it instead. In 0.1.3 every step stayed "To do".
+- Each step to do on the Home Set up card links to where it is done: the project's API keys page, the Members page,
+  and the guides to sending traces and to instrumenting an MCP server.
+- The Home Set up card comes first on a project that has received no data, and it is hidden once every step is done.
 
 ## [0.1.3] - 2026-11-26
 
