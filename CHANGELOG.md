@@ -16,6 +16,27 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - On a cluster with a replica down, each read of every replica (the existence probe, the checks of a deletion and of
   a partition drop, and the check before each migration step) tries the stopped replica once instead of three times,
   so it waits for one connection attempt instead of three.
+- The TypeScript SDK's MCP wrapper records the tools that a `tools/list` result names (each tool's name and input and
+  output schemas, as `crucible.mcp.tools`), so for servers on the TypeScript SDK MCP > Tools shows each tool's schema
+  hash and the Unused tab lists the listed tools that nobody called. In 0.1.3 the tab stayed empty for them.
+- The TypeScript SDK classifies calls that the MCP SDK refuses before the tool's handler runs: arguments that fail the
+  tool's input schema are `validation` errors and "Tool <name> not found" is `not_found`, both caller faults with
+  JSON-RPC code -32602, so they leave tool error rates unless caller faults are included. In 0.1.3 refused arguments
+  counted as tool failures (`tool_execution`) and an unknown tool as invalid arguments.
+- The Python SDK classifies the same refusals from mcp 2.3, which answers them with `isError` results: "Unknown tool:
+  <name>" is `not_found` and arguments that fail the tool's input model are `validation`, both caller faults with
+  JSON-RPC code -32602.
+- MCP tool errors recorded by the TypeScript SDK carry a message: the text of the result's first text block, which
+  holds a thrown error's message, scrubbed and cut at 2 KiB as the Go and Rust SDKs and the proxy send it. MCP >
+  Errors groups them by it and the Operation page shows it, where 0.1.3 showed "No message".
+- The TypeScript SDK emits one process warning (code `CRUCIBLE_EXPORT`) when an export first fails, naming the traces
+  URL, the HTTP status and Crucible's message, for example the 401 for a key the server does not accept, or the
+  connection error; later failures count in `stats().failed` without another warning.
+- The Go SDK logs one line through the standard `log` package when an export first fails, with the traces URL, the
+  HTTP status and Crucible's message, or the connection error; later failures count in `CurrentStats().ExportFailed`.
+- The Rust SDK logs one `tracing` warning when an export first fails, with the traces URL and the exporter's error,
+  which names the HTTP status; later failures count in `stats().failed`. In 0.1.3 the Go and Rust SDKs said nothing
+  when exports on the background interval failed.
 
 ## [0.1.3] - 2026-11-26
 
