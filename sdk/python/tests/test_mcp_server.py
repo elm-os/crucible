@@ -132,6 +132,28 @@ async def test_a_raising_tool_is_a_tool_error(sdk: Collector, mode: str) -> None
 
 
 @pytest.mark.anyio
+async def test_calls_refused_before_the_tool_ran_are_the_callers_fault(sdk: Collector, mode: str) -> None:
+    async with connect(reference_server.instrumented(), mode) as client:
+        results = [
+            await client.call_tool("echo", {"text": 42}),
+            await client.call_tool("cancel_order", {}),
+            await client.call_tool("throw", {"message": "boom"}),
+        ]
+    # mcp answers all three with an isError result.
+    assert all(result.is_error for result in results)
+    calls = {s.attributes["gen_ai.tool.name"]: s.attributes for s in mcp_spans(sdk, "tools/call")}
+    # The arguments failed the tool's input model, and no tool has that name: the -32602 each stands for.
+    assert calls["echo"]["crucible.mcp.error.class"] == "validation"
+    assert calls["cancel_order"]["crucible.mcp.error.class"] == "not_found"
+    for refused in (calls["echo"], calls["cancel_order"]):
+        assert refused["rpc.response.status_code"] == "-32602"
+        assert refused["error.type"] == "tool_error"
+    # A tool that ran and raised keeps its class.
+    assert "crucible.mcp.error.class" not in calls["throw"]
+    assert "rpc.response.status_code" not in calls["throw"]
+
+
+@pytest.mark.anyio
 async def test_handle_id_comes_from_the_named_argument(sdk: Collector, mode: str) -> None:
     async with connect(reference_server.instrumented(), mode) as client:
         await client.call_tool("lookup_order", {"order_id": "ord-42"})
