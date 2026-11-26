@@ -1,6 +1,6 @@
 {
   "name": "@elm-os/crucible",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Crucible SDK for TypeScript: agent tracing helpers and MCP server and client instrumentation.",
   "license": "MIT",
   "repository": {
