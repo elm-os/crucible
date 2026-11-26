@@ -36,8 +36,8 @@ use crucible_schema::{
 
 use crate::control::{ApplyStep, Applying, Control, Deferred, Refusal};
 use crucible_store_clickhouse::{
-    ClickHouseSqlStore, ClickHouseStore, ClusterFacts, Credentials, SqlPasswords, SqlStoreConfig,
-    StoreConfig,
+    ClickHouseSqlStore, ClickHouseStore, ClusterFacts, Credentials, ReplicaHoldings, SqlPasswords,
+    SqlStoreConfig, StoreConfig,
 };
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
@@ -371,8 +371,9 @@ const DDL_USER_REFUSAL: &str = "the server setting distributed_ddl_use_initial_u
                                 indexes need it";
 
 /// Why the configured cluster cannot hold Crucible's tables (contract 5.8), from what the replica that
-/// `clickhouse.url` names says before any `ON CLUSTER` statement runs; `None` when it can. A replica that is down
-/// is not a refusal: an insert needs a majority of the replicas, and a migration step says which replica it needs.
+/// `clickhouse.url` names reads, from itself and from every replica that answers, before any `ON CLUSTER`
+/// statement runs; `None` when it can. A replica that is down is not a refusal: an insert needs a majority of the
+/// replicas, and a migration step says which replica it needs.
 fn cluster_refusal(cluster: &Ident, facts: &ClusterFacts) -> Option<String> {
     if facts.cloud {
         return Some(CLOUD_REFUSAL.to_owned());
@@ -407,9 +408,8 @@ fn cluster_refusal(cluster: &Ident, facts: &ClusterFacts) -> Option<String> {
     if !facts.ddl_initial_user_and_roles {
         return Some(DDL_USER_REFUSAL.to_owned());
     }
-    if !facts.unreplicated.is_empty() {
-        let tables: Vec<&str> = facts.unreplicated.iter().map(String::as_str).collect();
-        return Some(unreplicated_refusal(cluster, &tables));
+    if let Some(reason) = single_server_tables_refusal(cluster, &facts.holdings) {
+        return Some(reason);
     }
     if let Some(reason) = &facts.fan_out {
         return Some(format!(
@@ -461,7 +461,48 @@ fn unreplicated(engines: &[(crucible_records::TableId, EngineFamily)]) -> Vec<&'
         .collect()
 }
 
-/// The refusal of a cluster name over tables that were created for a single server.
+/// The refusal of a cluster whose replicas hold tables created for a single server, naming each such replica and
+/// its tables; `None` when no replica that answered holds any. `CREATE TABLE IF NOT EXISTS ... ON CLUSTER` leaves
+/// such a table as it is, so that replica would never hold Crucible's replicated tables.
+fn single_server_tables_refusal(cluster: &Ident, holdings: &[ReplicaHoldings]) -> Option<String> {
+    if let Some(local) = holdings
+        .iter()
+        .find(|holding| holding.local && !holding.unreplicated.is_empty())
+    {
+        let tables: Vec<&str> = local.unreplicated.iter().map(String::as_str).collect();
+        return Some(unreplicated_refusal(cluster, &tables));
+    }
+    let others: Vec<String> = holdings
+        .iter()
+        .filter(|holding| !holding.unreplicated.is_empty())
+        .map(|holding| format!("{} ({})", holding.replica, holding.unreplicated.join(", ")))
+        .collect();
+    let (replica, holds, empty, there) = match others.len() {
+        0 => return None,
+        1 => (
+            "replica",
+            "holds",
+            "an empty replica in its place",
+            "that replica",
+        ),
+        _ => (
+            "replicas",
+            "hold",
+            "empty replicas in their place",
+            "each of them",
+        ),
+    };
+    Some(format!(
+        "{replica} {} in cluster {cluster} {holds} tables in database crucible that are not replicated: they were \
+         created for a single server, and the ON CLUSTER statements that create Crucible's tables leave them as they \
+         are. Put {empty}, or drop the database on {there} with DROP DATABASE crucible SYNC, which deletes its rows, \
+         then migrate again",
+        others.join(" and ")
+    ))
+}
+
+/// The refusal of a cluster name over tables that were created for a single server, on the replica that
+/// `clickhouse.url` names.
 fn unreplicated_refusal(cluster: &Ident, tables: &[&str]) -> String {
     format!(
         "clickhouse.cluster names cluster {cluster}, but the tables {} in database crucible are not replicated: they \
@@ -926,6 +967,11 @@ mod tests {
     #[test]
     fn a_cluster_is_refused_until_it_can_hold_the_tables() {
         let cluster = Ident::new("crucible").unwrap();
+        let holding = |n: u8| ReplicaHoldings {
+            replica: format!("clickhouse-{n}:9000"),
+            local: n == 1,
+            unreplicated: Vec::new(),
+        };
         let fits = ClusterFacts {
             cloud: false,
             shards: 1,
@@ -936,7 +982,7 @@ mod tests {
             missing_macros: Vec::new(),
             keeper: None,
             ddl_initial_user_and_roles: true,
-            unreplicated: Vec::new(),
+            holdings: vec![holding(1), holding(2)],
             fan_out: None,
             silent: Vec::new(),
         };
@@ -976,10 +1022,45 @@ mod tests {
             refused(|f| f.ddl_initial_user_and_roles = false)
                 .contains("distributed_ddl_use_initial_user_and_roles")
         );
-        let tables = refused(|f| f.unreplicated = vec!["span_core".to_owned()]);
+        // Tables created for a single server on the replica that clickhouse.url names: this server held a
+        // single-server deployment.
+        let tables = refused(|f| f.holdings[0].unreplicated = vec!["span_core".to_owned()]);
         assert!(
-            tables.contains("span_core") && tables.contains("not replicated"),
+            tables.contains("span_core")
+                && tables.contains("not replicated")
+                && tables.contains("Unset clickhouse.cluster"),
             "{tables}"
+        );
+        // On another replica, which ON CLUSTER statements would leave as it is: the refusal names it, its tables,
+        // and how to empty it.
+        let other = refused(|f| {
+            f.holdings[1].unreplicated = vec!["span_core".to_owned(), "span_payload".to_owned()];
+        });
+        for needed in [
+            "replica clickhouse-2:9000 (span_core, span_payload) in cluster crucible holds",
+            "not replicated",
+            "an empty replica in its place",
+            "DROP DATABASE crucible SYNC",
+            "migrate again",
+        ] {
+            assert!(
+                other.contains(needed),
+                "{needed:?} is missing from: {other}"
+            );
+        }
+        assert!(!other.contains("clickhouse.url"), "{other}");
+        let three = refused(|f| {
+            let mut third = f.holdings[1].clone();
+            third.replica = "clickhouse-3:9000".to_owned();
+            third.unreplicated = vec!["trace_heads".to_owned()];
+            f.holdings[1].unreplicated = vec!["span_core".to_owned()];
+            f.holdings.push(third);
+        });
+        assert!(
+            three.contains(
+                "replicas clickhouse-2:9000 (span_core) and clickhouse-3:9000 (trace_heads) in cluster crucible hold"
+            ),
+            "{three}"
         );
         let fan_out = refused(|f| f.fan_out = Some("Code: 516".to_owned()));
         assert!(
