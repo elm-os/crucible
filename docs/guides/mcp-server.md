@@ -60,7 +60,7 @@ variable, which Claude Code expands from each person's environment when it loads
 Claude Code asks you to approve a project server the first time it starts there.
 
 Any MCP client that speaks Streamable HTTP and can send a header connects the same way, to `<server address>/mcp`.
-With the TypeScript MCP SDK, `@modelcontextprotocol/client` 2.x, in an ES module:
+With the TypeScript MCP SDK, `@modelcontextprotocol/client`, in an ES module:
 
 ```ts
 // crucible-mcp.ts
@@ -78,7 +78,7 @@ console.log(bounds.structuredContent);
 await client.close();
 ```
 
-With the Python `mcp` package, 2.3 or newer:
+With the Python `mcp` package:
 
 ```python
 # crucible_mcp.py
@@ -101,9 +101,10 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Each prints the project's data bounds. The tools' output schemas give integer fields the formats `uint64` and
-`uint32`, which JSON Schema does not define, so the TypeScript MCP SDK logs
-`unknown format "uint64" ignored in schema` for each such field when it lists the tools; the tools work as described.
+Each prints the project's data bounds; they were run with `@modelcontextprotocol/client` 2.4.0 on Node.js 24 and
+with `mcp` 2.3.0 on Python 3.12. The tools' output schemas give integer fields the formats `uint64` and `uint32`,
+which JSON Schema does not define, so the TypeScript MCP SDK logs `unknown format "uint64" ignored in schema` (or
+`"uint32"`) for each such field when it lists the tools; the tools work as described.
 
 A request without a usable key answers 401 with a problem document that says how to send one. The transport's own
 refusals are plain text, with the status codes of the MCP specification: 400 `Bad Request: Session ID is required`

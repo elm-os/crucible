@@ -25,11 +25,12 @@ A rule has:
   check that breaches.
 - **A no-data setting** (**When there is no data**): what a series becomes after it has had no rows for a while
   (**After no data for**, 5 minutes by default). It keeps its state (**Keep the current state**, the default),
-  counts as OK (**Treat it as OK**), or goes to `no_data` with one notification (**Notify that there is no data**).
-  A series has no rows while none of its spans or calls arrive. For a rule on errors or on a count that fires
-  above its threshold, choose **Treat it as OK**: with the default, a series that fired keeps firing while traffic
-  has stopped, and is notified again at each repeat. For a rule that fires below its threshold, such as too few
-  spans, choose **Notify that there is no data**, since stopped traffic leaves no rows to compare.
+  counts as OK (**Treat it as OK**), or goes to `no_data` with one notification (**Notify that there is no data**);
+  the API's `no_data` takes `keep`, `ok` or `no_data`. A series has no rows while none of its spans or calls
+  arrive. For a rule on errors or on a count that fires above its threshold, choose **Treat it as OK**: with the
+  default, a series that fired keeps firing while traffic has stopped, and is notified again at each repeat. For a
+  rule that fires below its threshold, such as too few spans, choose **Notify that there is no data**, since stopped
+  traffic leaves no rows to compare.
 - **A repeat interval** (`renotify`, default 4 hours, minimum 5 minutes): how often a series that keeps firing is
   notified again.
 

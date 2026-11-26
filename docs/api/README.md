@@ -71,18 +71,18 @@ before a session exists (sign-in, first-owner setup, password reset, accepting a
 `X-Crucible-CSRF: prelogin` and pass the same origin check.
 
 ```sh
-curl -s -c cookies.txt -X POST "$CRUCIBLE_URL/api/v1/auth/login" \
+CSRF=$(curl -s -c cookies.txt -X POST "$CRUCIBLE_URL/api/v1/auth/login" \
   -H 'Content-Type: application/json' -H 'X-Crucible-CSRF: prelogin' -H "Origin: $CRUCIBLE_URL" \
-  -d '{"email": "owner@example.com", "password": "<password>"}'
+  -d '{"email": "you@example.com", "password": "your password"}' | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
 ```
 
 The answer is the session: the user, the organization and the user's role in it, each project the user may see
 with the user's role and permissions there, the sign-in options, `csrf_token`, the session's expiry, and the
-server's features:
+server's features. The command above keeps its `csrf_token` in `CSRF`:
 
 ```json
 {
-  "user": {"id": "01a1f633-d59a-7014-8007-ae2dcfb94995", "email": "owner@example.com", "name": "Owner"},
+  "user": {"id": "01a1f633-d59a-7014-8007-ae2dcfb94995", "email": "you@example.com", "name": "Owner"},
   "org": {"id": "01a1f633-d59a-7014-8007-ae2dcfb94994", "name": "Acme", "role": "owner"},
   "projects": [
     {
@@ -106,7 +106,7 @@ A write with the cookie then sends the token:
 
 ```sh
 curl -s -b cookies.txt -X POST "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/api-keys" \
-  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: <csrf_token>" -H "Origin: $CRUCIBLE_URL" \
+  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: $CSRF" -H "Origin: $CRUCIBLE_URL" \
   -d '{"note": "exporter", "scopes": ["ingest"]}'
 ```
 
@@ -829,7 +829,7 @@ and keys never do, so changes are made with a session. Creating one:
 
 ```sh
 curl -s -i -b cookies.txt -X POST "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/dashboards" \
-  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: <csrf_token>" -H "Origin: $CRUCIBLE_URL" \
+  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: $CSRF" -H "Origin: $CRUCIBLE_URL" \
   -d '{"name": "Agent health",
        "widgets": [{"display": {"kind": "stat", "title": "Errors"}, "layout": {"x": 0, "y": 0, "w": 3, "h": 2},
                     "query": {"source": "spans", "measures": [{"measure": "error_count", "aggregation": "sum"}]}}]}'

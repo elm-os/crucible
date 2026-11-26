@@ -21,7 +21,7 @@ pip install "crucible-sdk @ https://github.com/elm-os/crucible/releases/download
 ```
 
 For MCP servers and clients, install it with the `mcp` extra, which adds `crucible_sdk.mcp` and the `mcp` package;
-without it, `import crucible_sdk.mcp` raises an `ImportError` that says how to install it:
+without it, `import crucible_sdk.mcp` raises an `ImportError` that names the missing `mcp` package:
 
 ```sh
 pip install "crucible-sdk[mcp] @ https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible_sdk-0.1.3-py3-none-any.whl"
