@@ -84,9 +84,10 @@ jobs:
       - name: Build the server with the embedded UI
         run: cargo build --locked --package crucible --release --features embed-ui
       - name: The server has no test-only feature
+        # cargo tree runs on its own line, so its failure fails the step; grep finding nothing is the pass.
         run: |
-          found=$(cargo tree --locked -p crucible -e normal,build,features --target all | grep -E 'test-mutants|test-support' || true)
-          if [ -n "$found" ]; then
+          tree=$(cargo tree --locked -p crucible -e normal,build,features --target all)
+          if found=$(grep -E 'test-mutants|test-support' <<<"$tree"); then
             echo "The server binary would be built with test-only features:"
             echo "$found"
             exit 1
