@@ -11,7 +11,7 @@ OTLP/HTTP. It has one module that is always built and two optional features:
 
 ## Install
 
-The crate is not on crates.io. Depend on it by git, pinned to the tag of a Crucible release:
+Depend on it by git, pinned to the tag of a Crucible release:
 
 ```toml
 [dependencies]

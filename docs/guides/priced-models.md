@@ -6,9 +6,8 @@ lists the keys that carry a span's model, usage and cost.
 
 ## How a span is priced
 
-- The table comes from `crates/crucible-normalize/data/prices.json`. This page lists version `0x582c7ae8` of it
-  (`BUNDLED_PRICE_TABLE_VERSION` in `crates/crucible-normalize/src/price.rs`), last changed on 2026-11-17, with
-  189 model rows.
+- The table comes from `crates/crucible-normalize/data/prices.json`. This page lists version `0x582c7ae8` of it,
+  last changed on 2026-11-17, with 189 model rows.
 - The model is the span's response model (`gen_ai.response.model`), else its requested model
   (`gen_ai.request.model`).
 - A row matches the whole model name, ignoring case. `gpt-4o-mini-2024-07-18` and `GPT-4O-MINI` are priced, while
@@ -47,9 +46,10 @@ ORDER BY spans DESC
 
 ## Models
 
-These tables list the names the table prices, by provider and family. The last column shows, for each line, an
-example of the other forms its names match, such as a provider prefix or a cloud platform's form of the name. Each
-row's exact pattern is its `match` field in the data file.
+These tables list the names the table prices, by provider and family. The last column gives examples of other
+forms that names on the line also match, such as a provider prefix or a cloud platform's form of the name. Other
+names on the same line can take a different suffix in such a form, or have no such form. Each row's exact pattern
+is its `match` field in the data file, and `cost_source` shows whether a span was priced.
 
 ### OpenAI
 

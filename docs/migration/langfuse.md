@@ -13,7 +13,7 @@ The Python SDK has to export over OTLP and read the base URL variable:
 | Python SDK | Against Crucible |
 |---|---|
 | 2.x, checked with 2.60.10 | Sends to an ingestion API that Crucible does not serve. Crucible answers 404, the SDK logs that only at debug level and reports a successful flush, and the traces are lost. Upgrade first |
-| 3.0.0 to 3.8.0, checked with 3.0.0 and 3.8.0 | Exports over OTLP, but reads `LANGFUSE_HOST`, not `LANGFUSE_BASE_URL`: set `LANGFUSE_HOST` to the address of step 1 |
+| 3.0.0 to 3.8.0, checked with 3.0.0 and 3.8.0 | Exports over OTLP, but reads `LANGFUSE_HOST`, not `LANGFUSE_BASE_URL`: set `LANGFUSE_HOST` to the address of step 1. The [integration page's example](../integrations/langfuse.md#pointing-it-at-crucible) does not run, as these versions have no `propagate_attributes` |
 | 3.8.1 to 3.10.x, checked with 3.8.1, 3.9.0 and 3.10.7 | Works with `LANGFUSE_BASE_URL`. The [integration page's example](../integrations/langfuse.md#pointing-it-at-crucible) calls `propagate_attributes(trace_name=...)`, which these versions lack |
 | 3.11.0 to 5.2.0, checked with 3.11.0, 3.15.0, 4.18.0 and 5.2.0 | Works as shown |
 
@@ -59,7 +59,7 @@ Everything the SDK records on spans:
 
 ## What does not carry over
 
-Calls that go to Langfuse's REST API answer 404 on Crucible. With the Python SDK:
+Calls that go to Langfuse's REST API answer 404 on Crucible. With the Python SDK, checked with langfuse 5.2.0:
 
 | Call | Against Crucible |
 |---|---|
@@ -74,7 +74,7 @@ Calls that go to Langfuse's REST API answer 404 on Crucible. With the Python SDK
   generation, whether it is passed as `prompt=` or to `propagate_attributes`. The prompt's name and version then
   arrive empty. To keep them, pass them as a mapping,
   `propagate_attributes(prompt={"name": "polish-answer", "version": 3})`, which writes them on the current span and
-  on every span started inside it.
+  on every span started inside it (checked with langfuse 5.2.0).
 - For feedback scores, use Crucible's feedback route, `POST /api/v1/projects/{project_id}/feedback`, or the trace
   page's feedback section ([tags, flags, scores and corrections](../guides/facts.md)).
 - Trace-level input and output (`langfuse.trace.input`, `langfuse.trace.output`) and experiment keys
