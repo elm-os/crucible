@@ -99,6 +99,7 @@ export function init(options: InitOptions = {}): void {
     options.projectId ?? process.env.CRUCIBLE_PROJECT_ID,
   );
   const timeoutMs = positive(options.exportTimeoutMs, 10_000, "exportTimeoutMs");
+  let warned = false;
   const queue = new QueueSpanProcessor(
     new OTLPTraceExporter({
       url,
@@ -112,6 +113,16 @@ export function init(options: InitOptions = {}): void {
       maxBatchSize: 512,
       flushIntervalMs: positive(options.flushIntervalMs, 1_000, "flushIntervalMs"),
       timeoutMs,
+      onFailure: (error) => {
+        // Once: a wrong key or endpoint fails every batch.
+        if (!warned) {
+          warned = true;
+          process.emitWarning(
+            `Crucible could not send spans: ${exportFailure(url, error, timeoutMs)}; ${EXPORT_SETTINGS}`,
+            { code: "CRUCIBLE_EXPORT" },
+          );
+        }
+      },
     },
   );
   const spanProcessors: SpanProcessor[] = [queue];
@@ -206,6 +217,76 @@ export function tracer(): Tracer {
 /** The secret key passed to `init`, which keys the multi-round state hashes (contract 9.6). */
 export function secretKey(): string | undefined {
   return state?.secretKey;
+}
+
+/** What the export warning says decides where spans go. */
+const EXPORT_SETTINGS =
+  "spans go to endpoint (CRUCIBLE_ENDPOINT), an OTLP listener, with secretKey (CRUCIBLE_SECRET_KEY), a secret key that has the ingest scope. stats().failed counts the spans not sent; this warning is not repeated.";
+
+/**
+ * What went wrong with an export, from the OTLP exporter's error: the status and message of a refusal, which the
+ * exporter reports for answers that a retry cannot change, else the error itself.
+ */
+function exportFailure(url: string, error: unknown, timeoutMs: number): string {
+  if (error === undefined) {
+    return `the export to ${url} did not finish within ${timeoutMs} ms`;
+  }
+  const { code, data } = (typeof error === "object" && error !== null ? error : {}) as {
+    code?: unknown;
+    data?: unknown;
+  };
+  if (typeof code === "number") {
+    const message = typeof data === "string" ? refusalMessage(data) : "";
+    return `${url} answered ${code}${message === "" ? "" : ` (${message})`}`;
+  }
+  return `the export to ${url} failed (${error instanceof Error ? error.message : String(error)})`;
+}
+
+/**
+ * The message of a refusal body, which the exporter hands over decoded as UTF-8: the message of Crucible's
+ * `google.rpc.Status` in protobuf or JSON, else the body's own text, cut at 512 characters.
+ */
+function refusalMessage(body: string): string {
+  let message = body;
+  if (body.charCodeAt(0) === 0x08) {
+    // Protobuf: tag 0x08 and the code, tag 0x12 and the message's length, each a varint, then the message.
+    const length = varintEnd(body, 1);
+    if (body.charCodeAt(length) === 0x12) {
+      const start = varintEnd(body, length + 1);
+      let end = start;
+      // A message holds no control characters, so the first one starts the next field.
+      while (end < body.length && body.charCodeAt(end) >= 0x20) {
+        end += 1;
+      }
+      message = body.slice(start, end);
+    }
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(body);
+      const { message: text, detail } = (
+        typeof parsed === "object" && parsed !== null ? parsed : {}
+      ) as { message?: unknown; detail?: unknown };
+      const found = text ?? detail;
+      if (typeof found === "string") {
+        message = found;
+      }
+    } catch {
+      // Not JSON: the body's own text.
+    }
+  }
+  return message.trim().slice(0, 512);
+}
+
+/**
+ * Where the varint that starts at `at` ends. Its last byte is below 0x80; decoded as UTF-8, the bytes before it
+ * are characters above 0x7f.
+ */
+function varintEnd(text: string, at: number): number {
+  let end = at;
+  while (end < text.length && text.charCodeAt(end) > 0x7f) {
+    end += 1;
+  }
+  return end + 1;
 }
 
 function tracesUrl(endpoint: string): string {

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import pkg from "../package.json" with { type: "json" };
 import { flush, init, observe, shutdown, stats } from "../src/index.ts";
 import { QueueSpanProcessor, spanBytes } from "../src/queue.ts";
-import { startCollector } from "./support/collector.ts";
+import { startCollector, UNKNOWN_KEY } from "./support/collector.ts";
 
 afterEach(async () => {
   await shutdown();
@@ -196,6 +196,95 @@ describe("collector states", () => {
     observe("work", () => 1);
     await flush();
     expect(stats()).toMatchObject({ exported: 0, failed: 1 });
+    await collector.close();
+  });
+});
+
+/** The `CRUCIBLE_EXPORT` process warnings emitted while `work` runs. */
+async function exportWarnings(work: () => Promise<void>): Promise<string[]> {
+  const seen: string[] = [];
+  const listener = (warning: Error & { code?: string }): void => {
+    if (warning.code === "CRUCIBLE_EXPORT") {
+      seen.push(warning.message);
+    }
+  };
+  process.on("warning", listener);
+  try {
+    await work();
+    // Node emits a warning on a later turn.
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.off("warning", listener);
+  }
+  return seen;
+}
+
+/** What every export warning ends with: the settings that decide where spans go. */
+const SETTINGS =
+  "spans go to endpoint (CRUCIBLE_ENDPOINT), an OTLP listener, with secretKey (CRUCIBLE_SECRET_KEY), a secret key that has the ingest scope. stats().failed counts the spans not sent; this warning is not repeated.";
+
+describe("export warning", () => {
+  test("the first refused export warns once, with the endpoint, the status and Crucible's message", async () => {
+    const collector = await startCollector();
+    const warnings = await exportWarnings(async () => {
+      init({
+        endpoint: collector.url,
+        secretKey: "csk_0000000000000000000000000000000000000000000",
+      });
+      for (let i = 0; i < 3; i += 1) {
+        observe("work", () => i);
+        await flush();
+      }
+    });
+    expect(stats()).toMatchObject({ exported: 0, failed: 3 });
+    expect(warnings).toEqual([
+      `Crucible could not send spans: ${collector.url}/v1/traces answered 401 (${UNKNOWN_KEY}); ${SETTINGS}`,
+    ]);
+    await collector.close();
+  });
+
+  test("a refusal message of 128 bytes or more is read whole", async () => {
+    const collector = await startCollector();
+    collector.refusal =
+      "send the project's secret key as `Authorization: Bearer <secret key>`, or its public and secret key pair as `Authorization: Basic base64(<public key>:<secret key>)`";
+    const warnings = await exportWarnings(async () => {
+      init({
+        endpoint: collector.url,
+        secretKey: "csk_0000000000000000000000000000000000000000000",
+      });
+      observe("work", () => 1);
+      await flush();
+    });
+    expect(warnings).toEqual([
+      `Crucible could not send spans: ${collector.url}/v1/traces answered 401 (${collector.refusal}); ${SETTINGS}`,
+    ]);
+    await collector.close();
+  });
+
+  test("an endpoint where nothing listens warns once, with the connection error", async () => {
+    const port = await closedPort();
+    const warnings = await exportWarnings(async () => {
+      init({ endpoint: `http://127.0.0.1:${port}`, secretKey: "k", exportTimeoutMs: 500 });
+      for (let i = 0; i < 2; i += 1) {
+        observe("work", () => i);
+        await flush();
+      }
+    });
+    expect(stats()).toMatchObject({ exported: 0, failed: 2 });
+    expect(warnings).toEqual([
+      `Crucible could not send spans: the export to http://127.0.0.1:${port}/v1/traces failed (connect ECONNREFUSED 127.0.0.1:${port}); ${SETTINGS}`,
+    ]);
+  });
+
+  test("exports that succeed warn nothing", async () => {
+    const collector = await startCollector();
+    const warnings = await exportWarnings(async () => {
+      init({ endpoint: collector.url, secretKey: collector.key });
+      observe("work", () => 1);
+      await flush();
+    });
+    expect(stats()).toMatchObject({ exported: 1, failed: 0 });
+    expect(warnings).toEqual([]);
     await collector.close();
   });
 });
