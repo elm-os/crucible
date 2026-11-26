@@ -241,7 +241,11 @@ describe("error marks", () => {
       "error.type": "tool_error",
       "crucible.mcp.error.subclass": "business",
     });
-    expect([missing, malformed, fail].map((span) => span?.status.code)).toEqual([2, 2, 2]);
+    expect([missing, malformed, fail].map((span) => span?.status)).toEqual([
+      { code: 2, message: "no such order" },
+      { code: 2, message: "malformed order id" },
+      { code: 2, message: "order not found" },
+    ]);
   });
 
   test("arguments the MCP SDK refused and an unknown tool are the caller's fault", async () => {
@@ -283,9 +287,57 @@ describe("error marks", () => {
       "crucible.mcp.content.blocks.text": 1n,
       "error.type": "tool_error",
     });
-    expect(["echo", "cancel_order", "report"].map((tool) => callOf(tool)?.status.code)).toEqual([
-      2, 2, 2,
-    ]);
+    expect(callOf("echo")?.status.code).toBe(2);
+    expect(callOf("echo")?.status.message).toMatch(
+      /^Input validation error: Invalid arguments for tool echo: /,
+    );
+    expect(callOf("cancel_order")?.status).toEqual({
+      code: 2,
+      message: "Tool cancel_order not found",
+    });
+    expect(callOf("report")?.status).toEqual({
+      code: 2,
+      message:
+        "Output validation error: Tool report has an output schema but no structured content was provided",
+    });
+  });
+
+  test("a tool error's message is scrubbed and cut at 2 KiB", async () => {
+    const server = buildServer();
+    server.registerTool(
+      "refuse",
+      { inputSchema: z.object({ text: z.string() }) },
+      async ({ text }) => ({
+        content: [
+          { type: "image", data: "aGk=", mimeType: "image/png" },
+          { type: "text", text },
+        ],
+        isError: true,
+      }),
+    );
+    server.registerTool(
+      "crash",
+      { inputSchema: z.object({ text: z.string() }) },
+      async ({ text }) => {
+        throw new Error(text);
+      },
+    );
+    const [clientSide, serverSide] = inMemoryPair();
+    await instrument(server).connect(serverSide);
+    const client = newClient("legacy");
+    await client.connect(clientSide);
+    const secret = "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo";
+    await client.callTool({ name: "refuse", arguments: { text: `gateway refused ${secret}` } });
+    await client.callTool({ name: "crash", arguments: { text: `é${"x".repeat(5_000)}` } });
+    await client.close();
+    await flush();
+    // The first text block, after the image block.
+    expect(callOf("refuse")?.status).toEqual({
+      code: 2,
+      message: "gateway refused [redacted:secret_key]",
+    });
+    // The thrown error's message, cut at 2,048 bytes on a character boundary.
+    expect(callOf("crash")?.status).toEqual({ code: 2, message: `é${"x".repeat(2_046)}` });
   });
 });
 

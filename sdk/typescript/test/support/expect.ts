@@ -7,7 +7,6 @@ import { SERVER_NAME, SERVER_VERSION } from "./reference-server.ts";
 import { CLIENT_NAME, CLIENT_VERSION, type Seen } from "./scenarios.ts";
 
 export const OK = { code: 0, message: "" };
-export const ERROR = { code: 2, message: "" };
 export const SERVER = 2;
 export const CLIENT = 3;
 
@@ -135,16 +134,14 @@ export function workload(shape: Shape): Op[] {
     "tools/call",
     take(),
     tool("fail", { "error.type": "tool_error", "crucible.mcp.error.subclass": "business" }),
-    ERROR,
+    // A tool error's message is the text of the result's first text block.
+    { code: 2, message: "order not found" },
   );
   // A thrown handler error reaches the wire as a tool error too (a known capability gap).
-  op(
-    "tools/call throw",
-    "tools/call",
-    take(),
-    tool("throw", { "error.type": "tool_error" }),
-    ERROR,
-  );
+  op("tools/call throw", "tools/call", take(), tool("throw", { "error.type": "tool_error" }), {
+    code: 2,
+    message: "handler exploded",
+  });
   const slow = { "crucible.mcp.identity.source": "identify_hook" };
   op("tools/call slow", "tools/call", take(), tool("slow", { ...slow, "user.id": "alpha" }));
   op("tools/call slow", "tools/call", take(), tool("slow", { ...slow, "user.id": "beta" }));
