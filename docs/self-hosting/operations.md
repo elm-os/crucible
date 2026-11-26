@@ -15,7 +15,7 @@ curl -s http://127.0.0.1:8080/readyz     # "ready" once the new server is up
 
 The Compose file runs `ghcr.io/elm-os/crucible:latest`, so `pull` fetches the newest release. To stay on a release
 line, set `CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1` in `.env`, or a full version such as
-`ghcr.io/elm-os/crucible:0.1.2` to choose each upgrade yourself. The image is published for linux/amd64 and
+`ghcr.io/elm-os/crucible:0.1.3` to choose each upgrade yourself. The image is published for linux/amd64 and
 linux/arm64. For an image you build yourself, build the new version under a new tag
 ([building the image from source](quickstart.md#building-the-image-from-source)), set `CRUCIBLE_IMAGE` to it and run
 `docker compose up -d`.
