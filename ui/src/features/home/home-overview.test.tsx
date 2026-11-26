@@ -396,3 +396,54 @@ describe("the set-up steps", () => {
     expect(requested("/api-keys") + requested("/org/members")).toBe(0);
   });
 });
+
+describe("the set-up links", () => {
+  const TRACES_GUIDE = "https://github.com/elm-os/crucible/blob/main/docs/guides/sending-traces.md";
+  const MCP_GUIDE = "https://github.com/elm-os/crucible/blob/main/docs/guides/mcp.md";
+
+  const link = (name: string) => within(section("Set up")).getByRole("link", { name });
+  const href = (name: string) => new URL(link(name).getAttribute("href") ?? "", "http://localhost");
+
+  test("each step to do links to where it is done", async () => {
+    signIn();
+    serve({
+      bounds: () => json(EMPTY),
+      keys: () => json({ data: [] }),
+      members: () => json({ data: [member()] }),
+    });
+    renderHome();
+    await expectStep("Create an API key", "To do");
+    await expectStep("Invite your team", "To do");
+    expect(href("API keys").pathname).toMatch(/^\/settings\/api-keys\/?$/);
+    expect(href("API keys").searchParams.get("project")).toBe(PROJECT_A);
+    expect(href("Members").pathname).toMatch(/^\/settings\/members\/?$/);
+    expect(href("Members").searchParams.get("project")).toBe(PROJECT_A);
+    // The guides open beside Crucible.
+    for (const [name, guide] of [
+      ["How to send traces", TRACES_GUIDE],
+      ["How to instrument an MCP server", MCP_GUIDE],
+    ] as const) {
+      expect(link(name).getAttribute("href")).toBe(guide);
+      expect(link(name).getAttribute("target")).toBe("_blank");
+      expect(link(name).getAttribute("rel")).toBe("noreferrer");
+    }
+  });
+
+  test("a done step drops its how-to", async () => {
+    signIn();
+    serve({
+      bounds: () => json(bounds({ server: NONE })),
+      keys: () => json({ data: [apiKey()] }),
+      members: () => json({ data: TEAM }),
+    });
+    renderHome();
+    await expectStep("Send your first trace", "Done");
+    await expectStep("Invite your team", "Done");
+    await expectStep("Instrument an MCP server", "To do");
+    expect(
+      within(section("Set up")).queryByRole("link", { name: "How to send traces" }),
+    ).toBeNull();
+    expect(within(section("Set up")).queryByRole("link", { name: "Members" })).toBeNull();
+    expect(link("How to instrument an MCP server").getAttribute("href")).toBe(MCP_GUIDE);
+  });
+});

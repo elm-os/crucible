@@ -1,23 +1,63 @@
 "use client";
 
 import { Button } from "@ui-sdk/react/button";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { AlertIcon, CheckIcon, TodoIcon, UnsetIcon } from "@/components/icons";
 import { SectionFrame, useLoadingPhase } from "@/components/section";
+import { scopedHref } from "@/components/shell/nav";
 import type { SetupStep, StepId, StepState } from "./home-setup";
 
-const STEPS: Record<StepId, { title: string; how: ReactNode }> = {
-  "api-key": { title: "Create an API key", how: "Create one in Settings, under API keys." },
-  "first-trace": {
-    title: "Send your first trace",
-    how: "Point an OpenTelemetry exporter at this server's OTLP endpoint.",
-  },
-  "mcp-server": {
-    title: "Instrument an MCP server",
-    how: "Wrap the server with a Crucible SDK, or run it behind the Crucible proxy.",
-  },
-  invite: { title: "Invite your team", how: "Invite people in Settings, under Members." },
-};
+const GUIDES = "https://github.com/elm-os/crucible/blob/main/docs/guides";
+
+function Guide({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  );
+}
+
+const STEPS: Record<StepId, { title: string; how: (search: URLSearchParams | null) => ReactNode }> =
+  {
+    "api-key": {
+      title: "Create an API key",
+      how: (search) => (
+        <>
+          Create one in Settings, under{" "}
+          <Link href={scopedHref("/settings/api-keys", search)}>API keys</Link>.
+        </>
+      ),
+    },
+    "first-trace": {
+      title: "Send your first trace",
+      how: () => (
+        <>
+          Point an OpenTelemetry exporter at this server&apos;s OTLP endpoint.{" "}
+          <Guide href={`${GUIDES}/sending-traces.md`}>How to send traces</Guide>
+        </>
+      ),
+    },
+    "mcp-server": {
+      title: "Instrument an MCP server",
+      how: () => (
+        <>
+          Wrap the server with a Crucible SDK, or run it behind the Crucible proxy.{" "}
+          <Guide href={`${GUIDES}/mcp.md`}>How to instrument an MCP server</Guide>
+        </>
+      ),
+    },
+    invite: {
+      title: "Invite your team",
+      how: (search) => (
+        <>
+          Invite people in Settings, under{" "}
+          <Link href={scopedHref("/settings/members", search)}>Members</Link>.
+        </>
+      ),
+    },
+  };
 
 const LABEL: Partial<Record<StepState["status"], string>> = {
   todo: "To do",
@@ -26,6 +66,7 @@ const LABEL: Partial<Record<StepState["status"], string>> = {
 };
 
 export function SetupCard({ steps }: { steps: SetupStep[] }) {
+  const search = useSearchParams();
   const checking = steps.some((step) => step.state.status === "checking");
   const phase = useLoadingPhase(checking);
   return (
@@ -35,14 +76,22 @@ export function SetupCard({ steps }: { steps: SetupStep[] }) {
       ) : null}
       <ol className="flex flex-col">
         {steps.map((step) => (
-          <Step key={step.id} step={step} skeleton={phase !== "hidden"} />
+          <Step key={step.id} step={step} search={search} skeleton={phase !== "hidden"} />
         ))}
       </ol>
     </SectionFrame>
   );
 }
 
-function Step({ step, skeleton }: { step: SetupStep; skeleton: boolean }) {
+function Step({
+  step,
+  search,
+  skeleton,
+}: {
+  step: SetupStep;
+  search: URLSearchParams | null;
+  skeleton: boolean;
+}) {
   const { title, how } = STEPS[step.id];
   const { state } = step;
   const label = LABEL[state.status];
@@ -58,7 +107,7 @@ function Step({ step, skeleton }: { step: SetupStep; skeleton: boolean }) {
         </p>
         {state.status === "done" ? null : (
           <p className="text-label text-ink-soft">
-            {state.status === "unavailable" ? state.note : how}
+            {state.status === "unavailable" ? state.note : how(search)}
           </p>
         )}
         {state.status === "unknown" ? (
