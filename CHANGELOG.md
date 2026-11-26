@@ -25,6 +25,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   whether the span's input or output was cut at the size limit, null for a span that has not reached ClickHouse.
 - A trace list row's `error_count` counts a span with an error status and an explicit level other than `error` as
   soon as the span is received. In 0.1.3 such a span counted only once ClickHouse stored it.
+- The trace page's header shows the same cost, tokens, duration and error count as the trace list: an agent span
+  that reports its run's total usage is no longer added on top of its model calls, and a large trace's header covers
+  the whole trace. In 0.1.3 the header added up the spans it had loaded.
 
 ## [0.1.3] - 2026-11-26
 
