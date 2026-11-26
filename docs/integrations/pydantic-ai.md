@@ -13,11 +13,12 @@ Point the OTLP trace exporter at Crucible with the standard variables:
 
 ```sh
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20csk_..."
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20csk_..."
 ```
 
-Use the traces endpoint variable rather than `OTEL_EXPORTER_OTLP_ENDPOINT`: Crucible ingests traces only, and
-`/v1/metrics` and `/v1/logs` answer 404.
+Use the variables for traces rather than `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`, which
+apply to metrics and logs too: Crucible ingests traces only, `/v1/metrics` and `/v1/logs` answer 404, and the
+headers variable would send your key to wherever metrics and logs go.
 
 With Logfire, keep its own backend off and instrument Pydantic AI:
 

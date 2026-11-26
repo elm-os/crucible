@@ -35,7 +35,7 @@ In a short-lived script, `await sdk.shutdown()` before it exits, so the last spa
 
 ```sh
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20csk_..."
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20csk_..."
 ```
 
 With AI SDK 7, register the integration once; telemetry is then on for every call, and `telemetry` names the call

@@ -92,15 +92,21 @@ A key made there reaches the running server within 5 seconds; until then ingest 
 ## 5. Send a trace
 
 Any OpenTelemetry SDK or collector that exports OTLP over HTTP works. Point it at `http://127.0.0.1:4318/v1/traces`
-and send the secret key as `Authorization: Bearer <secret>`. With the standard environment variables:
+and send the secret key as `Authorization: Bearer <secret>`. With the standard environment variables for traces:
 
 ```sh
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <secret>"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20<secret>"
 ```
 
-The Compose file publishes OTLP over HTTP. To send OTLP/gRPC from outside the Compose network, add `- "4317:4317"`
-to the `ports` of the `crucible` service.
+These variables cover traces only, which is all Crucible takes. Keep metrics and logs on their current exporter, or
+set `OTEL_METRICS_EXPORTER=none` and `OTEL_LOGS_EXPORTER=none` when Crucible is your only backend.
+[Sending traces](../guides/sending-traces.md#from-an-opentelemetry-sdk) explains each variable and gives the ones
+for gRPC.
+
+The Compose file publishes OTLP over HTTP. To send OTLP/gRPC from outside the Compose network, add
+`- "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:4317:4317"` to the `ports` of the `crucible` service.
 
 Or by hand:
 

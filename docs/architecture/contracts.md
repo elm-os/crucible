@@ -1289,7 +1289,8 @@ checkpoints are monotonic. Segments wholly at or below `last_lsn` become eligibl
 Before a node accepts ingest it must, through `TelemetryStore::detect` and `dedup_selftest`:
 
 - read `version()`, the flavour (single node, clustered, Cloud) and the engine family of each table after migration;
-- confirm that every setting Crucible sends exists (`system.settings`, `system.merge_tree_settings`) and that the
+- confirm that every setting Crucible sends exists (`system.settings` for the per-insert settings and the 25
+  query-level settings of `QUERY_SETTINGS`, `system.merge_tree_settings` for the table settings) and that the
   text-search functions exist;
 - insert one block twice with one token into `dedup_selftest` and read back exactly one row;
 - confirm that each service identity sees a known row through its row policy (the "service identities see all rows
@@ -1308,11 +1309,15 @@ variant of every step, or with `clickhouse.cluster` the clustered one, after che
 fix: a cluster missing from `remote_servers`, a cluster of several shards, a replica without the `shard` and
 `replica` macros, no ClickHouse Keeper session, `distributed_ddl_use_initial_user_and_roles` off, tables created for
 a single server, and replicas that do not run each other's queries as the user who sent them (no cluster `<secret>`)
-(#186). With Postgres, a server started without `--migrate` also refuses ingest until the migrations ledger records
-every step of `crucible_schema::LEDGER_ORDER` (section 6.6): `/readyz` and ingest answer 503 naming the missing
-steps, `crucible migrate` and `--migrate`, and the server checks again with the store's backoff (1 s doubling to 15
-s), so it opens without a restart once the steps are recorded. Without Postgres there is no ledger, and the table
-check above gates such a server (#164).
+(#186). Once the shard and secret checks pass, the check for tables created for a single server reads every replica
+that answers, with one statement sent to all of them as `crucible_admin`. For a replica other than the one
+`clickhouse.url` names, the refusal names each such replica and its tables, and the fix: an empty replica in its
+place, or `DROP DATABASE crucible SYNC` on it, then migrate again (#195). With Postgres, a server started without
+`--migrate` also refuses ingest until the migrations ledger records every step of `crucible_schema::LEDGER_ORDER`
+(section 6.6): `/readyz` and ingest answer 503 naming the missing steps, `crucible migrate` and `--migrate`, and the
+server checks again with the store's backoff (1 s doubling to 15 s), so it opens without a restart once the steps
+are recorded. Without Postgres there is no ledger, and the table check above gates such a server (#164). A ledger
+that records the steps of another ClickHouse is refused, with or without `--migrate` (section 6.6, #195).
 
 ### 5.9 Crash barriers
 
@@ -1632,6 +1637,18 @@ names the key to use. With Postgres, a server started without `--migrate` takes 
 every step of `LEDGER_ORDER` (section 5.8). Without Postgres, `--migrate` applies the ClickHouse steps on every
 start.
 
+A ledger of another ClickHouse (settled in code): when the ledger records access step `0002_access_service` and
+ClickHouse holds none of the four service users that step creates (`crucible_ingest`, `crucible_read_ui`,
+`crucible_read_agent`, `crucible_maint`; on a cluster, no replica that answers holds any), the ledger records the
+steps of another ClickHouse, such as a single-server deployment's when a new cluster was given its Postgres, or of
+one whose data was lost. `crucible migrate` and `serve --migrate` refuse under the `migrations` lease before any
+step, and a server without `--migrate` refuses in its ledger check: `crucible migrate` exits with 1, and a server
+stays not ready. The message names the fix: a Postgres database of its own for the new ClickHouse, or an empty
+ledger (`DELETE FROM schema_migrations WHERE kind LIKE 'clickhouse%'`, with the servers that use the other
+ClickHouse stopped). A wrong master key over existing service users keeps its own message (#164). The check counts
+the service users on the server the store talks to first, and reads every replica only when that server holds
+none, so a start on a healthy cluster adds no read of every replica (#195).
+
 ### 6.7 Settled in code
 
 Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper cluster.
@@ -1640,6 +1657,7 @@ Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper c
 |---|---|
 | Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy`. Released steps render from the current table list, so a step that adds a table changes `0001` to `0003` too, and they apply once more on that upgrade (section 6.6) |
 | Clustered DDL | `ON CLUSTER` statements carry `distributed_ddl_entry_format_version = 8` or higher, `distributed_ddl_output_mode = throw` and `distributed_ddl_task_timeout = 180`, so a statement fails when a replica has not run it rather than returning before every replica has, and every host must set `distributed_ddl_use_initial_user_and_roles = 1` (text-index preprocessors need it); startup detection (5.8) checks the server setting on the clustered variant (#186) |
+| Reads of every replica | Every read of every replica (`clusterAllReplicas`: the existence probe, the mutation and masked-part checks, a partition's projects, a plan read on every replica, and the cluster checks) carries `connections_with_failover_max_tries = 1` beside `skip_unavailable_shards`, so a replica that is down costs one try, a connect timeout or a failed lookup of its name, rather than ClickHouse's default of three; startup detection (5.8) checks the setting (#195) |
 | Replication path | `'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'` |
 | Profile ceilings | Constraints use `MIN 1`, because 0 means unlimited for these settings |
 | Codecs | `T64` on scalar `UInt32`, `UInt64` and `Int64` columns except hash-valued ones; arrays and `start_minute` use `ZSTD(1)` |
@@ -3400,3 +3418,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-21 | Settled in code by #169: provider versions, issuer changes and configured providers (11.1); the `domains` parameter of `not_invited` (11.4); joining by allowed domain through providers only, and domains at every sign-in (11.5); the recovery command and the configuration sections (12.1); `conflict` for the last way to sign in (12.3); `crucible migrate` fails on deferred steps (6.6) |
 | v2 | 2026-11-21 | Settled in code by #179: agent reads refused with code 202 are sent again within their deadline (2.14, 7.1); the proxy's `max_bytes` ceiling and the oversized operation, and the scrubbers' guards (9.10); the export-object sweep as a `media_gc` leader job (11.7, 11.10) |
 | v2 | 2026-11-25 | Settled in code by #186: clustered ClickHouse with Keeper, through `clickhouse.cluster` in place of a flavour switch, with its startup refusals (5.8, 6.6); the distributed DDL settings (6.7); the REMOTE and `system.clusters` grants (7.1); the probe's majority and all-absent rule (5.5); lifecycle statements to one replica with reads of every replica (13.2); no `lagging` for replica lag (8.6) |
+| v2 | 2026-11-26 | Settled in code by #195: the single-server-table check on every replica that answers, and the refusal of a ledger of another ClickHouse (5.8, 6.6); one connection try in every read of every replica, and the setting in startup detection (5.8, 6.7) |
