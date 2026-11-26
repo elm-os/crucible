@@ -124,7 +124,11 @@ export function workload(shape: Shape): Op[] {
     op("initialize", "initialize", take(), complete);
     op("notifications/initialized", "notifications/initialized", undefined, {});
   }
-  op("tools/list", "tools/list", take(), complete);
+  // The listed tools' names and schemas, as JSON text; mcp-features.test.ts checks the text itself.
+  op("tools/list", "tools/list", take(), {
+    ...complete,
+    "crucible.mcp.tools": expect.any(String),
+  });
   op("tools/call echo", "tools/call", take(), tool("echo"));
   op(
     "tools/call fail",

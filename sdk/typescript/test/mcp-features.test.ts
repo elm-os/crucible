@@ -8,6 +8,7 @@ import {
   Server,
 } from "@modelcontextprotocol/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import * as z from "zod/v4";
 import { flush, init, shutdown } from "../src/index.ts";
 import {
   type InstrumentOptions,
@@ -159,6 +160,51 @@ describe("content capture", () => {
       "crucible.mcp.result_type": "complete",
       "crucible.mcp.content.blocks.text": 1n,
     });
+  });
+});
+
+describe("tool inventory", () => {
+  test("a tools/list result records each listed tool's name and schemas", async () => {
+    const server = buildServer();
+    server.registerTool(
+      "report",
+      {
+        description: "Counts orders.",
+        inputSchema: z.object({ day: z.string() }),
+        outputSchema: z.object({ orders: z.number() }),
+      },
+      async () => ({ content: [], structuredContent: { orders: 3 } }),
+    );
+    const [clientSide, serverSide] = inMemoryPair();
+    await instrument(server).connect(serverSide);
+    const client = newClient("legacy");
+    await client.connect(clientSide);
+    const { tools } = await client.listTools();
+    await client.close();
+    await flush();
+    const listing = collector.spans.find(
+      (span) => span.attributes["mcp.method.name"] === "tools/list",
+    );
+    const inventory: unknown = JSON.parse(String(listing?.attributes["crucible.mcp.tools"]));
+    // Only what the inventory reads: the name, and the schemas its hash covers.
+    expect(inventory).toEqual(
+      tools.map(({ name, inputSchema, outputSchema }) => ({
+        name,
+        inputSchema,
+        ...(outputSchema !== undefined && { outputSchema }),
+      })),
+    );
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "echo",
+      "fail",
+      "throw",
+      "slow",
+      "secret",
+      "needs_input",
+      "lookup_order",
+      "report",
+    ]);
+    expect(tools.at(-1)?.outputSchema).toBeDefined();
   });
 });
 

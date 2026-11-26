@@ -357,6 +357,9 @@ function observeResult(operation: Operation, result: Fields, connection: Connect
   if (result.resultType === "input_required" && state !== undefined && key !== undefined) {
     operation.span.setAttribute("crucible.mcp.mrtr.state_out", stateHash(key, state));
   }
+  if (operation.method === "tools/list" && Array.isArray(result.tools)) {
+    operation.span.setAttribute("crucible.mcp.tools", inventory(result.tools));
+  }
   if (operation.method !== "tools/call") {
     return;
   }
@@ -382,6 +385,19 @@ function observeResult(operation: Operation, result: Fields, connection: Connect
       operation.cut ||= content.cut;
     }
   }
+}
+
+/**
+ * The tool inventory of a `tools/list` result (contract 3.6), as JSON text: each tool's name and the input and
+ * output schemas, which Crucible hashes. Nothing else of a tool is sent.
+ */
+function inventory(tools: unknown[]): string {
+  return JSON.stringify(
+    tools.map((tool) => {
+      const { name, inputSchema, outputSchema } = fields(tool) ?? {};
+      return { name, inputSchema, outputSchema };
+    }),
+  );
 }
 
 /** The client cancelled a request. The SDK sends no response for it, so it is finished here. */
