@@ -61,6 +61,9 @@ pub enum DeletionKind {
     User,
     /// Everything of one session.
     Session,
+    /// Everything of the project: the purge that deleting the project starts. Deleting the project makes this
+    /// request; `POST deletion-requests` refuses it.
+    Project,
 }
 
 /// Where a deletion request stands.
@@ -113,12 +116,14 @@ pub struct DeletionRequestCreate {
 /// Where one place of the reach list stands for a deletion request.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct DeletionPlace {
-    /// The place: a telemetry table, or `comments`, `media`, `export_files`.
+    /// The place: a telemetry table, or `comments`, `media`, `export_files`, and for a project deletion
+    /// `control_plane` (its members, alert rules, channels, saved queries and the rest of its rows).
     pub place: String,
     /// `pending`, `deleted` (hidden from every read), `verified` (physically removed), `failed`, `done`, or
     /// `not_present` for a place this deployment does not have.
     pub status: String,
-    /// Deletes planned for the place, one per partition and page of traces.
+    /// Deletes planned for the place, one per partition and page of traces; for a project deletion, one per
+    /// partition, a partition dropped whole among them.
     pub deletes: u32,
     /// Deletes that have run.
     pub deletes_done: u32,
@@ -165,7 +170,8 @@ pub struct DeletionRequest {
     /// The point in time of the delete: data received at or after it is kept (RFC 3339).
     #[schema(format = DateTime)]
     pub requested_at: String,
-    /// Who asked: `user:<id>` or `key:<id>`.
+    /// Who asked: `user:<id>`, `key:<id>`, or `system:upgrade` for the project deletion that the server makes
+    /// for a project deleted on an earlier version.
     pub requested_by: String,
     /// When the request last changed (RFC 3339).
     #[schema(format = DateTime)]
@@ -175,11 +181,29 @@ pub struct DeletionRequest {
     /// The places of the reach list, once the request has been planned.
     pub places: Vec<DeletionPlace>,
     /// Why the request failed, or what a request that has not ended waits for and how to fix it (for a
-    /// deletion by user: a project salt that the server cannot read).
+    /// deletion by user: a project salt that the server cannot read; for a project deletion: a read of the
+    /// telemetry store or a removal from the object store that failed, which the server tries again, or the servers
+    /// of an earlier version that it waits for during a rolling upgrade).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     #[ts(optional)]
     pub error: Option<String>,
+    /// How many times a step of the request failed, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub attempts: Option<u32>,
+    /// For a project deletion that has ended: how many times the hourly sweep found rows of the project that
+    /// reached the telemetry store after the purge, and deleted them, one per partition each time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub late_purges: Option<u32>,
+    /// When the sweep last found such rows (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false, format = DateTime)]
+    #[ts(optional)]
+    pub late_purged_at: Option<String>,
 }
 
 /// The answer of `GET deletion-requests`: newest first.

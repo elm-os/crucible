@@ -7,7 +7,14 @@
 //!   its finished deletes (13.2, step 6).
 //! - **Deletion executor** (`lifecycle-deletion`): every 30 s. It acts on a request only after every live
 //!   node's checkpoint has passed the request's tombstone, and then deletes across the reach list (13.3 and
-//!   13.4). It also issues, polls and verifies the actions of all three jobs.
+//!   13.4). A project deletion, which deleting a project makes, reaches every table of the project and then
+//!   its control-plane rows; it drops a partition only when no project, live or made later, can write there any
+//!   more and every project with rows there is deleted, and a project deleted without that request gets one. It
+//!   also issues, polls and verifies the actions of the other jobs.
+//! - **Purge sweep** (`lifecycle-sweep`): hourly for each project deleted in the last 30 days, daily for those
+//!   deleted before. It probes every table of the project for rows that landed after its purge and plans their
+//!   purge, which the deletion executor sends and verifies (13.4). A project it cannot probe is recorded on its
+//!   request and holds back no other, and it finishes a failed project deletion once no table holds the project.
 //! - **Node timer** ([`node_job`], `lifecycle-node`): every 5 s on every node. Heartbeat, pending-deletion
 //!   set, tombstone and acknowledgement, checkpoint report, retention snapshot (13.3, steps 2 and 4).
 //! - **[`Service`]**: what the API calls: retention settings and deletion requests.
@@ -32,6 +39,7 @@ mod pending;
 mod reach;
 mod retention;
 mod service;
+mod sweep;
 mod wal_log;
 
 use std::fmt;
@@ -47,16 +55,20 @@ use futures::future::BoxFuture;
 pub use config::{LifecycleConfig, Mutant};
 /// Where export files are when the deployment has an object store: the type of [`LeaderStores::exports`].
 pub use crucible_export::ExportObjects;
-pub use deletion::{PlaceStatus, Progress};
+pub use deletion::{EARLIER_DELETION_BY, PlaceStatus, Progress};
 pub use node::{AckError, LogError, NodeLog, NodeState, node_job};
 pub use partitions::{partition_window, partitions_between, partitions_of_days};
 pub use pending::{KEEP_AFTER_APPLIED, PendingDeletion, PendingDeletions, RetentionSnapshot};
-pub use reach::{OTHER_PLACES, Reach, final_reach, identity_reach, page_reach, retention_tables};
+pub use reach::{
+    CONTROL_PLANE, OTHER_PLACES, Reach, final_reach, identity_reach, page_reach, project_reach,
+    retention_tables,
+};
 pub use retention::{Decision, decide};
 pub use service::{
     Accepted, MAX_DELETION_PAGE, MAX_RETENTION_DAYS, MAX_SELECTOR_BYTES, NewDeletion, Retention,
     Service, ServiceError, check_retention, check_selector,
 };
+pub use sweep::{SWEEP_OLD_PERIODS, SWEEP_RECENT};
 pub use wal_log::{WalLog, tombstone};
 
 use crate::actions::Shared;
@@ -91,13 +103,13 @@ pub struct LeaderStores {
 /// run without one: while the source answers `None`, a run does nothing.
 pub type LeaderSource = Arc<dyn Fn() -> Option<LeaderStores> + Send + Sync>;
 
-/// The three leader jobs of the `lifecycle` lease over a telemetry store: the retention executor, the mask
-/// scheduler and the deletion executor. They run one at a time, on the node that holds the lease.
+/// The four leader jobs of the `lifecycle` lease over a telemetry store: the retention executor, the mask
+/// scheduler, the deletion executor and the purge sweep. They run one at a time, on the node that holds the lease.
 ///
-/// The retention executor and the mask scheduler wake more often than their period and decide from the
-/// lease's cursor whether their hour or cycle is due, so a pass that could not finish is taken up again soon
-/// and a change of leader repeats nothing.
-pub fn leader_jobs(source: &LeaderSource, config: LifecycleConfig) -> [Job; 3] {
+/// The retention executor, the mask scheduler and the purge sweep wake more often than their period and decide
+/// from the lease's cursor whether their hour or cycle is due, so a pass that could not finish is taken up again
+/// soon and a change of leader repeats nothing.
+pub fn leader_jobs(source: &LeaderSource, config: LifecycleConfig) -> [Job; 4] {
     [
         leader(
             "lifecycle-retention",
@@ -119,6 +131,13 @@ pub fn leader_jobs(source: &LeaderSource, config: LifecycleConfig) -> [Job; 3] {
             source,
             config,
             |ctx, shared| Box::pin(deletion::run(ctx, shared)),
+        ),
+        leader(
+            "lifecycle-sweep",
+            config.deletion_every,
+            source,
+            config,
+            |ctx, shared| Box::pin(sweep::run(ctx, shared)),
         ),
     ]
 }

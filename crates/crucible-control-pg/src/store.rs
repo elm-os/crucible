@@ -287,6 +287,8 @@ impl PgControlStore {
              d30 AS (DELETE FROM lifecycle_actions), d31 AS (DELETE FROM retention_floors), \
              d32 AS (DELETE FROM nodes), d33 AS (DELETE FROM widgets), d34 AS (DELETE FROM dashboards), \
              d35 AS (DELETE FROM media_refs), d36 AS (DELETE FROM media_objects), \
+             d37 AS (DELETE FROM saved_queries), d38 AS (DELETE FROM sql_runs), \
+             d39 AS (DELETE FROM ch_sql_identities), \
              s2 AS (SELECT setval('deletion_seq', 1, false)) \
              SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;

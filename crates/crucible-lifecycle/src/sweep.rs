@@ -1,0 +1,490 @@
+//! The purge sweep (contract 13.4): a leader job under the `lifecycle` lease that looks again for rows of every
+//! deleted project and purges what it finds.
+//!
+//! A deleted project's rows can reach the store after its purge: a node takes a frame of the project in the moment
+//! before its key snapshot has the revocation and ships it late, a node cut off from Postgres keeps taking the
+//! project's keys under `auth.pg_outage_mode = fail_open`, a node that stopped heartbeating ships what it took before
+//! the deletion after the executor stopped waiting for it, and a node that was down for weeks ships its WAL when it
+//! returns. Stage B keeps the first two kinds, which arrived after the deletion's point in time.
+//!
+//! Every `lifecycle.sweep_every` (an hour) the sweep looks at each project deleted in the last [`SWEEP_RECENT`], and
+//! every [`SWEEP_OLD_PERIODS`] of those periods (a day) at the projects deleted before. For each table of a project,
+//! one probe asks whether the table holds a row of it; in a table that does, each partition is probed
+//! ([`find`]). Each partition with rows gets a purge, the action a project deletion plans, unless a purge of the
+//! project there is not verified yet: one that has not run removes the rows when it runs, and one whose delete has
+//! run is sent again. The deletion executor sends it at its next run, as the delete of the project's rows or as the
+//! drop of a partition that no project can write to, and verifies it. While a project deletion still finds
+//! where the project's rows are, the sweep looks at the tables it has passed. A request that has completed stays
+//! completed and counts these late purges, with the time of the last. A request that failed is finished here once no
+//! table holds a row of its project and each of its deletes is removed from storage: its objects and control-plane
+//! rows go, and it completes.
+//!
+//! A project that cannot be looked at now, because a probe fails or the object store refuses, is recorded on its
+//! request with one more failed attempt, after what the request said before, and the pass goes on with the next
+//! project; the next pass looks at it again, and once it gets through, takes the record away.
+//! A wake sends at most [`MAX_PROBES_PER_RUN`] probes and records how far its pass got, so a pass over many deleted
+//! projects is spread over the wakes of its period. A pass counts for the period it began in, so one that runs past
+//! the end of that period does not delay the next. A project with no late row costs one probe per table, 17, so at a
+//! wake every 30 s an hourly pass covers about 7,000 deleted projects.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crucible_control::{
+    ActionKind, ActionState, DeletionRequest, LifecycleAction, duration_micros,
+};
+use crucible_jobs::{JobError, JobResult, LeaderCtx};
+use crucible_records::{DeletionState, PartitionId, TableId, Timestamp};
+
+use crate::actions::{self, Place, Shared, planned};
+use crate::config::LifecycleConfig;
+use crate::deletion::{MAX_PROBES_PER_RUN, Progress, find, finish};
+use crate::detail::Detail;
+use crate::reach::project_reach;
+use crate::retention::Schedule;
+
+/// How long after its deletion a project is looked at every `lifecycle.sweep_every`. Late rows come from nodes that
+/// were behind, cut off or down, and most catch up within days: a month of hourly looks keeps such a row for at most
+/// about an hour in that time.
+pub const SWEEP_RECENT: Duration = Duration::from_secs(30 * 86_400);
+
+/// After [`SWEEP_RECENT`], a deleted project is looked at once every this many periods of `lifecycle.sweep_every`:
+/// a day. A node that returns after weeks still has its late rows removed within a day, for about one probe per table
+/// of each deleted project a day.
+pub const SWEEP_OLD_PERIODS: u64 = 24;
+
+/// How the part of a request's error that the sweep records begins. What the request said before stays in front of
+/// it, so a failed request still says why it failed, and the next pass that gets through takes the sweep's part away.
+const STOPPED: &str = "the purge sweep stopped at this project: ";
+
+/// The deleted projects one pass looks at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pass {
+    /// Those deleted within [`SWEEP_RECENT`], every period.
+    Recent,
+    /// Those deleted before, every [`SWEEP_OLD_PERIODS`] periods.
+    Old,
+}
+
+impl Pass {
+    /// How often the pass looks at each of its projects.
+    fn every(self, config: &LifecycleConfig) -> Duration {
+        match self {
+            Self::Recent => config.sweep_every,
+            Self::Old => config
+                .sweep_every
+                .saturating_mul(u32::try_from(SWEEP_OLD_PERIODS).unwrap_or(u32::MAX)),
+        }
+    }
+}
+
+/// One wake of the purge sweep.
+pub(crate) async fn run(ctx: LeaderCtx, shared: Arc<Shared>) -> JobResult {
+    let config = &shared.config;
+    if config.skips_sweep() {
+        return Ok(());
+    }
+    let db_now = ctx.store().db_now().await?;
+    let period = Schedule::period(db_now, config.sweep_every);
+    let schedule = Schedule::load(&ctx).await?;
+    let due = |pass| match pass {
+        Pass::Recent => schedule.sweep < period,
+        Pass::Old => schedule.sweep_old.saturating_add(SWEEP_OLD_PERIODS) <= period,
+    };
+    if !due(Pass::Recent) && !due(Pass::Old) {
+        return Ok(());
+    }
+    let recent_from = db_now.saturating_add_micros(-duration_micros(SWEEP_RECENT));
+    let requests = ctx.store().lifecycle().project_requests().await?;
+    let mut probes = MAX_PROBES_PER_RUN;
+    for pass in [Pass::Recent, Pass::Old] {
+        if !due(pass) {
+            continue;
+        }
+        let after = match pass {
+            Pass::Recent => schedule.sweep_after,
+            Pass::Old => schedule.sweep_old_after,
+        };
+        let mut last = after;
+        let mut whole = true;
+        let of_pass = requests.iter().filter(|request| {
+            request.deletion_seq > after
+                && (request.requested_at >= recent_from) == (pass == Pass::Recent)
+        });
+        for request in of_pass {
+            if probes == 0 {
+                whole = false;
+                break;
+            }
+            match sweep(&ctx, &shared, request, period, &mut probes).await {
+                Ok(()) => {}
+                Err(JobError::LeaseLost) => return Err(JobError::LeaseLost),
+                // The request says why and the next pass looks again; the other projects are not held back.
+                Err(error) => record(&ctx, request, &error, pass.every(config)).await?,
+            }
+            last = request.deletion_seq;
+        }
+        // Each job of the lease writes its own fields of the shared cursor, read just before.
+        advanced(Schedule::load(&ctx).await?, pass, period, whole, last)
+            .store(&ctx)
+            .await?;
+    }
+    Ok(())
+}
+
+/// The cursor after a wake in the period `period` that took `pass` as far as the request with the sequence number
+/// `last`; `whole` when the pass is complete. A pass begins in the wake that finds none in progress, and a complete
+/// pass counts for the period it began in, so a pass that runs past the end of that period does not delay the next.
+fn advanced(mut stored: Schedule, pass: Pass, period: u64, whole: bool, last: u64) -> Schedule {
+    let (done, after, began) = match pass {
+        Pass::Recent => (
+            &mut stored.sweep,
+            &mut stored.sweep_after,
+            &mut stored.sweep_began,
+        ),
+        Pass::Old => (
+            &mut stored.sweep_old,
+            &mut stored.sweep_old_after,
+            &mut stored.sweep_old_began,
+        ),
+    };
+    if *after == 0 {
+        *began = period;
+    }
+    if whole {
+        (*done, *after) = (*began, 0);
+    } else {
+        *after = last;
+    }
+    stored
+}
+
+/// A period as an error says it: in hours, or in minutes when it is not whole hours.
+fn span(every: Duration) -> String {
+    let minutes = every.as_secs() / 60;
+    if minutes >= 60 && minutes.is_multiple_of(60) {
+        format!("{} h", minutes / 60)
+    } else {
+        format!("{minutes} min")
+    }
+}
+
+/// The error of a request without the part that the sweep recorded.
+fn without_sweep(error: Option<&str>) -> Option<String> {
+    let error = error?;
+    let kept = error
+        .split_once(STOPPED)
+        .map_or(error, |(kept, _)| kept)
+        .trim_end_matches("; ");
+    (!kept.is_empty()).then(|| kept.to_owned())
+}
+
+/// The error the sweep records on a request it could not look at or finish: what the request said before, then why
+/// the sweep stopped at it and that its next pass, within `every`, tries again.
+fn with_sweep(error: Option<&str>, why: &JobError, every: Duration) -> String {
+    let stopped = format!(
+        "{STOPPED}{why}; it tries again at its next pass, within {}",
+        span(every)
+    );
+    match without_sweep(error) {
+        Some(kept) => format!("{kept}; {stopped}"),
+        None => stopped,
+    }
+}
+
+/// Records on a project deletion that the sweep could not look at its project, or not finish it: one more failed
+/// attempt and the error ([`with_sweep`]), which the list of deletion requests shows. The next pass looks again,
+/// within `every`.
+async fn record(
+    ctx: &LeaderCtx,
+    request: &DeletionRequest,
+    error: &JobError,
+    every: Duration,
+) -> JobResult {
+    let attempts = request.attempts.saturating_add(1);
+    tracing::warn!(
+        request = %request.id, project = %request.project_id, %error, attempts,
+        "the purge sweep could not look at a deleted project; its next pass looks again"
+    );
+    let row = DeletionRequest {
+        attempts,
+        error: Some(with_sweep(request.error.as_deref(), error, every)),
+        updated_at: ctx.env.clock.wall_now(),
+        ..request.clone()
+    };
+    ctx.fenced(move |tx| {
+        Box::pin(async move {
+            tx.lifecycle().update_request(&row).await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Looks for rows of the project of one project deletion and plans a purge of each partition that holds some. A
+/// pending request is left to the executor, which finds the project's rows itself; of a request still finding them,
+/// only the tables it has passed are looked at; and a project that is not deleted is never swept. A failed request
+/// whose project no table holds, and whose deletes are all verified or given up, is finished: its project's objects
+/// and control-plane rows go, and it completes. On an error the stored request is as it was.
+async fn sweep(
+    ctx: &LeaderCtx,
+    shared: &Shared,
+    request: &DeletionRequest,
+    period: u64,
+    probes: &mut usize,
+) -> JobResult {
+    if request.state == DeletionState::Pending {
+        return Ok(());
+    }
+    let project = request.project_id;
+    // Only a deleted project is swept. Deleting a project makes its request, and nothing clears a deletion.
+    let deleted = ctx
+        .store()
+        .projects()
+        .get(project)
+        .await?
+        .is_some_and(|row| row.deleted_at.is_some());
+    if !deleted {
+        return Ok(());
+    }
+    let before = Progress::parse(&request.places);
+    let mut progress = before.clone();
+    // Discovery plans a table's purges before it adds the table to `purged`.
+    let discovering = request.state == DeletionState::Logged && !progress.planned;
+    let mut found: Vec<(TableId, PartitionId)> = Vec::new();
+    for table in project_reach() {
+        if discovering && !progress.purged.iter().any(|name| name == table.name()) {
+            continue;
+        }
+        // The tables of one project are looked at in one wake.
+        let mut left = usize::MAX;
+        let held = find(shared, table, project, None, &mut left).await;
+        *probes = probes.saturating_sub(usize::MAX - left);
+        let held = held.map_err(|error| {
+            JobError::Failed(format!(
+                "looking for its rows in {} failed ({error})",
+                table.name()
+            ))
+        })?;
+        found.extend(
+            held.partitions
+                .into_iter()
+                .map(|partition| (table, partition)),
+        );
+    }
+    // This look got through.
+    let mut row = DeletionRequest {
+        error: without_sweep(request.error.as_deref()),
+        ..request.clone()
+    };
+    let now = ctx.env.clock.wall_now();
+    if found.is_empty() {
+        // Of a failed request, whose purge gave up an action, no table holds a visible row of the project now. A
+        // delete that has run hides its rows from the probes until the mask cycle removes them, so the rest of the
+        // request, which nothing else does, waits until every delete of it is verified (or given up).
+        let finishing = request.state == DeletionState::Failed
+            && ctx
+                .store()
+                .lifecycle()
+                .request_actions(request.id)
+                .await?
+                .iter()
+                .all(|action| matches!(action.state, ActionState::Verified | ActionState::Failed));
+        if finishing {
+            finish(ctx, shared, request, &mut progress).await?;
+            row.state = DeletionState::Completed;
+            row.error = None;
+            tracing::info!(
+                request = %request.id, project = %project,
+                "the purge sweep found no row of the project of a failed project deletion, and finished it"
+            );
+        }
+    } else {
+        // A purge of the project on the partition that is not verified yet covers these rows: one that has not run
+        // yet removes them when it runs, and one whose delete has run is sent again, since they landed after it. So
+        // a partition has at most one open purge of the project however long rows keep landing.
+        let open: Vec<LifecycleAction> = ctx
+            .store()
+            .lifecycle()
+            .request_actions(request.id)
+            .await?
+            .into_iter()
+            .filter(|action| {
+                !matches!(action.state, ActionState::Verified | ActionState::Failed)
+                    && Detail::parse(&action.detail).is_ok_and(|detail| detail.by_presence())
+            })
+            .collect();
+        let again: Vec<LifecycleAction> = open
+            .iter()
+            .filter(|action| {
+                matches!(action.state, ActionState::Done | ActionState::Masked)
+                    && found.contains(&(action.table, action.partition))
+            })
+            .map(|action| LifecycleAction {
+                state: ActionState::Planned,
+                mutation: None,
+                updated_at: now,
+                ..action.clone()
+            })
+            .collect();
+        let covered: BTreeSet<(TableId, PartitionId)> = open
+            .iter()
+            .map(|action| (action.table, action.partition))
+            .collect();
+        found.retain(|pair| !covered.contains(pair));
+        let purges: Vec<LifecycleAction> = found
+            .iter()
+            .map(|(table, partition)| {
+                purge(ctx, shared, request, (*table, *partition), period, now)
+            })
+            .collect();
+        let planned = actions::plan(ctx, purges).await?;
+        let sent_again = again.len();
+        for batch in again.chunks(50) {
+            let batch = batch.to_vec();
+            ctx.fenced(move |tx| {
+                Box::pin(async move {
+                    for action in &batch {
+                        tx.lifecycle().update_action(action).await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
+        }
+        let late = matches!(
+            request.state,
+            DeletionState::Completed | DeletionState::Failed
+        );
+        let purges = planned + sent_again;
+        if purges > 0 && late {
+            progress.late = progress
+                .late
+                .saturating_add(u32::try_from(purges).unwrap_or(u32::MAX));
+            progress.late_at = Some(now.micros());
+            tracing::info!(
+                request = %request.id, project = %project, purges,
+                "the purge sweep found rows of a deleted project that landed after its purge, and purges them"
+            );
+        }
+    }
+    if progress != before {
+        row.places = progress.to_text();
+    }
+    if row == *request {
+        return Ok(());
+    }
+    let row = DeletionRequest {
+        updated_at: now,
+        ..row
+    };
+    ctx.fenced(move |tx| {
+        Box::pin(async move {
+            tx.lifecycle().update_request(&row).await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// The purge of one partition that the sweep found rows of the project in: keyed by the sweep's period, so a
+/// partition that holds rows again in a later period gets a purge of its own.
+fn purge(
+    ctx: &LeaderCtx,
+    shared: &Shared,
+    request: &DeletionRequest,
+    (table, partition): (TableId, PartitionId),
+    period: u64,
+    now: Timestamp,
+) -> LifecycleAction {
+    let (kind, detail, project_id) = if shared.config.sweeps_without_project() {
+        (ActionKind::Drop, Detail::Drop, None)
+    } else {
+        (ActionKind::Delete, Detail::Purge, Some(request.project_id))
+    };
+    planned(
+        ctx.env.new_id(),
+        now,
+        format!("sweep:{}:{}:{partition}:{period}", request.id, table.name()),
+        kind,
+        Place {
+            table,
+            partition,
+            project_id,
+            request_id: Some(request.id),
+        },
+        &detail,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pass that runs past the end of the period it began in counts for that period, so the next pass begins in
+    /// the period after, not one period later.
+    #[test]
+    fn a_pass_counts_for_the_period_it_began_in() {
+        for pass in [Pass::Recent, Pass::Old] {
+            let begun = advanced(Schedule::default(), pass, 100, false, 7);
+            let done = advanced(begun, pass, 101, true, 9);
+            let (period, after) = match pass {
+                Pass::Recent => (done.sweep, done.sweep_after),
+                Pass::Old => (done.sweep_old, done.sweep_old_after),
+            };
+            assert_eq!((period, after), (100, 0), "{pass:?}");
+        }
+    }
+
+    /// A pass that a wake begins and completes counts for that wake's period, and a pass in progress keeps the period
+    /// it began in across wakes.
+    #[test]
+    fn a_pass_begins_in_the_wake_that_finds_none_in_progress() {
+        let whole = advanced(Schedule::default(), Pass::Recent, 50, true, 3);
+        assert_eq!((whole.sweep, whole.sweep_after), (50, 0));
+        let begun = advanced(whole, Pass::Recent, 51, false, 4);
+        let on = advanced(begun, Pass::Recent, 52, false, 8);
+        assert_eq!((on.sweep, on.sweep_after, on.sweep_began), (50, 8, 51));
+        let done = advanced(on, Pass::Recent, 53, true, 9);
+        assert_eq!((done.sweep, done.sweep_after), (51, 0));
+        // The earlier pass is left as it was.
+        assert_eq!((done.sweep_old, done.sweep_old_after), (0, 0));
+    }
+
+    #[test]
+    fn an_error_names_the_period_within_which_the_sweep_looks_again() {
+        assert_eq!(span(Duration::from_secs(3_600)), "1 h");
+        assert_eq!(span(Duration::from_secs(24 * 3_600)), "24 h");
+        assert_eq!(span(Duration::from_secs(600)), "10 min");
+    }
+
+    /// What the sweep records goes after what the request said, replaces what the sweep recorded before, and is
+    /// taken away whole by a pass that gets through, which leaves what the request said.
+    #[test]
+    fn the_sweep_records_its_error_after_the_request_and_takes_it_away_again() {
+        let hour = Duration::from_secs(3_600);
+        let timed_out =
+            JobError::Failed("looking for its rows in span_core failed (timed out)".to_owned());
+        let alone = with_sweep(None, &timed_out, hour);
+        assert_eq!(
+            alone,
+            "the purge sweep stopped at this project: looking for its rows in span_core failed (timed out); it \
+             tries again at its next pass, within 1 h"
+        );
+        assert_eq!(without_sweep(Some(&alone)), None);
+        let reason = "the delete on span_core partition 20270115 was given up after 8 attempts";
+        let after = with_sweep(Some(reason), &timed_out, hour);
+        assert_eq!(after, format!("{reason}; {alone}"));
+        assert_eq!(without_sweep(Some(&after)).as_deref(), Some(reason));
+        let refused = JobError::Failed("the object store refused".to_owned());
+        let again = with_sweep(Some(&after), &refused, hour);
+        assert!(
+            again.starts_with(&format!("{reason}; {STOPPED}the object store refused")),
+            "{again}"
+        );
+        assert!(!again.contains("span_core failed"), "{again}");
+        assert_eq!(without_sweep(Some(reason)).as_deref(), Some(reason));
+        assert_eq!(without_sweep(None), None);
+    }
+}

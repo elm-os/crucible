@@ -215,6 +215,19 @@ impl TelemetryStore for FakeStore {
         Ok(0)
     }
 
+    async fn partitions(&self, _table: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn holds_project(
+        &self,
+        _table: TableId,
+        _partition: Option<PartitionId>,
+        _project: ProjectId,
+    ) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
         match step.statements.iter().find(|s| s.contains(';')) {
             Some(statement) => Err(StoreError::Rejected {

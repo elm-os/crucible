@@ -533,16 +533,34 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
                 )
             },
         )?;
-        ctx.store
+        let listed = ctx
+            .store
             .partition_projects(table, held)
             .await
-            .context("the projects of a partition")
+            .context("the projects of a partition")?;
+        // A project deletion finds the partition and the project's rows there the same way.
+        let partitions = ctx
+            .store
+            .partitions(table)
+            .await
+            .context("the partitions of a table")?;
+        let found = (
+            ctx.store.holds_project(table, Some(held), third).await?,
+            ctx.store.holds_project(table, None, third).await?,
+        );
+        Ok::<_, anyhow::Error>((listed, partitions, found))
     }
     .await;
     admin_on(&ctx.store, format!("SYSTEM START FETCHES crucible.{name}")).await?;
-    let listed = listed?;
+    let (listed, partitions, found) = listed?;
     expect(listed == [third], || {
         format!("the projects of a partition whose only part another replica holds read {listed:?}")
+    })?;
+    expect(partitions.contains(&held) && found == (true, true), || {
+        format!(
+            "with its only part on another replica, the partitions of the table read {partitions:?} and the probes \
+             of its project in the partition and in the table {found:?}"
+        )
     })?;
 
     // Every replica up: the delete, its mask and the verification hold on each.
@@ -617,6 +635,17 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         expect(listed.is_err(), || {
             format!("the projects of a partition read {listed:?} while a replica is down")
         })?;
+        let partitions = ctx.store.partitions(table).await;
+        expect(partitions.is_err(), || {
+            format!("the partitions of the table read {partitions:?} while a replica is down")
+        })?;
+        let probe = ctx
+            .store
+            .holds_project(table, Some(partition), second)
+            .await;
+        expect(probe.is_err(), || {
+            format!("the probe of a project's rows answered {probe:?} while a replica is down")
+        })?;
         let read = match ctx.store.execute(leftover(second)?).await {
             Ok(stream) => stream.rows().await.map(|_| ()),
             Err(error) => Err(error),
@@ -648,10 +677,11 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         })?;
     }
     Ok(format!(
-        "a part that only another replica held kept its project listed; a delete, its mask and a partition drop \
-         sent to one replica held on all {}; with one down, the delete was queued for it, its mutation stayed \
-         pending, the masked parts, the partition's projects and the verification read had no answer and the drop \
-         was refused, until the replica came back and ran the delete",
+        "a part that only another replica held kept its project listed, its partition among the table's and its \
+         project found there; a delete, its mask and a partition drop sent to one replica held on all {}; with one \
+         down, the delete was queued for it, its mutation stayed pending, the masked parts, the partition's \
+         projects, the table's partitions, the probe of a project's rows and the verification read had no answer \
+         and the drop was refused, until the replica came back and ran the delete",
         others.len() + 1
     ))
 }

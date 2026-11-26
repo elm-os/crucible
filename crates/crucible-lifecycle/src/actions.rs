@@ -19,6 +19,7 @@ use crucible_records::{
 };
 
 use crate::config::LifecycleConfig;
+use crate::deletion::Purges;
 use crate::detail::{self, Call, Detail};
 
 /// The most actions one run moves. The rest wait for the next run, 30 s later.
@@ -129,6 +130,7 @@ struct Run<'a> {
     ctx: &'a LeaderCtx,
     shared: &'a Shared,
     scopes: Scopes,
+    purges: Purges,
     /// The open actions by id, as this run last wrote them.
     open: BTreeMap<Uuid, LifecycleAction>,
 }
@@ -193,8 +195,31 @@ impl Run<'_> {
         Ok(Pair::Free)
     }
 
-    /// Sends the action's call to the store, after recording it as issued under the fencing token.
+    /// A purge whose partition holds rows of its project again after its delete ran and the mask removed what it
+    /// deleted: those rows arrived after the delete, and a purge takes every row of its project whatever its arrival
+    /// (contract 13.4), so it is planned again, with its attempts as they were. Rows that keep landing therefore keep
+    /// the purge going rather than give it up, and it is verified once a check finds the partition without them.
+    async fn again(&mut self, action: &LifecycleAction) -> Result<Pair, JobError> {
+        tracing::debug!(
+            action = %action.key, table = action.table.name(), partition = %action.partition,
+            "rows of a deleted project landed after its purge; the purge runs again"
+        );
+        let row = LifecycleAction {
+            mutation: None,
+            ..self.next(action, ActionState::Planned)
+        };
+        self.write(vec![row]).await?;
+        Ok(Pair::Free)
+    }
+
+    /// Sends the action's call to the store, after recording it as issued under the fencing token. A purge of a
+    /// project deletion is recorded and sent as a drop or a delete, whichever its partition allows now.
     async fn issue(&mut self, action: &LifecycleAction) -> Result<Pair, JobError> {
+        let kind = self.purges.kind(self.ctx, self.shared, action).await?;
+        let action = &LifecycleAction {
+            kind,
+            ..action.clone()
+        };
         let scope = self.scopes.of(self.ctx, action.project_id).await?;
         let call = match detail::call(action, scope) {
             Ok(call) => call,
@@ -326,6 +351,22 @@ impl Run<'_> {
         let Some(scope) = self.scopes.of(self.ctx, action.project_id).await? else {
             return self.failed(action, "the action's project is gone").await;
         };
+        // A purge is verified by the project's presence: no visible row of it is left in the partition.
+        if Detail::parse(&action.detail).is_ok_and(|detail| detail.by_presence()) {
+            return match telemetry
+                .partition_projects(action.table, action.partition)
+                .await
+            {
+                Ok(listed) if !listed.contains(&scope.project_id()) => {
+                    self.write(vec![self.next(action, ActionState::Verified)])
+                        .await?;
+                    Ok(Pair::Free)
+                }
+                Ok(_) => self.again(action).await,
+                // The store did not answer: the next run asks again.
+                Err(_) => Ok(Pair::Free),
+            };
+        }
         let plan = match detail::verification(action, scope, self.shared.config.granularity) {
             Ok(plan) => plan,
             Err(error) => return self.failed(action, &error.to_string()).await,
@@ -380,6 +421,7 @@ pub(crate) async fn advance(ctx: &LeaderCtx, shared: &Shared) -> JobResult {
         ctx,
         shared,
         scopes: Scopes::default(),
+        purges: Purges::default(),
         open: actions.iter().map(|a| (a.id, a.clone())).collect(),
     };
     let mut busy: BTreeSet<(TableId, PartitionId)> = BTreeSet::new();

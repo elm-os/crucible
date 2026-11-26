@@ -200,9 +200,18 @@ fn a_deletion_request_is_durable_idempotent_and_bound_to_roles_and_scopes() {
             reply.assert_problem(422, "validation_failed");
             assert_eq!(reply.field_errors(), [(pointer, code)], "{body}");
         }
-        post(&p.owner, json!({"kind": "project"}), &[])
-            .await
-            .assert_problem(422, "validation_failed");
+        // A whole project is deleted with the project, and the refusal says how.
+        let whole = post(&p.owner, json!({"kind": "project"}), &[]).await;
+        whole.assert_problem(422, "validation_failed");
+        assert_eq!(whole.field_errors(), [("/kind", "invalid_value")]);
+        assert!(
+            whole.body["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("DELETE /api/v1/projects/{project_id}"),
+            "{:#}",
+            whole.body
+        );
         post(
             &p.owner,
             by_trace.clone(),
@@ -381,5 +390,69 @@ fn a_deletion_request_is_durable_idempotent_and_bound_to_roles_and_scopes() {
         )
         .await
         .assert_problem(422, "validation_failed");
+    });
+}
+
+/// Contract 13.4: `DELETE projects/{id}` answers 204 as before, and the purge it starts is a deletion request of
+/// kind `project` that org owners and admins read after the project is gone; anyone else is answered as for a
+/// project they cannot see, and the project's keys stop working.
+#[test]
+fn deleting_a_project_starts_a_purge_that_org_admins_follow() {
+    run(|env| async move {
+        let world = World::new(12);
+        let p = platform_with(&env, &world, false).await;
+        let uri = format!("{}/deletion-requests", base());
+        let viewer = session(&p.identity.login("vic@example.com", PASSWORD).await.unwrap());
+        let deleted = call(
+            &p.router,
+            Method::DELETE,
+            &base(),
+            &p.owner,
+            None,
+            &[("if-match", "\"1\"")],
+        )
+        .await;
+        assert_eq!(deleted.status, 204, "{:#}", deleted.body);
+
+        let list = call(&p.router, Method::GET, &uri, &p.owner, None, &[]).await;
+        assert_eq!(list.status, 200, "{:#}", list.body);
+        let requests = list.body["data"].as_array().unwrap();
+        assert_eq!(requests.len(), 1, "{:#}", list.body);
+        let purge = &requests[0];
+        assert_eq!(purge["kind"], "project");
+        assert_eq!(purge["state"], "pending");
+        assert!(purge["requested_by"].as_str().unwrap().starts_with("user:"));
+        for member in ["trace_ids", "user_id", "session_id"] {
+            assert!(purge.get(member).is_none(), "{purge:#}");
+        }
+        let id = purge["id"].as_str().unwrap();
+        let one = call(
+            &p.router,
+            Method::GET,
+            &format!("{uri}/{id}"),
+            &p.owner,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(one.status, 200, "{:#}", one.body);
+        assert_eq!(one.body["kind"], "project");
+
+        // Nobody else reads it, nothing is written to a deleted project, and its keys are revoked.
+        call(&p.router, Method::GET, &uri, &viewer, None, &[])
+            .await
+            .assert_problem(404, "not_found");
+        call(&p.router, Method::GET, &uri, &p.key, None, &[])
+            .await
+            .assert_problem(401, "unauthenticated");
+        let by_trace = json!({"kind": "trace", "trace_ids": ["0af7651916cd43dd8448eb211c80319c"]});
+        call(&p.router, Method::POST, &uri, &p.owner, Some(by_trace), &[])
+            .await
+            .assert_problem(404, "not_found");
+        // A project that never existed is not found for an org owner either.
+        let unknown = format!("/api/v1/projects/{}/deletion-requests", project(9));
+        call(&p.router, Method::GET, &unknown, &p.owner, None, &[])
+            .await
+            .assert_problem(404, "not_found");
     });
 }

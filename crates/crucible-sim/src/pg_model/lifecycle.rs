@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ActionState, DeletionRequest, LifecycleAction, LifecycleRepo, Node, NodeAck, RetentionFloor,
-    TxError, duration_micros,
+    ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo, Node, NodeAck,
+    PurgedRows, RetentionFloor, TxError, duration_micros,
 };
 use crucible_records::{DeletionRequestId, DeletionState, ProjectId, Timestamp, WalEpoch};
 
@@ -56,6 +56,76 @@ impl LifecycleRepo for Runner {
             let mut nodes = all!(cx, Tbl::Nodes, Row::Node);
             nodes.retain(|node| node.heartbeat_at >= since);
             Ok(nodes)
+        })
+        .await
+    }
+
+    async fn purge_project(&self, project_id: ProjectId) -> Result<PurgedRows, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            let mut purged = PurgedRows::default();
+            let deleted = matches!(
+                cx.get(Tbl::Projects, &uuid_key(project_id.to_bytes())),
+                Some(Row::Project(project)) if project.deleted_at.is_some()
+            );
+            if !deleted {
+                return Ok(purged);
+            }
+            let scope = project_id.to_string();
+            let mut secrets = Vec::new();
+            for table in [
+                Tbl::ProjectMembers,
+                Tbl::AlertRules,
+                Tbl::Channels,
+                Tbl::SavedQueries,
+                Tbl::SqlRuns,
+                Tbl::Jobs,
+                Tbl::ApiKeys,
+                Tbl::Floors,
+                Tbl::ProjectSalts,
+            ] {
+                for (key, row) in cx.scan(table) {
+                    let count = match &row {
+                        Row::ProjectMember(m) if m.project_id == project_id => {
+                            &mut purged.memberships
+                        }
+                        // Its state and events cascade, as `alert_state_rule_id_fkey` and
+                        // `alert_events_rule_id_fkey` do.
+                        Row::AlertRule(r) if r.project_id == project_id => &mut purged.alert_rules,
+                        Row::Channel(c) if c.project_id == project_id => {
+                            secrets.extend(c.secret_id);
+                            &mut purged.channels
+                        }
+                        Row::SavedQuery(q) if q.project_id == project_id => {
+                            &mut purged.saved_queries
+                        }
+                        Row::SqlRun(r) if r.project_id == project_id => &mut purged.sql_runs,
+                        Row::Job(job)
+                            if job
+                                .export
+                                .as_ref()
+                                .is_some_and(|export| export.new.project_id == project_id) =>
+                        {
+                            &mut purged.export_jobs
+                        }
+                        Row::ApiKey(k) if k.project_id == project_id => &mut purged.api_keys,
+                        Row::Floor((id, _)) if *id == project_id => &mut purged.retention_floors,
+                        Row::ProjectSalt(s) if s.project_id == project_id => &mut purged.salts,
+                        _ => continue,
+                    };
+                    *count += 1;
+                    cx.put(table, key, None)?;
+                }
+            }
+            for (key, row) in cx.scan(Tbl::Secrets) {
+                if let Row::Secret(secret) = &row
+                    && (secrets.contains(&secret.id)
+                        || (secret.kind == "channel" && secret.scope == scope))
+                {
+                    purged.secrets += 1;
+                    cx.put(Tbl::Secrets, key, None)?;
+                }
+            }
+            Ok(purged)
         })
         .await
     }
@@ -143,6 +213,16 @@ impl LifecycleRepo for Runner {
         .await
     }
 
+    async fn project_requests(&self) -> Result<Vec<DeletionRequest>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            let mut requests = all!(cx, Tbl::DeletionRequests, Row::DeletionRequest);
+            requests.retain(|request| request.selector == DeletionSelector::Project);
+            requests.sort_by_key(|request| request.deletion_seq);
+            Ok(requests)
+        })
+        .await
+    }
+
     async fn requests_after(
         &self,
         requested_after: Timestamp,
@@ -177,6 +257,24 @@ impl LifecycleRepo for Runner {
             };
             cx.put(Tbl::DeletionRequests, key, Some(Row::DeletionRequest(next)))?;
             Ok(true)
+        })
+        .await
+    }
+
+    async fn deleted_without_request(&self) -> Result<Vec<ProjectId>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            let requested: Vec<ProjectId> = all!(cx, Tbl::DeletionRequests, Row::DeletionRequest)
+                .into_iter()
+                .filter(|request| request.selector == DeletionSelector::Project)
+                .map(|request| request.project_id)
+                .collect();
+            let mut deleted: Vec<ProjectId> = all!(cx, Tbl::Projects, Row::Project)
+                .into_iter()
+                .filter(|project| project.deleted_at.is_some() && !requested.contains(&project.id))
+                .map(|project| project.id)
+                .collect();
+            deleted.sort_unstable();
+            Ok(deleted)
         })
         .await
     }
@@ -292,6 +390,7 @@ impl LifecycleRepo for Runner {
                 return Ok(false);
             };
             let next = LifecycleAction {
+                kind: action.kind,
                 state: action.state,
                 fencing_token: action.fencing_token,
                 mutation: action.mutation.clone(),

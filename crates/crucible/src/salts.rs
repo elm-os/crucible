@@ -436,7 +436,11 @@ mod tests {
             model.set_faults(PgFaults::default());
 
             // Project deletion: the project is deleted, then its salt.
-            maker.delete_project(first.id, first.version).await.unwrap();
+            let by = crucible_records::UserId::from_bytes([1; 16]);
+            maker
+                .delete_project(first.id, first.version, by)
+                .await
+                .unwrap();
             assert!(model.project_salts().delete(first.id).await.unwrap());
             env.clock.sleep(RELOAD_EVERY).await;
             assert_eq!(hook.salt(first.id).await.unwrap(), None);

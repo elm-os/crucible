@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo,
-    Node, NodeAck, RetentionFloor, TxError, duration_micros,
+    Node, NodeAck, PurgedRows, RetentionFloor, TxError, duration_micros,
 };
 use crucible_records::{
     DeletionKind, DeletionRequestId, DeletionState, Lsn, PartitionId, ProjectId, TableId,
@@ -16,7 +16,7 @@ use crucible_records::{
 use crate::sql::{Cols, P, int};
 use crate::store::{Handle, every, first};
 
-const NODE: &str = "wal_epoch, heartbeat_at, version, checkpoint_lsn, address";
+const NODE: &str = "wal_epoch, heartbeat_at, version, checkpoint_lsn, address, node_clock";
 
 fn node(c: &mut Cols<'_>) -> Result<Node, TxError> {
     Ok(Node {
@@ -25,6 +25,7 @@ fn node(c: &mut Cols<'_>) -> Result<Node, TxError> {
         version: c.text()?,
         checkpoint_lsn: Lsn::new(c.u64()?),
         address: c.text()?,
+        node_clock: c.opt_ts()?,
     })
 }
 
@@ -94,16 +95,17 @@ fn action(c: &mut Cols<'_>) -> Result<LifecycleAction, TxError> {
 impl LifecycleRepo for Handle {
     async fn heartbeat(&self, node: &Node) -> Result<(), TxError> {
         self.write(
-            "INSERT INTO nodes (wal_epoch, heartbeat_at, version, checkpoint_lsn, address) \
-             VALUES ($1, clock_timestamp(), $2, $3, $4) \
+            "INSERT INTO nodes (wal_epoch, heartbeat_at, version, checkpoint_lsn, address, node_clock) \
+             VALUES ($1, clock_timestamp(), $2, $3, $4, $5) \
              ON CONFLICT (wal_epoch) DO UPDATE SET heartbeat_at = clock_timestamp(), \
              version = EXCLUDED.version, checkpoint_lsn = EXCLUDED.checkpoint_lsn, \
-             address = EXCLUDED.address RETURNING 1",
+             address = EXCLUDED.address, node_clock = EXCLUDED.node_clock RETURNING 1",
             &[
                 P::Uuid(node.wal_epoch.uuid()),
                 P::Text(&node.version),
                 int(node.checkpoint_lsn.get())?,
                 P::Text(&node.address),
+                P::OptTs(node.node_clock),
             ],
         )
         .await?;
@@ -214,6 +216,13 @@ impl LifecycleRepo for Handle {
         every(&self.read(&sql, &[]).await?, request)
     }
 
+    async fn project_requests(&self) -> Result<Vec<DeletionRequest>, TxError> {
+        let sql = format!(
+            "SELECT {REQUEST} FROM deletion_requests WHERE kind = 'project' ORDER BY deletion_seq"
+        );
+        every(&self.read(&sql, &[]).await?, request)
+    }
+
     async fn requests_after(
         &self,
         requested_after: Timestamp,
@@ -253,6 +262,63 @@ impl LifecycleRepo for Handle {
             )
             .await?;
         Ok(changed == 1)
+    }
+
+    async fn deleted_without_request(&self) -> Result<Vec<ProjectId>, TxError> {
+        let rows = self
+            .read(
+                "SELECT p.id FROM projects p WHERE p.deleted_at IS NOT NULL AND NOT EXISTS \
+                 (SELECT 1 FROM deletion_requests d WHERE d.project_id = p.id AND d.kind = 'project') \
+                 ORDER BY p.id",
+                &[],
+            )
+            .await?;
+        every(&rows, |c| Ok(ProjectId::from_uuid(c.uuid()?)))
+    }
+
+    async fn purge_project(&self, project_id: ProjectId) -> Result<PurgedRows, TxError> {
+        // One statement, so the rows go together or not at all. Every delete names only the rows of a project
+        // whose row is marked deleted. A rule's state and events cascade from it.
+        let rows = self
+            .query_main(
+                true,
+                "WITH gone AS (SELECT id FROM projects WHERE id = $1 AND deleted_at IS NOT NULL), \
+                 m AS (DELETE FROM project_memberships WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 r AS (DELETE FROM alert_rules WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 c AS (DELETE FROM channels WHERE project_id IN (SELECT id FROM gone) RETURNING secret_id), \
+                 s AS (DELETE FROM secrets WHERE EXISTS (SELECT 1 FROM gone) \
+                       AND (id IN (SELECT secret_id FROM c) OR (kind = 'channel' AND scope = $2)) RETURNING 1), \
+                 q AS (DELETE FROM saved_queries WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 u AS (DELETE FROM sql_runs WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 e AS (DELETE FROM export_jobs WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 k AS (DELETE FROM api_keys WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 f AS (DELETE FROM retention_floors WHERE project_id IN (SELECT id FROM gone) RETURNING 1), \
+                 t AS (DELETE FROM project_salts WHERE project_id IN (SELECT id FROM gone) RETURNING 1) \
+                 SELECT (SELECT count(*) FROM m), (SELECT count(*) FROM r), (SELECT count(*) FROM c), \
+                 (SELECT count(*) FROM s), (SELECT count(*) FROM q), (SELECT count(*) FROM u), \
+                 (SELECT count(*) FROM e), (SELECT count(*) FROM k), (SELECT count(*) FROM f), \
+                 (SELECT count(*) FROM t)",
+                &[
+                    P::Uuid(project_id.uuid()),
+                    P::Text(&project_id.to_string()),
+                ],
+            )
+            .await?;
+        first(&rows, |c| {
+            Ok(PurgedRows {
+                memberships: c.u64()?,
+                alert_rules: c.u64()?,
+                channels: c.u64()?,
+                secrets: c.u64()?,
+                saved_queries: c.u64()?,
+                sql_runs: c.u64()?,
+                export_jobs: c.u64()?,
+                api_keys: c.u64()?,
+                retention_floors: c.u64()?,
+                salts: c.u64()?,
+            })
+        })?
+        .ok_or_else(|| TxError::Invalid("the purge returned no counts".into()))
     }
 
     async fn record_ack(&self, ack: &NodeAck) -> Result<bool, TxError> {
@@ -358,7 +424,7 @@ impl LifecycleRepo for Handle {
         let changed = self
             .write(
                 "UPDATE lifecycle_actions SET state = $2, fencing_token = $3, mutation = $4, \
-                 attempts = $5, updated_at = $6 WHERE id = $1 RETURNING 1",
+                 attempts = $5, updated_at = $6, kind = $7 WHERE id = $1 RETURNING 1",
                 &[
                     P::Uuid(action.id),
                     P::Text(action.state.as_str()),
@@ -366,6 +432,7 @@ impl LifecycleRepo for Handle {
                     P::OptText(action.mutation.as_deref()),
                     P::Int4(action.attempts),
                     P::Ts(action.updated_at),
+                    P::Text(action.kind.as_str()),
                 ],
             )
             .await?;

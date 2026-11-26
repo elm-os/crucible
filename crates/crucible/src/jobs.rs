@@ -169,7 +169,13 @@ mod tests {
                 sim.rng("pg").as_ref(),
                 crucible_sim::pg_model::PgFaults::default(),
             ));
-            let lifecycle = Lifecycle::new(&host.env, control, wal, None);
+            let lifecycle = Lifecycle::new(
+                &host.env,
+                control,
+                wal,
+                None,
+                crucible_ingest::DEFAULT_MAX_EVENT_AGE,
+            );
             assert_eq!(
                 registry(None, Vec::new(), Some(&lifecycle), None).names(),
                 [
@@ -177,7 +183,8 @@ mod tests {
                     "lifecycle-node",
                     "lifecycle-retention",
                     "lifecycle-mask",
-                    "lifecycle-deletion"
+                    "lifecycle-deletion",
+                    "lifecycle-sweep"
                 ]
             );
         });

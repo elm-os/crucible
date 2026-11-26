@@ -1239,6 +1239,27 @@ impl TelemetryStore for ChModel {
             .await
     }
 
+    async fn partitions(&self, table: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        self.maintain(|state, _| Ok(state.read.partitions(table)))
+            .await
+    }
+
+    async fn holds_project(
+        &self,
+        table_id: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> Result<bool, StoreError> {
+        if !table(table_id).is_scoped() {
+            return Err(StoreError::Internal(format!(
+                "{} has no project column",
+                table_id.name()
+            )));
+        }
+        self.maintain(|state, _| Ok(state.read.holds_project(table_id, partition, project)))
+            .await
+    }
+
     async fn apply_migration(&self, _step: &MigrationStep) -> Result<(), StoreError> {
         // The tables are the production `TableDef`s from the start: a schema or access step changes nothing.
         self.maintain(|_, _| Ok(())).await

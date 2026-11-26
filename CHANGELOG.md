@@ -4,6 +4,47 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- Deleting a project removes all of its data in the background, through a deletion request of kind `project` made
+  with the deletion: its telemetry in every table, the minute rollups, the hourly rollup, the MCP deploys and the
+  tool inventory included, then its remaining objects and its rows in Postgres (members, alert rules with their
+  history, channels with their secrets, saved queries, SQL runs, exports, API keys, retention floor and salt).
+  `DELETE projects/{project_id}` answers as before, and org owners and admins follow the purge with
+  `GET projects/{project_id}/deletion-requests` under the deleted project's id. A partition is dropped whole only
+  when no project, live or made later, can write there any more (it ends more than `ingest.max_event_age` before
+  the oldest live project was made, and before now) and every project with rows in it is deleted; elsewhere the
+  project's rows are deleted, so the rows of every other project stay.
+- Rows of a deleted project that reach ClickHouse after its purge, from a server that was behind, cut off from
+  Postgres or down, are deleted by the purge sweep within about an hour of landing for 30 days after the deletion,
+  and within a day after that. The request stays completed and reports `late_purges` and `late_purged_at`, which
+  the Settings list shows as late rows removed. One hourly pass covers about 7,000 projects deleted in the last 30
+  days, a pass that runs past its hour does not delay the next, and while a deletion still finds the project's rows
+  the sweep checks the tables it has finished.
+- A deleted project that the purge sweep cannot check holds back no other: its request shows the error and the
+  failed attempts, after the reason a failed request already gives, the pass goes on, and the next pass checks it
+  again.
+- Rows of a deleted project that keep landing never fail its deletion: a purge that finds rows of the project that
+  landed after its delete runs again without counting a failed attempt. A project deletion that failed for good is
+  finished by the purge sweep once no table holds a row of the project and the rows its deletes hid are removed from
+  storage: its objects and its rows in Postgres go, and the request completes.
+- While the object store refuses, a project deletion whose telemetry is removed stays `verified`, shows the error and
+  the failed attempts, and the server tries again every 30 seconds.
+- During a rolling upgrade from 0.1.3 or earlier, which cannot read a project deletion request, no such request is
+  made while a server of those versions runs: the deleted project's list of deletion requests shows it as pending and
+  names the servers it waits for, and the server that holds the `lifecycle` lease makes it within about 90 seconds of
+  the last one stopping. Servers register their version as the release number followed by `+project-deletions`, and
+  a server that registers a bare release number counts as one that cannot read the request.
+- Each server reports its clock with its heartbeat (Postgres migration `V12__node_clock` adds the column). While a
+  running server's clock is more than 30 minutes from the Postgres server's clock, or a running server reports none,
+  a project deletion deletes the project's rows instead of dropping partitions, and while it runs the log names the
+  server and how far its clock is off. Keep server clocks within an hour of the Postgres server's clock.
+- A project deletion finds the partitions that hold the project's rows from ClickHouse's list of partitions and a
+  check that stops at the first row of the project in each, so a project of any size is found. A read that keeps
+  failing shows on the request as `error` with `attempts`, and the Settings list says that the server keeps trying.
+- A project deleted on an earlier version gets the same purge after the upgrade: the server that holds the
+  `lifecycle` lease makes its deletion request of kind `project`, with `requested_by` set to `system:upgrade`.
+- From the moment a project is deleted, the notification outbox sends nothing to its channels.
+- `POST deletion-requests` refuses the kind `project` with 422 and says to delete the project instead.
+
 ## [0.1.3] - 2026-11-26
 
 Crucible stores telemetry on a self-hosted replicated ClickHouse cluster as well as on a single server, and the SDKs

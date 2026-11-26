@@ -11,8 +11,9 @@
 //! does. Those deletes go to the partitions in which the MCP rows themselves were found.
 //!
 //! The rollups without a user dimension (`span_metrics`, `mcp_tool_rollup` and its hourly tier
-//! `mcp_tool_rollup_hourly`, `mcp_deploys`, `mcp_tool_inventory`) keep their counts under a deletion (contract
-//! 13.4); retention reaches every partitioned one ([`retention_tables`]).
+//! `mcp_tool_rollup_hourly`, `mcp_deploys`, `mcp_tool_inventory`) keep their counts under a deletion of traces,
+//! a user or a session (contract 13.4); retention reaches every partitioned one ([`retention_tables`]). A project
+//! deletion reaches every table of the project, those included ([`project_reach`]), by the project alone.
 
 use crucible_control::DeletionSelector;
 use crucible_plan::lifecycle_time_column;
@@ -38,6 +39,10 @@ pub const EXPORT_FILES: &str = "export_files";
 /// The place of the media uses and objects: the uses of the request's traces are deleted with each page of
 /// them, and an object whose last use is gone is deleted by the media collector.
 pub const MEDIA: &str = "media";
+/// The place of a project deletion's control-plane rows, which go once its telemetry is verified gone:
+/// memberships, alert rules with their state and history, channels with their sealed secrets, saved queries,
+/// SQL runs, export jobs, the revoked keys, the retention floors and the salt.
+pub const CONTROL_PLANE: &str = "control_plane";
 
 /// The partitioned tables with a retention setting whose time column a predicate can name: every table of
 /// contract 6.3 except the two unpartitioned ones (their weekly purge by `last_seen` is contract 13.2 step 4)
@@ -47,6 +52,22 @@ pub fn retention_tables() -> impl Iterator<Item = TableId> {
         let def = table(*id);
         def.is_scoped()
             && lifecycle_time_column(*id).is_some()
+            && matches!(
+                def.retention.binding,
+                RetentionBinding::RetentionDays
+                    | RetentionBinding::PayloadRetentionDays
+                    | RetentionBinding::McpContentRetentionDays
+            )
+    })
+}
+
+/// The tables a project deletion reaches (contract 13.4): every table of contract 6.3 that holds project rows
+/// under a retention setting, which leaves out the two service tables. The two unpartitioned ones,
+/// `mcp_tool_inventory` and `mcp_deploys`, are among them.
+pub fn project_reach() -> impl Iterator<Item = TableId> {
+    TableId::ALL.into_iter().filter(|id| {
+        let def = table(*id);
+        def.is_scoped()
             && matches!(
                 def.retention.binding,
                 RetentionBinding::RetentionDays
@@ -115,7 +136,8 @@ pub fn final_reach(selector: &DeletionSelector) -> Vec<Reach> {
         session,
     };
     match selector {
-        DeletionSelector::Traces(_) => Vec::new(),
+        // A project deletion is planned by table ([`project_reach`]), not by columns.
+        DeletionSelector::Traces(_) | DeletionSelector::Project => Vec::new(),
         DeletionSelector::User { .. } => SPAN_TABLES
             .into_iter()
             .chain([TableId::UserRollup])
@@ -148,6 +170,43 @@ mod tests {
             },
             DeletionSelector::Session("s-1".to_owned()),
         ]
+    }
+
+    /// Contract 13.4: a project deletion reaches every table that holds the project's rows, the minute rollups,
+    /// the hourly tier, the deploys and the inventory included, and neither service table.
+    #[test]
+    fn a_project_deletion_reaches_every_table_of_the_project() {
+        let tables: Vec<&str> = project_reach().map(|id| id.name()).collect();
+        assert_eq!(
+            tables,
+            [
+                "span_core",
+                "span_payload",
+                "mcp_ops",
+                "mcp_content",
+                "mcp_tool_inventory",
+                "fact_scores",
+                "fact_tags",
+                "fact_flags",
+                "fact_corrections",
+                "trace_heads",
+                "trace_stats",
+                "session_rollup",
+                "user_rollup",
+                "span_metrics",
+                "mcp_tool_rollup",
+                "mcp_deploys",
+                "mcp_tool_rollup_hourly",
+            ]
+        );
+        // The unpartitioned two are the only ones whose time column no predicate can name.
+        let untimed: Vec<&str> = project_reach()
+            .filter(|id| lifecycle_time_column(*id).is_none())
+            .map(|id| id.name())
+            .collect();
+        assert_eq!(untimed, ["mcp_tool_inventory", "mcp_deploys"]);
+        assert!(final_reach(&DeletionSelector::Project).is_empty());
+        assert!(identity_reach(&DeletionSelector::Project).is_empty());
     }
 
     #[test]
@@ -204,7 +263,7 @@ mod tests {
             let mut reached: BTreeSet<TableId> =
                 page.iter().chain(&last).map(|r| r.table).collect();
             match selector {
-                DeletionSelector::Traces(_) => {}
+                DeletionSelector::Traces(_) | DeletionSelector::Project => {}
                 DeletionSelector::User { .. } => assert!(reached.remove(&TableId::UserRollup)),
                 DeletionSelector::Session(_) => assert!(reached.remove(&TableId::SessionRollup)),
             }

@@ -41,6 +41,7 @@ impl PendingDeletion {
                 DeletionSelector::Traces(ids) => ids.contains(&trace_id),
                 DeletionSelector::User { user_id: user, .. } => !user.is_empty() && user == user_id,
                 DeletionSelector::Session(session) => !session.is_empty() && session == session_id,
+                DeletionSelector::Project => true,
             }
     }
 }
@@ -116,20 +117,25 @@ impl PendingDeletions {
             .collect()
     }
 
-    /// The pending deletions of a project as the plans of its reads carry them (contract 13.4).
+    /// The pending deletions of a project as the plans of its reads carry them (contract 13.4). A project
+    /// deletion carries nothing: a deleted project's reads are refused before a plan is built.
     pub fn hidden(&self, project_id: ProjectId) -> Vec<Hidden> {
         self.snapshot()
             .values()
             .filter(|pending| pending.project_id == project_id)
-            .map(|pending| Hidden {
-                selector: match &pending.selector {
+            .filter_map(|pending| {
+                let selector = match &pending.selector {
                     DeletionSelector::Traces(ids) => HiddenSelector::Traces(ids.clone()),
                     DeletionSelector::User { user_id, .. } => HiddenSelector::User(user_id.clone()),
                     DeletionSelector::Session(session_id) => {
                         HiddenSelector::Session(session_id.clone())
                     }
-                },
-                requested_at: pending.requested_at,
+                    DeletionSelector::Project => return None,
+                };
+                Some(Hidden {
+                    selector,
+                    requested_at: pending.requested_at,
+                })
             })
             .collect()
     }
@@ -239,6 +245,35 @@ mod tests {
         ));
         assert!(session.hides(trace, "ada", "s", before));
         assert!(!session.hides(trace, "s", "", before));
+    }
+
+    /// A project deletion hides every row of the project received before it. Reads of a deleted project are
+    /// refused before any plan is built, so it adds nothing to a plan's hidden set.
+    #[test]
+    fn a_project_deletion_hides_the_whole_project_and_adds_nothing_to_plans() {
+        let project = pending(&request(
+            4,
+            DeletionSelector::Project,
+            DeletionState::Pending,
+        ));
+        let trace = TraceId::from_bytes([7; 16]);
+        assert!(project.hides(trace, "", "", Timestamp::from_micros(99)));
+        assert!(project.hides(trace, "ada", "s", Timestamp::from_micros(99)));
+        assert!(!project.hides(trace, "ada", "s", Timestamp::from_micros(100)));
+        let set = PendingDeletions::default();
+        set.add(&request(
+            4,
+            DeletionSelector::Project,
+            DeletionState::Pending,
+        ));
+        set.add(&request(
+            5,
+            DeletionSelector::Session("s".to_owned()),
+            DeletionState::Pending,
+        ));
+        let id = ProjectId::from_bytes([1; 16]);
+        assert_eq!(set.of(id).len(), 2);
+        assert_eq!(set.hidden(id).len(), 1);
     }
 
     #[test]

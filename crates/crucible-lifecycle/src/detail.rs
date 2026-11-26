@@ -50,6 +50,10 @@ pub(crate) enum Detail {
         /// The ids of those delete actions.
         covers: Vec<String>,
     },
+    /// Every row of a deleted project in one partition, whatever its arrival: the project takes no new data once
+    /// its keys are revoked (contract 13.4). Sent as a delete of those rows, or as the drop of the partition when
+    /// nothing else in it is kept or can still arrive; the action's kind records which.
+    Purge,
 }
 
 /// Why an action cannot be built from its row.
@@ -104,6 +108,12 @@ impl Detail {
 
     pub(crate) fn parse(text: &str) -> Result<Self, DetailError> {
         serde_json::from_str(text).map_err(|error| DetailError::Parse(error.to_string()))
+    }
+
+    /// Whether a delete with this document is verified by the project's presence in its partition rather than
+    /// by a read of its predicate: a purge, whose two unpartitioned tables have no time column a read can bound.
+    pub(crate) const fn by_presence(&self) -> bool {
+        matches!(self, Self::Purge)
     }
 
     /// The delete actions a mask covers.
@@ -172,6 +182,8 @@ impl Detail {
                     None => selected,
                 })
             }
+            // The project predicate that every delete carries is the whole selection.
+            Self::Purge => Ok(Pred::all()),
             Self::Drop | Self::Mask { .. } => Err(DetailError::Shape("not a delete")),
         }
     }
@@ -326,6 +338,35 @@ mod tests {
         );
     }
 
+    /// Contract 13.4: a project deletion deletes every row of the project in a partition, whatever its arrival
+    /// (the project takes no new data once deleted), on every table of the project, the two unpartitioned ones
+    /// in their one partition.
+    #[test]
+    fn a_purge_deletes_every_row_of_the_project_on_every_table() {
+        assert_eq!(Detail::Purge.to_text(), r#"{"what":"purge"}"#);
+        assert_eq!(Detail::parse(r#"{"what":"purge"}"#), Ok(Detail::Purge));
+        assert!(Detail::Purge.by_presence());
+        assert!(!request(&[1], None, None).by_presence());
+        let project = ProjectId::from_bytes([2; 16]);
+        let scope = scope(project).unwrap();
+        for table in crate::reach::project_reach() {
+            assert_eq!(Detail::Purge.pred(table), Ok(Pred::all()), "{table:?}");
+            let partition =
+                crucible_schema::route(table, Granularity::Day, Timestamp::EPOCH).unwrap();
+            let mut purge = action(ActionKind::Delete, table, &Detail::Purge);
+            purge.partition = partition;
+            let Ok(Call::Delete(plan)) = call(&purge, Some(scope)) else {
+                panic!("no delete for {table:?}");
+            };
+            assert_eq!(plan.target(), crucible_plan::DeleteTarget::Project(scope));
+            assert_eq!(plan.partition(), partition);
+            assert_eq!(plan.pred(), &Pred::all());
+            // A purge sent as a drop drops its partition.
+            purge.kind = ActionKind::Drop;
+            assert_eq!(call(&purge, Some(scope)), Ok(Call::Drop(table, partition)));
+        }
+    }
+
     /// Contract 13.3, step 7: on a cluster the verification of a delete must find no row on any replica, so its
     /// read goes to every replica.
     #[test]
@@ -347,6 +388,7 @@ mod tests {
                 cutoff: 86_400_000_000,
             },
             Detail::Drop,
+            Detail::Purge,
             request(&[1, 2], Some("ada"), None),
             request(&[], None, Some("s-1")),
             Detail::Mask {

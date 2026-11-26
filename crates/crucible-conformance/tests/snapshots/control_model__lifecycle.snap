@@ -3,9 +3,9 @@ source: crates/crucible-conformance/tests/control_model.rs
 expression: "transcript(\"lifecycle\")"
 ---
 no node yet: []
-two nodes, by epoch: [("0.0.1", 3), ("0.0.2", 7)]
-only the node that heartbeated within the window is live: [("0.0.1", 9)]
-both within a wide window: [("0.0.1", 9), ("0.0.2", 7)]
+two nodes, by epoch: [("0.0.1", 3, Some(Timestamp(2027-01-15T08:00:03.000000Z))), ("0.0.2", 7, Some(Timestamp(2027-01-15T08:00:07.000000Z)))]
+only the node that heartbeated within the window is live: [("0.0.1", 9, Some(Timestamp(2027-01-15T08:00:09.000000Z)))]
+both within a wide window: [("0.0.1", 9, Some(Timestamp(2027-01-15T08:00:09.000000Z))), ("0.0.2", 7, Some(Timestamp(2027-01-15T08:00:07.000000Z)))]
 sequence numbers rise by one: (1, 1)
 the same key again: error UniqueViolation("deletion_requests_idempotency_key")
 the same key of another requester: ()
@@ -47,6 +47,8 @@ plan the same key again: false
 open, by creation: [("deletion:2:page0:span_core", Planned, 0, None, 0), ("drop:span_core:1", Planned, 0, None, 0), ("mask:span_core:1", Planned, 0, None, 0)]
 of the request: [("deletion:2:page0:span_core", Planned, 0, None, 0)]
 update: true
+update the kind: true
+the kind is stored: [Drop]
 update an action that does not exist: false
 nothing is open: []
 prune: 1
@@ -62,3 +64,15 @@ raise higher: ()
 raise nothing: ()
 the floor keeps the later instant of each setting: [(ProjectId(01a3185c-501e-7000-8000-00000000001e), RetentionFloor { retention: Some(Timestamp(2027-01-15T08:03:20.000000Z)), payload: Some(Timestamp(2027-01-15T08:01:10.000000Z)), mcp_content: None })]
 a floor of a project that does not exist: error ForeignKeyViolation("retention_floors_project_id_fkey")
+a live project keeps everything: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
+the project is marked deleted: true
+a deleted project loses its rows: PurgedRows { memberships: 1, alert_rules: 1, channels: 1, secrets: 2, saved_queries: 1, sql_runs: 1, export_jobs: 1, api_keys: 1, retention_floors: 1, salts: 1 }
+again nothing is left: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
+what the deleted project holds: [("memberships", 0), ("api_keys", 0), ("channels", 0), ("secrets", 0), ("alert_rules", 0), ("alert_state", 0), ("saved_queries", 0), ("sql_runs", 0), ("export_jobs", 0), ("retention_floors", 0), ("project_salts", 0)]
+what the other project holds: [("memberships", 1), ("api_keys", 1), ("channels", 1), ("secrets", 2), ("alert_rules", 1), ("alert_state", 1), ("saved_queries", 1), ("sql_runs", 1), ("export_jobs", 1), ("retention_floors", 1), ("project_salts", 1)]
+the deleted project's row stays: Some(true)
+its deletion request stays: [("{}", Pending)]
+a project that does not exist: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
+deleted without a project deletion, by id: [ProjectId(01a3185c-5046-7000-8000-000000000046), ProjectId(01a3185c-5047-7000-8000-000000000047)]
+one of them gets its project deletion: [ProjectId(01a3185c-5046-7000-8000-000000000046)]
+the project deletions, by sequence: [(ProjectId(01a3185c-503c-7000-8000-00000000003c), Pending), (ProjectId(01a3185c-5047-7000-8000-000000000047), Pending)]

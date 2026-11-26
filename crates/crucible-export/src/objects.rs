@@ -75,10 +75,15 @@ impl ExportObjects {
         }
     }
 
+    /// Where every key of a project starts: its export files and its media.
+    pub fn project_root(&self, project_id: ProjectId) -> String {
+        let lead = if self.prefix.is_empty() { "" } else { "/" };
+        format!("{}{lead}{project_id}/", self.prefix)
+    }
+
     /// Where every export key of a project starts.
     fn project_dir(&self, project_id: ProjectId) -> String {
-        let lead = if self.prefix.is_empty() { "" } else { "/" };
-        format!("{}{lead}{project_id}/exports/", self.prefix)
+        format!("{}exports/", self.project_root(project_id))
     }
 
     /// The key of an attempt's file.
@@ -140,6 +145,27 @@ impl ExportObjects {
             self.store.delete_batch(batch).await?;
         }
         Ok(keys.len() as u64)
+    }
+
+    /// Removes every object under a deleted project's key prefix, page by page, and returns how many it removed:
+    /// its export files, which the sweep, listing live projects only, never reaches again, and any media its
+    /// deletion left behind (contract 13.4). Nothing under a deleted project's prefix is kept.
+    pub async fn remove_project(&self, project_id: ProjectId) -> Result<u64, ObjectError> {
+        let root = self.project_root(project_id);
+        let mut after: Option<String> = None;
+        let mut removed = 0;
+        loop {
+            let page = self.store.list(&root, after.as_deref()).await?;
+            let keys: Vec<String> = page.objects.into_iter().map(|o| o.key).collect();
+            for batch in keys.chunks(DELETE_BATCH) {
+                self.store.delete_batch(batch).await?;
+                removed += batch.len() as u64;
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(removed),
+            }
+        }
     }
 }
 
@@ -414,6 +440,35 @@ mod tests {
                 assert!(store.open_uploads().is_empty());
                 objects.delete(key).await.unwrap();
             }
+        });
+    }
+
+    /// A deleted project's objects go whole, export files and media alike, and no other project's do.
+    #[test]
+    fn removing_a_project_takes_every_object_under_its_prefix_and_nothing_else() {
+        with_store(|store, objects| async move {
+            let other = ProjectId::from_bytes([0x5b; 16]);
+            let mut mine = Vec::new();
+            for n in 0..(DELETE_BATCH + 7) {
+                mine.push(format!(
+                    "media/{PROJECT}/exports/{n}/1/crucible-export-{n}.jsonl"
+                ));
+            }
+            mine.push(format!(
+                "media/{PROJECT}/2026/11/0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+            ));
+            let theirs = format!("media/{other}/exports/x/1/crucible-export-x.jsonl");
+            for key in mine.iter().chain([&theirs]) {
+                store
+                    .put_small(key, "application/x-ndjson", Bytes::from_static(b"{}"))
+                    .await
+                    .unwrap();
+            }
+            let removed = objects.remove_project(PROJECT).await.unwrap();
+            assert_eq!(removed, mine.len() as u64);
+            let left: Vec<String> = store.objects().keys().cloned().collect();
+            assert_eq!(left, [theirs]);
+            assert_eq!(objects.remove_project(PROJECT).await.unwrap(), 0);
         });
     }
 

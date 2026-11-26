@@ -10,15 +10,17 @@
 
 use std::sync::Arc;
 
+use crucible_auth::stored_project_scope;
 use crucible_control::{
-    ControlStore, DeletionRequest, DeletionSelector, MAX_DELETION_TRACES, Project, RetentionFloor,
-    TxError, transaction,
+    ControlStore, DeletionRequest, DeletionSelector, LIVE_WITHIN, MAX_DELETION_TRACES, Project,
+    RetentionFloor, TxError, transaction,
 };
 use crucible_env::Env;
 use crucible_plan::RetentionFloors;
 use crucible_records::{DeletionRequestId, DeletionState, ProjectId, ProjectScope, Timestamp};
 use crucible_schema::{RetentionBinding, RetentionSettings, retention_cutoff};
 
+use crate::deletion::{EARLIER_DELETION_BY, earlier_deletion_id, held};
 use crate::node::{AckError, LogError, NodeState};
 use crate::retention::{floors, settings};
 
@@ -181,6 +183,11 @@ pub fn check_selector(selector: DeletionSelector) -> Result<DeletionSelector, Se
             text("session_id", &session_id)?;
             Ok(DeletionSelector::Session(session_id))
         }
+        DeletionSelector::Project => Err(invalid(
+            "kind",
+            "a whole project is deleted with the project: an org owner or admin sends DELETE \
+             /api/v1/projects/{project_id}, which also removes its data",
+        )),
     }
 }
 
@@ -418,35 +425,99 @@ impl Service {
         })
     }
 
-    /// One deletion request of a project.
+    /// The scope of a deleted project, under which its deletion requests stay readable: among them the purge
+    /// that deleting the project started (contract 13.4). `None` for a project that exists and is not deleted,
+    /// or that does not exist.
+    pub async fn deleted_scope(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Option<ProjectScope>, ServiceError> {
+        Ok(self
+            .control
+            .projects()
+            .get(project_id)
+            .await?
+            .filter(|project| project.deleted_at.is_some())
+            .and_then(|project| stored_project_scope(&project).ok()))
+    }
+
+    /// One deletion request of a project, the held project deletion request of a deleted project among them
+    /// ([`Service::deletions`]).
     pub async fn deletion(
         &self,
         scope: ProjectScope,
         id: DeletionRequestId,
     ) -> Result<Option<DeletionRequest>, ServiceError> {
-        Ok(self
-            .control
-            .lifecycle()
-            .request(scope.project_id(), id)
-            .await?)
+        let project_id = scope.project_id();
+        let repo = self.control.lifecycle();
+        if let Some(found) = repo.request(project_id, id).await? {
+            return Ok(Some(found));
+        }
+        if id != earlier_deletion_id(project_id) {
+            return Ok(None);
+        }
+        let newest = repo.list_requests(project_id, None, 1).await?;
+        self.held_purge(project_id, &newest).await
     }
 
-    /// The deletion requests of a project with a sequence number below `before`, newest first.
+    /// The deletion requests of a project with a sequence number below `before`, newest first. While a live node runs
+    /// a version that cannot read a project deletion request, a deleted project has none (contract 13.4); its first
+    /// page then starts with that request in the form the leader makes it later, pending, with what it waits for as
+    /// its error.
     pub async fn deletions(
         &self,
         scope: ProjectScope,
         before: Option<u64>,
         limit: u32,
     ) -> Result<Vec<DeletionRequest>, ServiceError> {
-        Ok(self
+        let project_id = scope.project_id();
+        let mut listed = self
             .control
             .lifecycle()
-            .list_requests(
-                scope.project_id(),
-                before,
-                limit.clamp(1, MAX_DELETION_PAGE),
+            .list_requests(project_id, before, limit.clamp(1, MAX_DELETION_PAGE))
+            .await?;
+        if before.is_none()
+            && let Some(held) = self.held_purge(project_id, &listed).await?
+        {
+            listed.insert(0, held);
+        }
+        Ok(listed)
+    }
+
+    /// The project deletion request of a deleted project that has none because a live node cannot read one ([`held`]),
+    /// in the form the server that holds the `lifecycle` lease makes it once none is live, with why it waits as its
+    /// error. `newest` is the project's newest requests: a project deletion request, once made, is the newest, since a
+    /// deleted project takes no other request.
+    async fn held_purge(
+        &self,
+        project_id: ProjectId,
+        newest: &[DeletionRequest],
+    ) -> Result<Option<DeletionRequest>, ServiceError> {
+        if newest
+            .iter()
+            .any(|request| request.selector == DeletionSelector::Project)
+        {
+            return Ok(None);
+        }
+        let Some(deleted_at) = self
+            .control
+            .projects()
+            .get(project_id)
+            .await?
+            .and_then(|project| project.deleted_at)
+        else {
+            return Ok(None);
+        };
+        let live = self.control.lifecycle().live_nodes(LIVE_WITHIN).await?;
+        Ok(held(&live).map(|why| DeletionRequest {
+            error: Some(why),
+            ..DeletionRequest::project(
+                earlier_deletion_id(project_id),
+                project_id,
+                deleted_at,
+                EARLIER_DELETION_BY.to_owned(),
             )
-            .await?)
+        }))
     }
 }
 
@@ -529,6 +600,17 @@ mod tests {
         assert!(check_selector(user("ada", Some(""))).is_err());
         assert!(check_selector(DeletionSelector::Session("x".repeat(513))).is_err());
         assert!(check_selector(DeletionSelector::Session("s-1".to_owned())).is_ok());
+        // A whole project is deleted with the project, and the refusal says so.
+        let Err(ServiceError::Invalid { field, reason }) =
+            check_selector(DeletionSelector::Project)
+        else {
+            panic!("a project deletion request was accepted");
+        };
+        assert_eq!(field, "kind");
+        assert!(
+            reason.contains("DELETE /api/v1/projects/{project_id}"),
+            "{reason}"
+        );
     }
 
     #[test]

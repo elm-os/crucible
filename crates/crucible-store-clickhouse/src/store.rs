@@ -903,6 +903,39 @@ impl ClickHouseStore {
         self.lookup(identity, &statement).await
     }
 
+    /// Whether each of the replicas in `cluster` answers with `table`: a read of their system tables lists nothing
+    /// for a replica that is down or lacks the table, though it may hold parts that no other replica holds.
+    async fn on_every_replica_with(
+        &self,
+        cluster: &Ident,
+        table: TableId,
+    ) -> Result<(), StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(table.name());
+        let cluster_name = b.string(cluster.as_str());
+        let present = table_present(&database, &name);
+        let replicas = on_every_replica(cluster, &format!("SELECT {present} AS present"));
+        let answer = self
+            .every_replica_lookup(
+                ServiceIdentity::Maint,
+                b.finish(format!(
+                    "SELECT countIf(present > 0), (SELECT count() FROM system.clusters WHERE cluster = \
+                     {cluster_name}) FROM {replicas}"
+                )),
+            )
+            .await?;
+        let [answered, replicas] = numbers("the replicas that hold the table", &answer)?;
+        if answered < replicas {
+            return Err(StoreError::Unavailable(format!(
+                "{answered} of the cluster's {replicas} replicas answered with {}, and one that did not may hold \
+                 parts that no other holds",
+                table.name()
+            )));
+        }
+        Ok(())
+    }
+
     /// The replicas of `cluster` as `host:port`, in the order of `remote_servers`, with their shard numbers.
     async fn cluster_replicas(&self, cluster: &Ident) -> Result<Vec<(u64, String)>, StoreError> {
         let mut b = Binder::default();
@@ -1729,6 +1762,79 @@ impl TelemetryStore for ClickHouseStore {
             )
             .await?;
         count("the masked part count", &answer)
+    }
+
+    async fn partitions(&self, table: TableId) -> Result<Vec<PartitionId>, StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(table.name());
+        let select = format!(
+            "SELECT partition_id FROM system.parts WHERE database = {database} AND table = {name} AND active"
+        );
+        let statement = match self.replicated().await? {
+            // A replica that lags can lack a part that another holds: the partitions of every replica together,
+            // and every replica answers with the table, or the read fails.
+            Some(cluster) => {
+                self.on_every_replica_with(cluster, table).await?;
+                let mut statement = b.finish(format!(
+                    "SELECT DISTINCT partition_id FROM {} ORDER BY partition_id",
+                    on_every_replica(cluster, &select)
+                ));
+                statement
+                    .settings
+                    .push(("skip_unavailable_shards", "0".to_owned()));
+                statement
+            }
+            None => b.finish(format!(
+                "SELECT DISTINCT partition_id FROM ({select}) ORDER BY partition_id"
+            )),
+        };
+        let answer = self.lookup(ServiceIdentity::Maint, &statement).await?;
+        answer
+            .lines()
+            .map(|line| PartitionId::parse(line).map_err(|_| unexpected("partition ids", &answer)))
+            .collect()
+    }
+
+    async fn holds_project(
+        &self,
+        table: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> Result<bool, StoreError> {
+        if !crucible_schema::table(table).is_scoped() {
+            return Err(StoreError::Internal(format!(
+                "{} has no project column",
+                table.name()
+            )));
+        }
+        let mut b = Binder::default();
+        let project = b.uuid(project.uuid());
+        let within = match partition {
+            Some(partition) => format!(" AND _partition_id = {}", b.string(&partition.to_string())),
+            None => String::new(),
+        };
+        let select = format!(
+            "SELECT 1 FROM {DATABASE}.{} WHERE project_id = {project}{within} LIMIT 1",
+            table.name()
+        );
+        let statement = match self.replicated().await? {
+            // A replica that lags can lack a part that another holds: a row on any replica counts, and every
+            // replica answers, or the probe fails.
+            Some(cluster) => {
+                let mut statement = b.finish(format!(
+                    "SELECT 1 FROM {} LIMIT 1",
+                    on_every_replica(cluster, &select)
+                ));
+                statement
+                    .settings
+                    .push(("skip_unavailable_shards", "0".to_owned()));
+                statement
+            }
+            None => b.finish(select),
+        };
+        let answer = self.lookup(ServiceIdentity::Maint, &statement).await?;
+        Ok(!answer.trim().is_empty())
     }
 
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {

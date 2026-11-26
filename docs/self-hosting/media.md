@@ -101,8 +101,9 @@ configured stay on the disk of the server that wrote them until they expire.
   names, which a server stopped between deleting a record and its object can leave behind.
 - Deleting a project deletes its media records at once and then every object under `<prefix>/<project_id>/`, its
   export files included. A media object the storage did not let it delete, or an upload that lands after the
-  deletion through a link handed out before it, has no record left, so the weekly scan deletes it. An export file
-  it could not delete stays until the lifecycle rule below removes it.
+  deletion through a link handed out before it, has no record left, so the weekly scan deletes it. The purge of the
+  project removes every object still under its prefix once its telemetry is gone, export files included
+  ([deleting a project](retention-and-deletion.md#deleting-a-project)).
 - As a backstop, give the bucket a lifecycle rule that expires incomplete multipart uploads, and objects under the
   prefix that are older than your longest retention.
 

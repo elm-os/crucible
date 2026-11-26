@@ -48,6 +48,9 @@ text_enum! {
     }
 }
 
+/// A node is live while its latest heartbeat is at most this old on the database clock (contract 13.3).
+pub const LIVE_WITHIN: Duration = Duration::from_secs(60);
+
 /// A node of the deployment (contract 11.1): one WAL directory.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Node {
@@ -55,12 +58,43 @@ pub struct Node {
     pub wal_epoch: WalEpoch,
     /// The database clock at its latest heartbeat. Written by the store, not by the node.
     pub heartbeat_at: Timestamp,
-    /// The build version.
+    /// The build version. A server that cannot read a deletion request of kind `project` (0.1.3 and earlier)
+    /// registers its bare release number, `0.1.3`; a server that reads them registers its release number followed
+    /// by `+project-deletions`.
     pub version: String,
     /// The node's checkpoint watermark at the heartbeat.
     pub checkpoint_lsn: Lsn,
     /// Where peers reach the node; empty when it has no peer address.
     pub address: String,
+    /// The node's own clock when it sent its latest heartbeat, kept beside `heartbeat_at` so that the leader sees
+    /// how far it is from the database clock; `None` in a row that a version before this field wrote.
+    pub node_clock: Option<Timestamp>,
+}
+
+impl Node {
+    /// Whether the node's server reads deletion requests of kind `project`. A server that cannot refuses the
+    /// request's selector, and one such row fails its every read of deletion requests (contract 13.4). Those servers
+    /// register a bare release number, and every server that reads them registers more than that, so a bare release
+    /// number is a server that cannot, whichever release first carries project deletion requests.
+    pub fn reads_project_requests(&self) -> bool {
+        !bare_release(&self.version)
+    }
+
+    /// How far the node's clock was ahead of the database clock at its latest heartbeat, in microseconds (behind
+    /// when negative); `None` when the row holds no clock of the node.
+    pub fn clock_skew(&self) -> Option<i64> {
+        self.node_clock
+            .map(|clock| clock.micros().saturating_sub(self.heartbeat_at.micros()))
+    }
+}
+
+/// Whether `version` is a bare release number, three numbers such as `0.1.3` and nothing more.
+fn bare_release(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// What a deletion request removes inside its project (contract 13.3).
@@ -77,6 +111,8 @@ pub enum DeletionSelector {
     },
     /// Everything of one session.
     Session(String),
+    /// Everything of the project: the purge that deleting the project starts (contract 13.4).
+    Project,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,12 +135,19 @@ impl DeletionSelector {
             Self::Traces(_) => DeletionKind::Trace,
             Self::User { .. } => DeletionKind::User,
             Self::Session(_) => DeletionKind::Session,
+            Self::Project => DeletionKind::Project,
         }
     }
 
     /// The stored JSON document.
     pub fn to_text(&self) -> String {
         let doc = match self {
+            Self::Project => SelectorDoc {
+                trace_ids: Vec::new(),
+                user_id: None,
+                issuer: None,
+                session_id: None,
+            },
             Self::Traces(ids) => SelectorDoc {
                 trace_ids: ids.iter().map(ToString::to_string).collect(),
                 user_id: None,
@@ -152,7 +195,18 @@ impl DeletionSelector {
             DeletionKind::Session => Ok(Self::Session(
                 doc.session_id.ok_or_else(|| invalid("no session_id"))?,
             )),
-            DeletionKind::Project => Err(invalid("project deletion has no selector")),
+            DeletionKind::Project => {
+                let names = !doc.trace_ids.is_empty()
+                    || doc.user_id.is_some()
+                    || doc.issuer.is_some()
+                    || doc.session_id.is_some();
+                if names {
+                    return Err(invalid(
+                        "a project deletion names nothing inside the project",
+                    ));
+                }
+                Ok(Self::Project)
+            }
         }
     }
 }
@@ -187,6 +241,58 @@ pub struct DeletionRequest {
     pub error: Option<String>,
     /// When the row last changed.
     pub updated_at: Timestamp,
+}
+
+impl DeletionRequest {
+    /// The project deletion that deleting a project makes, in the same transaction (contract 13.4): pending, at
+    /// the instant the project was marked deleted.
+    pub fn project(
+        id: DeletionRequestId,
+        project_id: ProjectId,
+        requested_at: Timestamp,
+        requested_by: String,
+    ) -> Self {
+        Self {
+            id,
+            project_id,
+            selector: DeletionSelector::Project,
+            state: DeletionState::Pending,
+            requested_at,
+            deletion_seq: 0,
+            requested_by,
+            idempotency_key: None,
+            request_hash: String::new(),
+            places: "{}".to_owned(),
+            attempts: 0,
+            error: None,
+            updated_at: requested_at,
+        }
+    }
+}
+
+/// How many rows of each table [`LifecycleRepo::purge_project`] removed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PurgedRows {
+    /// `project_memberships`.
+    pub memberships: u64,
+    /// `alert_rules`; their `alert_state` and `alert_events` rows go with them.
+    pub alert_rules: u64,
+    /// `channels`.
+    pub channels: u64,
+    /// `secrets`: the sealed secrets of the project's channels.
+    pub secrets: u64,
+    /// `saved_queries`.
+    pub saved_queries: u64,
+    /// `sql_runs`.
+    pub sql_runs: u64,
+    /// `export_jobs`.
+    pub export_jobs: u64,
+    /// `api_keys`, every one revoked when the project was deleted.
+    pub api_keys: u64,
+    /// `retention_floors`.
+    pub retention_floors: u64,
+    /// `project_salts`.
+    pub salts: u64,
 }
 
 /// One node's acknowledgement of a deletion request (contract 13.3, steps 2 and 4).
@@ -262,8 +368,8 @@ impl RetentionFloor {
 /// Retention and deletion rows.
 #[async_trait]
 pub trait LifecycleRepo: Send + Sync {
-    /// Registers the node or refreshes its row: the heartbeat becomes the database clock. `node.heartbeat_at`
-    /// is ignored.
+    /// Registers the node or refreshes its row: the heartbeat becomes the database clock, and `node.node_clock`, the
+    /// node's own clock, is kept beside it. `node.heartbeat_at` is ignored.
     async fn heartbeat(&self, node: &Node) -> Result<(), TxError>;
     /// The nodes whose heartbeat is within `within` of the database clock, ordered by epoch.
     async fn live_nodes(&self, within: Duration) -> Result<Vec<Node>, TxError>;
@@ -293,6 +399,9 @@ pub trait LifecycleRepo: Send + Sync {
     ) -> Result<Vec<DeletionRequest>, TxError>;
     /// Every request that is neither completed nor failed, ordered by sequence number.
     async fn open_requests(&self) -> Result<Vec<DeletionRequest>, TxError>;
+    /// Every request of kind `project`, in every state, ordered by sequence number: the deleted projects that the
+    /// purge sweep looks at again (contract 13.4).
+    async fn project_requests(&self) -> Result<Vec<DeletionRequest>, TxError>;
     /// The requests of every project, in every state, requested after `requested_after` and with a sequence number
     /// above `after`, ordered by sequence number, at most `limit`: what a node applies before it ships data received
     /// at or after `requested_after` (contract 13.3), page by page.
@@ -305,6 +414,16 @@ pub trait LifecycleRepo: Send + Sync {
     /// Writes the request's state, places, attempts, error and update time. `false` when there is no such
     /// request.
     async fn update_request(&self, request: &DeletionRequest) -> Result<bool, TxError>;
+    /// The deleted projects that have no deletion request of kind `project`, ordered by id: the projects deleted
+    /// before deleting a project made that request (contract 13.4).
+    async fn deleted_without_request(&self) -> Result<Vec<ProjectId>, TxError>;
+    /// Deletes, in one statement, the control-plane rows of a deleted project once its telemetry is purged
+    /// (contract 13.4): its memberships, alert rules (with their state and events), channels and their sealed
+    /// secrets (every `channel` secret scoped to the project), saved queries, SQL runs, export jobs, API keys,
+    /// retention floor and salt. The project's row, its deletion requests and their acknowledgements and
+    /// actions stay: a node that returns reads those requests before it ships. A project whose row is not marked
+    /// deleted keeps everything, and the counts are zero.
+    async fn purge_project(&self, project_id: ProjectId) -> Result<PurgedRows, TxError>;
 
     /// Records a node's tombstone. `false` when the node had already recorded one for the request; the stored
     /// row is not changed.
@@ -331,8 +450,8 @@ pub trait LifecycleRepo: Send + Sync {
         &self,
         request_id: DeletionRequestId,
     ) -> Result<Vec<LifecycleAction>, TxError>;
-    /// Writes the action's state, fencing token, mutation, attempts and update time. `false` when there is no
-    /// such action.
+    /// Writes the action's kind, state, fencing token, mutation, attempts and update time: a project deletion's
+    /// purge is planned as a delete and may be issued as a drop. `false` when there is no such action.
     async fn update_action(&self, action: &LifecycleAction) -> Result<bool, TxError>;
     /// Deletes the verified actions without a request that last changed before `before`; returns how many.
     async fn prune_actions(&self, before: Timestamp) -> Result<u64, TxError>;
@@ -365,7 +484,10 @@ mod tests {
             issuer: Some("https://issuer.example".to_owned()),
         };
         let session = DeletionSelector::Session("s-1".to_owned());
-        for selector in [&traces, &user, &session] {
+        let project = DeletionSelector::Project;
+        assert_eq!(project.kind(), DeletionKind::Project);
+        assert_eq!(project.to_text(), "{}");
+        for selector in [&traces, &user, &session, &project] {
             assert_eq!(
                 DeletionSelector::parse(selector.kind(), &selector.to_text()).as_ref(),
                 Ok(selector)
@@ -374,9 +496,55 @@ mod tests {
         assert!(DeletionSelector::parse(DeletionKind::Trace, &user.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::User, &session.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Session, &traces.to_text()).is_err());
-        assert!(DeletionSelector::parse(DeletionKind::Project, "{}").is_err());
+        // A whole project names nothing inside it.
+        for named in [&traces, &user, &session] {
+            assert!(DeletionSelector::parse(DeletionKind::Project, &named.to_text()).is_err());
+        }
+        assert!(DeletionSelector::parse(DeletionKind::Trace, &project.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Trace, r#"{"trace_ids":["zz"]}"#).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Session, r#"{"other":1}"#).is_err());
+    }
+
+    fn node(version: &str, heartbeat_at: i64, node_clock: Option<i64>) -> Node {
+        Node {
+            wal_epoch: WalEpoch::from_bytes([1; 16]),
+            heartbeat_at: Timestamp::from_micros(heartbeat_at),
+            version: version.to_owned(),
+            checkpoint_lsn: Lsn::ZERO,
+            address: String::new(),
+            node_clock: node_clock.map(Timestamp::from_micros),
+        }
+    }
+
+    /// Contract 13.4: a server that cannot read a deletion request of kind `project` registers its bare release
+    /// number, and every server that reads them registers more than that (its release number followed by
+    /// `+project-deletions`, or a test's name). So a bare release number is a server that cannot read them, whatever
+    /// the release: one cut before they shipped registers a bare number too.
+    #[test]
+    fn a_bare_release_number_is_a_server_that_cannot_read_project_deletions() {
+        for old in [
+            "0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.0.9", "0.1.4", "1.0.0",
+        ] {
+            assert!(!node(old, 0, None).reads_project_requests(), "{old}");
+        }
+        for new in [
+            "0.1.3+project-deletions",
+            "0.1.4+project-deletions",
+            "1.0.0+project-deletions",
+            "test",
+            "sim",
+            "",
+        ] {
+            assert!(node(new, 0, None).reads_project_requests(), "{new}");
+        }
+    }
+
+    /// A node's skew is its own clock at the heartbeat less the database clock at the heartbeat.
+    #[test]
+    fn a_node_reports_how_far_its_clock_is_from_the_database_clock() {
+        assert_eq!(node("t", 1_000, Some(4_000)).clock_skew(), Some(3_000));
+        assert_eq!(node("t", 4_000, Some(1_000)).clock_skew(), Some(-3_000));
+        assert_eq!(node("t", 4_000, None).clock_skew(), None);
     }
 
     proptest! {

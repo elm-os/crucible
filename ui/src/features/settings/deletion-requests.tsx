@@ -71,6 +71,7 @@ export function DeletionRequests({ project }: { project: SessionProject }) {
 }
 
 function what(request: DeletionRequest): string {
+  if (request.kind === "project") return "The whole project";
   if (request.kind === "user") return `User ${request.user_id ?? ""}`;
   if (request.kind === "session") return `Session ${request.session_id ?? ""}`;
   const count = request.trace_count ?? 0;
@@ -115,6 +116,26 @@ function progress(request: DeletionRequest): string {
   return `${formatCount(finished)} of ${formatCount(deletes)} deletes done, ${formatCount(removed)} removed from storage`;
 }
 
+const times = (count: number) => `${formatCount(count)} ${count === 1 ? "time" : "times"}`;
+
+// The server's own text about a failed step stays in its log.
+function retrying(request: DeletionRequest): string {
+  if (done(request.state) || request.error === undefined) return "";
+  const state =
+    request.attempts === undefined
+      ? "The request is waiting."
+      : `A step failed ${times(request.attempts)}.`;
+  return `${state} The server tries again on its own, and its log says why.`;
+}
+
+function late(request: DeletionRequest): string {
+  const purges = request.late_purges ?? 0;
+  if (purges === 0) return "";
+  const last =
+    request.late_purged_at === undefined ? "" : `, last ${formatTime(request.late_purged_at)}`;
+  return `Late rows removed ${times(purges)}${last}.`;
+}
+
 function RequestsTable({ requests, more }: { requests: DeletionRequest[]; more: boolean }) {
   return (
     <>
@@ -151,8 +172,16 @@ function RequestsTable({ requests, more }: { requests: DeletionRequest[]; more: 
                   <span className="block max-w-80 text-label text-ink-soft">
                     {STATUS[request.state].detail}
                   </span>
+                  {retrying(request) ? (
+                    <span className="block max-w-80 text-label text-ink-soft">
+                      {retrying(request)}
+                    </span>
+                  ) : null}
                 </td>
-                <td className="py-2.5 text-ink-soft">{progress(request)}</td>
+                <td className="py-2.5 text-ink-soft">
+                  {progress(request)}
+                  {late(request) ? <span className="block">{late(request)}</span> : null}
+                </td>
               </tr>
             ))}
           </tbody>

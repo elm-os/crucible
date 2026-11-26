@@ -53,6 +53,10 @@ const FILES: &[(&str, &str)] = &[
         "V11__auth_provider_version",
         include_str!("../migrations/V11__auth_provider_version.sql"),
     ),
+    (
+        "V12__node_clock",
+        include_str!("../migrations/V12__node_clock.sql"),
+    ),
 ];
 
 fn failed(what: &str, error: impl std::fmt::Display) -> TxError {

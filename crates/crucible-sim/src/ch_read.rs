@@ -1099,6 +1099,37 @@ impl ReadSide {
         projects.into_iter().collect()
     }
 
+    /// The partitions of a table that hold parts, ascending: the catalogue, read without a row. A part that a mask
+    /// application emptied still counts, so the model lists at least what a server lists.
+    pub(crate) fn partitions(&self, id: TableId) -> Vec<PartitionId> {
+        self.tables.get(&id).map_or_else(Vec::new, |stored| {
+            stored
+                .parts
+                .iter()
+                .map(|part| part.partition)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+    }
+
+    /// Whether a project has a visible row in a partition of a table, or anywhere in the table without one.
+    pub(crate) fn holds_project(
+        &self,
+        id: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> bool {
+        let project = Value::Uuid(project.uuid());
+        self.tables.get(&id).is_some_and(|stored| {
+            stored
+                .parts
+                .iter()
+                .filter(|part| partition.is_none_or(|partition| part.partition == partition))
+                .any(|part| part.visible().any(|row| row.first() == Some(&project)))
+        })
+    }
+
     /// Every row the store still holds of a table, with its partition and whether a delete masks it: masked
     /// rows are hidden from reads and still on disk until a mask application removes them.
     pub(crate) fn held(&self, id: TableId) -> Vec<(PartitionId, bool, Vec<Value>)> {

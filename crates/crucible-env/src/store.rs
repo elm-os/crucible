@@ -485,6 +485,21 @@ pub trait TelemetryStore: fmt::Debug + Send + Sync {
     async fn masked_parts(&self, table: TableId, partition: PartitionId)
     -> Result<u64, StoreError>;
 
+    /// The partitions of a table that hold active parts, ascending. Runs as `crucible_maint`. Reads the store's
+    /// catalogue of parts, never a row, so its cost does not grow with the data.
+    async fn partitions(&self, table: TableId) -> Result<Vec<PartitionId>, StoreError>;
+
+    /// Whether a project has a visible row in one partition of a table, or anywhere in the table when `partition`
+    /// is `None`. Runs as `crucible_maint`. It stops at the first such row, which the sort key finds: its first column
+    /// is `project_id` in every table. Rows of the project that a lightweight delete hides are read past until a mask
+    /// application removes them.
+    async fn holds_project(
+        &self,
+        table: TableId,
+        partition: Option<PartitionId>,
+        project: ProjectId,
+    ) -> Result<bool, StoreError>;
+
     /// Applies one schema or access step, statement by statement, with the step's settings. Runs as
     /// `crucible_admin`. Idempotent: a step that failed part-way is applied again.
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError>;

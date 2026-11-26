@@ -356,6 +356,104 @@ describe("deletion requests", () => {
     expect(screen.queryByText(/raw text/)).toBeNull();
   });
 
+  test("a project deletion is listed as the whole project, not as traces", async () => {
+    signIn();
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({
+        data: [
+          request({
+            id: "d-4",
+            kind: "project",
+            trace_count: undefined,
+            trace_ids: undefined,
+            state: "logged",
+            verified: false,
+            traces_resolved: 0,
+          }),
+        ],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByText("The whole project");
+    expect(screen.queryByText(/traces?$/)).toBeNull();
+  });
+
+  test("a request whose step keeps failing says it is retried, without the server's text", async () => {
+    signIn();
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({
+        data: [
+          request({
+            id: "d-5",
+            kind: "project",
+            trace_count: undefined,
+            trace_ids: undefined,
+            state: "logged",
+            verified: false,
+            traces_resolved: 0,
+            error: "raw text",
+            attempts: 3,
+          }),
+        ],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByText("The whole project");
+    expect(
+      screen.getByText(
+        "A step failed 3 times. The server tries again on its own, and its log says why.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/raw text/)).toBeNull();
+  });
+
+  test("a request that waits without a failed step says so, without counting failures", async () => {
+    signIn();
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({
+        data: [request({ id: "d-7", state: "logged", verified: false, error: "raw text" })],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByText(
+      "The request is waiting. The server tries again on its own, and its log says why.",
+    );
+    expect(screen.queryByText(/A step failed/)).toBeNull();
+    expect(screen.queryByText(/raw text/)).toBeNull();
+  });
+
+  test("a completed project deletion says when it removed rows that arrived late", async () => {
+    signIn();
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({
+        data: [
+          request({
+            id: "d-6",
+            kind: "project",
+            trace_count: undefined,
+            trace_ids: undefined,
+            state: "completed",
+            verified: true,
+            traces_resolved: 0,
+            late_purges: 2,
+            late_purged_at: "2026-11-25T10:00:00.000000Z",
+          }),
+        ],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByText("The whole project");
+    expect(screen.getByText(/^Late rows removed 2 times, last /)).toBeTruthy();
+  });
+
   test("empty: says what Delete data is for", async () => {
     signIn();
     serve({

@@ -6,15 +6,18 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crucible_control::{
-    ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
-    RetentionFloor,
+    ActionKind, ActionState, AlertRule, AlertSeriesState, AlertStatus, Channel, ChannelKind,
+    DeletionRequest, DeletionSelector, ExportFormat, JsonDoc, LifecycleAction, NewExport, Node,
+    NodeAck, ProjectMembership, ProjectRole, RetentionFloor, SavedQuery, SealedProjectSalt, Secret,
+    SqlActor, SqlRun, SqlRunKind, SqlVisibility,
 };
 use crucible_records::{
-    DeletionRequestId, DeletionState, Lsn, PartitionId, ProjectId, TableId, TraceId, WalEpoch,
+    AlertRuleId, ChannelId, DeletionRequestId, DeletionState, ExportJobId, Lsn, PartitionId,
+    ProjectId, SavedQueryId, SqlRunId, TableId, Timestamp, TraceId, UserId, WalEpoch,
 };
 use crucible_schema::{Granularity, route};
 
-use super::{Ctl, Transcript, at, id, project};
+use super::{Ctl, Transcript, api_key, at, id, project, user};
 
 const SHORT: Duration = Duration::from_millis(400);
 /// Longer than this script runs.
@@ -32,6 +35,8 @@ fn node(n: u64, checkpoint: u64) -> Node {
         version: format!("0.0.{n}"),
         checkpoint_lsn: Lsn::new(checkpoint),
         address: String::new(),
+        // The node's clock, which the store keeps as given.
+        node_clock: Some(at(i64::try_from(checkpoint).unwrap_or(0))),
     }
 }
 
@@ -72,10 +77,16 @@ fn shapes(requests: &[DeletionRequest]) -> Vec<(String, DeletionState)> {
         .collect()
 }
 
-fn nodes(nodes: &[Node]) -> Vec<(String, u64)> {
+fn nodes(nodes: &[Node]) -> Vec<(String, u64, Option<Timestamp>)> {
     nodes
         .iter()
-        .map(|node| (node.version.clone(), node.checkpoint_lsn.get()))
+        .map(|node| {
+            (
+                node.version.clone(),
+                node.checkpoint_lsn.get(),
+                node.node_clock,
+            )
+        })
         .collect()
 }
 
@@ -388,6 +399,18 @@ async fn ledger(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         ..delete.clone()
     };
     t.outcome("update", repo.update_action(&issued).await);
+    // A project deletion's purge is planned as a delete and may be issued as a drop.
+    let as_drop = LifecycleAction {
+        kind: ActionKind::Drop,
+        ..issued.clone()
+    };
+    t.outcome("update the kind", repo.update_action(&as_drop).await);
+    t.outcome(
+        "the kind is stored",
+        repo.request_actions(request_id)
+            .await
+            .map(|a| a.iter().map(|a| a.kind).collect::<Vec<_>>()),
+    );
     let missing = action(55, "nothing", ActionKind::Drop, None)?;
     t.outcome(
         "update an action that does not exist",
@@ -470,10 +493,303 @@ async fn floors(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     Ok(())
 }
 
+/// One row of each control-plane table that holds rows of a project, with ids from `n`: a membership, an API key,
+/// a channel with its sealed secret and a second secret of the project that no channel names, an alert rule with
+/// the state of a series, a saved query, a SQL run, an export, a retention floor and the salt.
+async fn seed_project_rows(
+    s: &dyn crucible_control::ControlStore,
+    project: ProjectId,
+    member: UserId,
+    n: u64,
+) -> Result<()> {
+    s.memberships()
+        .put_project(ProjectMembership {
+            project_id: project,
+            user_id: member,
+            role: ProjectRole::Viewer,
+        })
+        .await?;
+    s.api_keys().insert(&api_key(n, project)).await?;
+    for k in [1, 2] {
+        s.secrets()
+            .insert(&Secret {
+                id: id(n + k),
+                scope: project.to_string(),
+                kind: "channel".to_owned(),
+                key_id: "master-0".to_owned(),
+                nonce: vec![1; 24],
+                ciphertext: vec![2; 32],
+            })
+            .await?;
+    }
+    s.channels()
+        .insert(&Channel {
+            id: ChannelId::from_uuid(id(n + 3)),
+            project_id: project,
+            name: "On call".to_owned(),
+            kind: ChannelKind::Webhook,
+            config: JsonDoc::empty(),
+            secret_id: Some(id(n + 1)),
+            enabled: true,
+            disabled_reason: None,
+            failures: 0,
+            last_test: None,
+            version: 1,
+        })
+        .await?;
+    let rule = AlertRuleId::from_uuid(id(n + 4));
+    s.alert_rules()
+        .insert(&AlertRule {
+            id: rule,
+            project_id: project,
+            name: "errors".to_owned(),
+            enabled: true,
+            spec: JsonDoc::empty(),
+            interval_secs: 60,
+            version: 1,
+            created_at: at(0),
+            updated_at: at(0),
+            last_eval_seq: None,
+            eval_failures: 0,
+            skipped_ticks: 0,
+        })
+        .await?;
+    s.alert_state()
+        .put(&AlertSeriesState {
+            rule_id: rule,
+            series_key: String::new(),
+            status: AlertStatus::Firing,
+            since: at(0),
+            last_rows_at: at(0),
+            last_notified_at: None,
+            value: Some(9),
+        })
+        .await?;
+    s.saved_queries()
+        .insert(&SavedQuery {
+            id: SavedQueryId::from_uuid(id(n + 5)),
+            project_id: project,
+            owner: SqlActor::User(member),
+            name: "errors".to_owned(),
+            description: String::new(),
+            visibility: SqlVisibility::Project,
+            sql: "SELECT 1".to_owned(),
+            parameters: Vec::new(),
+            version: 1,
+            created_at: at(0),
+            updated_at: at(0),
+        })
+        .await?;
+    s.sql_runs()
+        .insert(&SqlRun {
+            id: SqlRunId::from_uuid(id(n + 6)),
+            project_id: project,
+            actor: SqlActor::User(member),
+            query_id: id(n + 7),
+            kind: SqlRunKind::AdHoc,
+            saved_query_id: None,
+            sql: "SELECT 1".to_owned(),
+            started_at: at(0),
+            end: None,
+        })
+        .await?;
+    s.export_jobs()
+        .insert(&NewExport {
+            id: ExportJobId::from_uuid(id(n + 8)),
+            project_id: project,
+            format: ExportFormat::CrucibleJsonl,
+            selector: "{}".to_owned(),
+            options: "{}".to_owned(),
+            dedup_key: format!("export-{n}"),
+            created_by: "user:1".to_owned(),
+            created_at: at(0),
+            as_of: at(0),
+        })
+        .await?;
+    s.lifecycle()
+        .raise_floor(
+            project,
+            RetentionFloor {
+                retention: Some(at(0)),
+                payload: None,
+                mcp_content: None,
+            },
+        )
+        .await?;
+    s.project_salts()
+        .insert_if_absent(&SealedProjectSalt {
+            project_id: project,
+            key_id: "master-0".to_owned(),
+            nonce: vec![3; 24],
+            ciphertext: vec![4; 48],
+        })
+        .await?;
+    Ok(())
+}
+
+/// What a project seeded by [`seed_project_rows`] from `n` still holds, table by table.
+async fn project_rows(
+    s: &dyn crucible_control::ControlStore,
+    project: ProjectId,
+    n: u64,
+) -> Result<Vec<(&'static str, usize)>, crucible_control::TxError> {
+    let mut secrets = 0;
+    for k in [1, 2] {
+        secrets += usize::from(s.secrets().get(id(n + k)).await?.is_some());
+    }
+    let floors = s.lifecycle().floors().await?;
+    Ok(vec![
+        (
+            "memberships",
+            s.memberships().list_project(project).await?.len(),
+        ),
+        ("api_keys", s.api_keys().list(project).await?.len()),
+        ("channels", s.channels().list(project).await?.len()),
+        ("secrets", secrets),
+        ("alert_rules", s.alert_rules().list(project).await?.len()),
+        (
+            "alert_state",
+            s.alert_state()
+                .list(AlertRuleId::from_uuid(id(n + 4)))
+                .await?
+                .len(),
+        ),
+        (
+            "saved_queries",
+            s.saved_queries().list(project).await?.len(),
+        ),
+        (
+            "sql_runs",
+            s.sql_runs().list(project, None, 10).await?.len(),
+        ),
+        (
+            "export_jobs",
+            s.export_jobs().list(project, 10).await?.len(),
+        ),
+        (
+            "retention_floors",
+            floors.iter().filter(|(of, _)| *of == project).count(),
+        ),
+        (
+            "project_salts",
+            usize::from(s.project_salts().get(project).await?.is_some()),
+        ),
+    ])
+}
+
+/// The purge of a deleted project's control-plane rows (contract 13.4): a live project keeps everything, a
+/// deleted one loses every row of each table in one statement, its row and its deletion requests stay, and another
+/// project keeps its rows.
+async fn purge(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
+    let s = ctl.store.as_ref();
+    let repo = s.lifecycle();
+    let (gone, kept) = (project(60), project(61));
+    s.projects().insert(&gone).await?;
+    s.projects().insert(&kept).await?;
+    let member = user(62)?;
+    s.users().insert(&member).await?;
+    seed_project_rows(s, gone.id, member.id, 100).await?;
+    seed_project_rows(s, kept.id, member.id, 120).await?;
+    repo.insert_request(&request(140, gone.id, DeletionSelector::Project))
+        .await?;
+    t.outcome(
+        "a live project keeps everything",
+        repo.purge_project(gone.id).await,
+    );
+    let deleted = crucible_control::Project {
+        deleted_at: Some(at(5)),
+        version: 2,
+        ..gone.clone()
+    };
+    t.outcome(
+        "the project is marked deleted",
+        s.projects().update_if_version(&deleted, 1).await,
+    );
+    t.outcome(
+        "a deleted project loses its rows",
+        repo.purge_project(gone.id).await,
+    );
+    t.outcome("again nothing is left", repo.purge_project(gone.id).await);
+    t.outcome(
+        "what the deleted project holds",
+        project_rows(s, gone.id, 100).await,
+    );
+    t.outcome(
+        "what the other project holds",
+        project_rows(s, kept.id, 120).await,
+    );
+    t.outcome(
+        "the deleted project's row stays",
+        s.projects()
+            .get(gone.id)
+            .await
+            .map(|row| row.map(|row| row.deleted_at.is_some())),
+    );
+    t.outcome(
+        "its deletion request stays",
+        repo.list_requests(gone.id, None, 10)
+            .await
+            .map(|requests| shapes(&requests)),
+    );
+    t.outcome(
+        "a project that does not exist",
+        repo.purge_project(ProjectId::from_uuid(id(98))).await,
+    );
+    Ok(())
+}
+
+/// The deleted projects without a project deletion request (contract 13.4): those deleted before deleting a
+/// project made one. A live project and a deleted one with its project deletion are not among them; a deletion
+/// of another kind does not count. Then every project deletion, which the purge sweep looks at.
+async fn earlier(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
+    let s = ctl.store.as_ref();
+    let repo = s.lifecycle();
+    let (bare, traced, live) = (project(71), project(70), project(72));
+    for row in [&bare, &traced, &live] {
+        s.projects().insert(row).await?;
+    }
+    for row in [&bare, &traced] {
+        let deleted = crucible_control::Project {
+            deleted_at: Some(at(7)),
+            version: 2,
+            ..row.clone()
+        };
+        s.projects().update_if_version(&deleted, 1).await?;
+    }
+    repo.insert_request(&request(
+        150,
+        traced.id,
+        DeletionSelector::Traces(vec![TraceId::from_bytes([8; 16])]),
+    ))
+    .await?;
+    t.outcome(
+        "deleted without a project deletion, by id",
+        repo.deleted_without_request().await,
+    );
+    repo.insert_request(&request(151, bare.id, DeletionSelector::Project))
+        .await?;
+    t.outcome(
+        "one of them gets its project deletion",
+        repo.deleted_without_request().await,
+    );
+    t.outcome(
+        "the project deletions, by sequence",
+        repo.project_requests().await.map(|requests| {
+            requests
+                .iter()
+                .map(|request| (request.project_id, request.state))
+                .collect::<Vec<_>>()
+        }),
+    );
+    Ok(())
+}
+
 /// The lifecycle script.
 pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     registry(ctl, t).await?;
     requests(ctl, t).await?;
     ledger(ctl, t).await?;
-    floors(ctl, t).await
+    floors(ctl, t).await?;
+    purge(ctl, t).await?;
+    earlier(ctl, t).await
 }

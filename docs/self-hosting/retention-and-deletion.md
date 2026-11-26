@@ -1,7 +1,8 @@
 # Retention and deletion
 
 Each project keeps its data for as long as its retention settings say, forever by default. Data can also be deleted
-on request: a list of traces, or everything of one user or one session. Both need the control plane (Postgres).
+on request: a list of traces, or everything of one user or one session, and deleting a project deletes all of its
+data. All of this needs the control plane (Postgres).
 
 ## Retention
 
@@ -36,8 +37,9 @@ A deletion request removes data from a project for good:
 | `trace` | 1 to 10,000 trace ids | Project members and admins; keys with the `delete` scope |
 | `user` | Every trace of one `user_id`, with its facts and MCP operations | Project admins; keys with the `delete` scope |
 | `session` | Every trace of one `session_id`, with its facts and MCP operations | Project admins; keys with the `delete` scope |
+| `project` | Everything of the project | Made by deleting the project ([below](#deleting-a-project)) |
 
-Request one in **Settings**, **Retention**, **Delete data**, or with
+Request one of the first three in **Settings**, **Retention**, **Delete data**, or with
 `POST /api/v1/projects/{project_id}/deletion-requests`. A deletion is point in time: data received after the
 request is new data and is kept.
 
@@ -49,7 +51,7 @@ A request moves through these states, which the settings page shows with the pla
 | `logged` | Deleting | Every server has recorded it; the deletes are running |
 | `applied` | Deleted | Every place reports its delete done, and the data is gone from every read, the SQL workspace included |
 | `verified`, `completed` | Removed | Each place was counted again and is empty, and the deleted rows are removed from storage |
-| `failed` | Failed | A step ran out of attempts; the server log says which. Some of the data may be readable again |
+| `failed` | Failed | A step ran out of attempts; the server log says which. Some of the data may be readable again. A project deletion still finishes once no table holds a row of the project ([the purge sweep](#the-purge-sweep)) |
 
 The places a request reaches are the span tables, the trace heads and trace statistics, the session and user
 rollups, the four fact tables (scores, tags, flags, corrections), the MCP operations and their arguments and
@@ -57,7 +59,7 @@ results, export files made before the request, which expire and are removed (fro
 expiry is recorded, when export files are kept there), and with an object store, the uses of media by the traces
 deleted: media follow `payload_retention_days`, and an object is removed once nothing uses it
 ([media](media.md#deletion-and-retention)). The minute rollups that power charts and alerts, and the hourly rollup
-of MCP calls, hold counts with no user, session or content, and are kept.
+of MCP calls, hold counts with no user, session or content, and are kept, unless the whole project is deleted.
 
 A request also reaches data that is not in ClickHouse yet. Spans received before the request that still wait in a
 server's write-ahead log, because ClickHouse was slow or unreachable, are dropped before they are sent, and the
@@ -74,10 +76,119 @@ rows, so an export made while a request is still `pending` or `logged` can inclu
 
 ## Deleting a project
 
-An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`. The project leaves every list
-at once and its API keys stop working, on every server within 5 seconds. Its dashboards with their widgets and its
-media records go with it, and with an object store every object under the project's key prefix is deleted next
-([media](media.md#deletion-and-retention)). Its telemetry stays in ClickHouse, where no page, API answer or MCP tool
-reads it any more, and its memberships, alert rules, channels, saved queries and SQL runs stay in Postgres. A trace
-that records media in the project while it is being deleted makes the request answer 503 `control_plane_unavailable`
-with `Retry-After` and delete nothing; send it again.
+An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`. Deleting a project guarantees:
+
+- **Reads hide it at once.** The answer comes at once and the project leaves every list. No page, API answer, MCP
+  tool answer, export or SQL query reads its data from then on, and its API keys stop working on every server
+  within 5 seconds.
+- **Its rows are removed within the deletion window.** Every row it holds in ClickHouse is deleted once every
+  server's write-ahead log has passed the deletion, typically within minutes, and removed from storage within 24
+  hours. Its rows in Postgres go next.
+- **A late row is removed within about an hour of landing.** A row of the project that reaches ClickHouse after the
+  purge, from a server that was behind, cut off from Postgres or down, is deleted at the next hourly sweep, a minute
+  or so after the hour at most, and removed from storage within 24 hours after that. The sweep looks at each project
+  hourly for 30 days after its deletion, and daily after that. One hourly pass covers about 7,000 projects deleted in
+  the last 30 days ([below](#the-purge-sweep)).
+- **No other project loses a row.** The purge drops a whole partition only where no project can write any more;
+  everywhere else it deletes only the deleted project's rows. This counts on every server's clock being within an
+  hour of the Postgres server's clock, and the server that holds the `lifecycle` lease checks it.
+
+Its dashboards with their widgets and its media records go with it, and with an object store every object under the
+project's key prefix is deleted next ([media](media.md#deletion-and-retention)). A trace that records media in the
+project while it is being deleted makes the request answer 503 `control_plane_unavailable` with `Retry-After` and
+delete nothing; send it again.
+
+The rest of the project's data goes in the background, through a deletion request of kind `project` that the
+deletion makes in the same transaction:
+
+1. Every server records the request in its write-ahead log within 5 seconds, and data of the project that still
+   waits there is dropped before it is sent.
+2. Once every server's write-ahead log has passed the request, every table of the project is emptied: spans and
+   their payloads, trace heads and trace statistics, MCP operations with their arguments and results, the four fact
+   tables, the session and user rollups, the minute rollups, the hourly rollup of MCP calls, the MCP deploys and the
+   tool inventory. The server finds the partitions that hold the project's rows from ClickHouse's list of
+   partitions and a check that stops at the first row of the project in each, so a project of any size is found. If
+   ClickHouse does not answer, the request shows the error and how many attempts failed, and the server tries again
+   every 30 seconds.
+3. A partition is dropped whole only when no project can write there any more and every project with rows in it is
+   deleted. Ingest takes no span that started more than `ingest.max_event_age` (400 days) before it arrived, and a
+   fact takes the start time of a span its project sent, so no project writes into a partition that ends more than
+   400 days before the oldest live project was made, or more than 400 days ago for a project made later. An hour on
+   each side allows for server clocks, so every server's clock must be within an hour of the Postgres server's clock.
+   Each server reports its clock with its heartbeat, every 5 seconds. While a running server's clock is more than 30
+   minutes from the Postgres server's clock, or a server reports none, nothing is dropped, and while a project
+   deletion runs the log warns with that server's WAL epoch and how far its clock is off. Every other partition gets a
+   delete of the project's rows, which keeps the rows of every other project, also those written while the deletion
+   runs. In practice a partition is dropped only when its data is more than 400 days older than every live project.
+4. After the next mask cycle, within 24 hours, every table is checked to hold no row of the project and no deleted
+   row on disk, and the request is `verified`. A partition that holds rows of the project again, rows that landed
+   after its delete, gets the delete again; this never counts as a failed attempt, so rows that keep landing, from a
+   server cut off from Postgres for example, keep the purge going until they stop, and never fail it.
+5. Then the project's export files and every object left under its key prefix are removed, and so are its rows in
+   Postgres: memberships, alert rules with their state and history, notification channels with their sealed secrets,
+   saved queries, SQL runs, exports, the revoked API keys, its retention floor and its salt. The request is
+   `completed`. While the object store refuses, the request stays `verified`, shows the error with how many attempts
+   failed, and the server tries again every 30 seconds: check that the object store is reachable and that the
+   server's credentials may list and delete objects under the project's key prefix.
+
+From the moment of deletion nothing runs for the project: its alert rules are not evaluated, nothing is sent to its
+channels, an export waiting to run ends with `project_deleted`, and the SQL workspace drops the project's ClickHouse
+user at its next pass. The project's row and its deletion requests stay in Postgres, so that a server that was down
+reads them before it sends anything of the project it still holds.
+
+Org owners and admins follow the purge with `GET /api/v1/projects/{project_id}/deletion-requests`, under the deleted
+project's id: the request of kind `project` lists each table with its deletes, as any deletion request does, and the
+place `control_plane` once the Postgres rows are gone. After the request has completed, `late_purges` counts how many
+times the sweep deleted late rows, one per partition each time, and `late_purged_at` says when it last did; the
+request stays `completed`. Nobody else can read a deleted project's requests.
+
+A project deleted on an earlier version has no such request. After the upgrade, the server that holds the
+`lifecycle` lease makes it, with `requested_by` set to `system:upgrade`, and the project's data goes as above. The
+same holds for a project that a server still on the earlier version deletes during a rolling upgrade.
+
+### The purge sweep
+
+Rows of the project can still reach ClickHouse after the purge. A server takes data of the project in the seconds
+before its key snapshot has the deletion, a server that cannot reach Postgres keeps accepting the keys it last loaded
+under `auth.pg_outage_mode = "fail_open"` (the default), a server that stopped reporting in sends data it took before
+the deletion after the purge stopped waiting for it, and a server that was down sends its write-ahead log when it
+starts again. The purge sweep, a job on the server that holds the `lifecycle` lease, checks every table of each
+deleted project for such rows, hourly for 30 days after the deletion and daily after that, and deletes what it finds.
+While a deletion is still finding where the project's rows are, the sweep checks the tables it has finished.
+`auth.fail_open_max` bounds how long a server keeps accepting keys without Postgres, and `fail_closed` refuses secret
+keys after 5 seconds.
+
+- **Scale.** A deleted project with no late rows costs 17 checks, one per table, plus one per partition of a table
+  that holds late rows. The sweep sends at most 1,000 checks every 30 seconds, so one hourly pass covers about 7,000
+  projects deleted in the last 30 days. With more, a pass takes longer than an hour and each project is checked once
+  per pass, and the daily pass over older deletions gets only the checks that an hourly pass leaves when it
+  finishes, so it takes longer too.
+- **A project that cannot be checked holds back no other.** When a check of one project fails, or the object store
+  refuses, the project's request shows the error after anything it showed before, with how many attempts failed,
+  the pass goes on with the next project, and the next pass checks that project again; once a check gets through,
+  the error goes. A pass that runs past the end of its hour does not delay the next one.
+- **A failed project deletion still finishes.** If a step of the purge ran out of attempts, the request is `failed`,
+  says which step, and the sweep keeps checking the project. Once no table holds a row of it and the rows its
+  deletes hid are removed from storage, at the mask cycle after the last of them, the sweep removes the project's
+  objects and its rows in Postgres, as step 5 does, and the request is `completed`.
+
+### Rolling upgrades from 0.1.3 or earlier
+
+Servers of 0.1.3 and earlier cannot read a deletion request of kind `project`, and one such request would stop them
+from reading any deletion request. So while a server of one of those versions is live (it reported within the last
+minute), no project deletion request is made:
+
+- Deleting a project still answers at once, hides the project and revokes its keys. The deleted project's list of
+  deletion requests shows its request of kind `project` as `pending`, with an `error` that names each server it
+  waits for by its WAL epoch and version.
+- Once no such server is live, the server that holds the `lifecycle` lease makes the request within about 90 seconds
+  of that server's last report (a server counts as live for 60 seconds, and the lease holder looks every 30), under
+  the id the list showed and with `requested_by` set to `system:upgrade`, and the purge runs as above.
+- Each server registers its version in Postgres every 5 seconds: an earlier server registers its bare release
+  number, such as `0.1.3`, and a later one its release number followed by `+project-deletions`. Any server that
+  registers a bare release number counts as an earlier one.
+
+Once a project deletion request exists, do not start a server of 0.1.3 or earlier against the same Postgres. While a
+project deletion is in progress, or when one was made after the oldest data in that server's write-ahead log arrived,
+it cannot read the deletion requests: it then ships nothing and holds up every deletion request until it is upgraded
+or stopped.

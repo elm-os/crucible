@@ -18,10 +18,10 @@ use crucible_lifecycle::{
     MAX_DELETION_PAGE, NewDeletion, Progress, Retention, Service, ServiceError,
 };
 use crucible_query::RetentionSettings;
-use crucible_records::{DeletionRequestId, DeletionState, RequestId, TraceId};
+use crucible_records::{DeletionRequestId, DeletionState, RequestId, Timestamp, TraceId};
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, DeleteTraces, Manage, Principal, Read, Scoped};
+use crate::access::{ApiState, DeleteTraces, DeletionReads, Manage, Principal, Read, Scoped};
 use crate::control::{ApiJson, etag, if_match, version};
 use crate::idempotency;
 use crate::params::Params;
@@ -260,6 +260,7 @@ fn deletion(request: &DeletionRequest) -> wire::DeletionRequest {
             (None, None, Some(user_id.clone()), issuer.clone(), None)
         }
         DeletionSelector::Session(session_id) => (None, None, None, None, Some(session_id.clone())),
+        DeletionSelector::Project => (None, None, None, None, None),
     };
     wire::DeletionRequest {
         id: request.id.to_string(),
@@ -267,6 +268,7 @@ fn deletion(request: &DeletionRequest) -> wire::DeletionRequest {
             DeletionSelector::Traces(_) => wire::DeletionKind::Trace,
             DeletionSelector::User { .. } => wire::DeletionKind::User,
             DeletionSelector::Session(_) => wire::DeletionKind::Session,
+            DeletionSelector::Project => wire::DeletionKind::Project,
         },
         trace_count,
         trace_ids,
@@ -291,6 +293,11 @@ fn deletion(request: &DeletionRequest) -> wire::DeletionRequest {
         traces_resolved: u32::try_from(progress.traces).unwrap_or(u32::MAX),
         places,
         error: request.error.clone(),
+        attempts: (request.attempts > 0).then_some(request.attempts),
+        late_purges: (progress.late > 0).then_some(progress.late),
+        late_purged_at: progress
+            .late_at
+            .map(|micros| Timestamp::from_micros(micros).to_string()),
     }
 }
 
@@ -333,6 +340,7 @@ fn selector(
         wire::DeletionKind::Trace => "trace",
         wire::DeletionKind::User => "user",
         wire::DeletionKind::Session => "session",
+        wire::DeletionKind::Project => return Err(whole_project(rid)),
     };
     let given = [
         (
@@ -380,7 +388,21 @@ fn selector(
         wire::DeletionKind::Session => Ok(DeletionSelector::Session(
             session_id.ok_or_else(|| missing(rid, "session_id", name))?,
         )),
+        wire::DeletionKind::Project => Err(whole_project(rid)),
     }
+}
+
+/// The refusal of a request body of kind `project`: deleting the project makes that request.
+fn whole_project(rid: RequestId) -> ApiError {
+    ApiError::validation(
+        rid,
+        vec![field_error(
+            "kind",
+            "invalid_value",
+            "a whole project is deleted with the project: an org owner or admin sends DELETE \
+             /api/v1/projects/{project_id}, which also removes its data",
+        )],
+    )
 }
 
 fn requester(principal: &Principal) -> String {
@@ -487,7 +509,8 @@ fn hex(bytes: &[u8]) -> String {
 
 /// List deletion requests
 ///
-/// The project's deletion requests, newest first.
+/// The project's deletion requests, newest first. An org owner or admin also lists those of a deleted project,
+/// among them the request of kind `project` that removes its data.
 #[utoipa::path(
     get,
     path = "/api/v1/projects/{project_id}/deletion-requests",
@@ -501,7 +524,7 @@ fn hex(bytes: &[u8]) -> String {
     responses(
         (status = 200, description = "The requests.", body = wire::DeletionRequestList),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project, or it is deleted and the caller is not an org owner or admin.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "`validation_failed` or `cursor_invalid`.", body = Problem, content_type = "application/problem+json"),
         (status = 503, description = "`control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
     ),
@@ -509,7 +532,7 @@ fn hex(bytes: &[u8]) -> String {
 )]
 pub(crate) async fn list_deletion_requests(
     State(state): State<ApiState>,
-    scoped: Scoped<Read>,
+    scoped: DeletionReads,
     uri: Uri,
 ) -> Result<Json<wire::DeletionRequestList>, ApiError> {
     let rid = scoped.request_id;
@@ -546,7 +569,8 @@ pub(crate) async fn list_deletion_requests(
 
 /// Get a deletion request
 ///
-/// One request with its state and the status of each place it reaches.
+/// One request with its state and the status of each place it reaches. An org owner or admin also reads those
+/// of a deleted project.
 #[utoipa::path(
     get,
     path = "/api/v1/projects/{project_id}/deletion-requests/{request_id}",
@@ -566,7 +590,7 @@ pub(crate) async fn list_deletion_requests(
 )]
 pub(crate) async fn get_deletion_request(
     State(state): State<ApiState>,
-    scoped: Scoped<Read>,
+    scoped: DeletionReads,
 ) -> Result<Json<wire::DeletionRequest>, ApiError> {
     let rid = scoped.request_id;
     let id = scoped
