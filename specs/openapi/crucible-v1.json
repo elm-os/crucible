@@ -12616,7 +12616,7 @@
           },
           "error": {
             "type": "string",
-            "description": "Why the request failed, or what a request that has not ended waits for and how to fix it (for a\ndeletion by user: a project salt that the server cannot read; for a project deletion: a read of the\ntelemetry store that failed, which the server tries again)."
+            "description": "Why the request failed, or what a request that has not ended waits for and how to fix it (for a\ndeletion by user: a project salt that the server cannot read; for a project deletion: a read of the\ntelemetry store or a removal from the object store that failed, which the server tries again, or the servers\nof an earlier version that it waits for during a rolling upgrade)."
           },
           "id": {
             "type": "string",

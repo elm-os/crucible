@@ -3,9 +3,9 @@ source: crates/crucible-conformance/tests/control_model.rs
 expression: "transcript(\"lifecycle\")"
 ---
 no node yet: []
-two nodes, by epoch: [("0.0.1", 3), ("0.0.2", 7)]
-only the node that heartbeated within the window is live: [("0.0.1", 9)]
-both within a wide window: [("0.0.1", 9), ("0.0.2", 7)]
+two nodes, by epoch: [("0.0.1", 3, Some(Timestamp(2027-01-15T08:00:03.000000Z))), ("0.0.2", 7, Some(Timestamp(2027-01-15T08:00:07.000000Z)))]
+only the node that heartbeated within the window is live: [("0.0.1", 9, Some(Timestamp(2027-01-15T08:00:09.000000Z)))]
+both within a wide window: [("0.0.1", 9, Some(Timestamp(2027-01-15T08:00:09.000000Z))), ("0.0.2", 7, Some(Timestamp(2027-01-15T08:00:07.000000Z)))]
 sequence numbers rise by one: (1, 1)
 the same key again: error UniqueViolation("deletion_requests_idempotency_key")
 the same key of another requester: ()
