@@ -128,11 +128,16 @@ test.describe("home: tiles and charts", () => {
     await expect(cost).toContainText("No data in the last 30 days.");
   });
 
-  test("static: the set-up steps render whatever the API answers", async ({ page, api }) => {
+  test("a project with no data leads with the set-up steps, whatever the tiles answer", async ({
+    page,
+    api,
+  }) => {
     api.on(METRICS_PATH, problem(503, "telemetry_store_unavailable"));
+    api.on(BOUNDS_PATH, json(dataBounds()));
     await page.goto(`/home/?project=${PROJECT}`);
     const setup = page.getByRole("region", region("Set up"));
     await expect(setup.getByRole("listitem")).toHaveCount(4);
     await expect(setup).toContainText("Send your first trace");
+    await expect(page.getByRole("region").first()).toHaveAccessibleName("Set up");
   });
 });

@@ -124,6 +124,17 @@ export interface SetupStep {
   retry: () => Promise<unknown>;
 }
 
+export type Placement = "first" | "last" | "hidden";
+
+// The card shows once a step is known to be left or couldn't be checked, so a set-up project never
+// flashes it, and it leads while the project has no data.
+export function placement(steps: readonly Pick<SetupStep, "id" | "state">[]): Placement {
+  const open = steps.some(({ state }) => state.status === "todo" || state.status === "unknown");
+  if (!open) return "hidden";
+  const trace = steps.find((step) => step.id === "first-trace");
+  return trace?.state.status === "todo" ? "first" : "last";
+}
+
 export function useSetupSteps(project: string): SetupStep[] {
   const auth = useAuth();
   const bounds = useQuery({

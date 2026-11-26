@@ -15,7 +15,9 @@ import {
   keyStep,
   managesKeys,
   mcpStep,
+  placement,
   type Read,
+  type StepId,
   type StepState,
   traceStep,
 } from "./home-setup";
@@ -216,5 +218,45 @@ describe("whatever the role and the answers, a step someone can't do is never to
         }
       }
     }
+  });
+});
+
+describe("where the card sits", () => {
+  const DONE: StepState = { status: "done" };
+  const TODO: StepState = { status: "todo" };
+  const CHECKING: StepState = { status: "checking" };
+  const UNKNOWN: StepState = { status: "unknown", error: null };
+  const ELSEWHERE: StepState = { status: "unavailable", note: "Someone else does it." };
+
+  const steps = (key: StepState, trace: StepState, mcp: StepState, invite: StepState) =>
+    (
+      [
+        ["api-key", key],
+        ["first-trace", trace],
+        ["mcp-server", mcp],
+        ["invite", invite],
+      ] as [StepId, StepState][]
+    ).map(([id, state]) => ({ id, state }));
+
+  test("hidden once every step is done or someone else's", () => {
+    expect(placement(steps(DONE, DONE, DONE, DONE))).toBe("hidden");
+    expect(placement(steps(ELSEWHERE, DONE, DONE, ELSEWHERE))).toBe("hidden");
+  });
+
+  test("hidden while the steps left are being checked, so nothing flashes", () => {
+    expect(placement(steps(CHECKING, CHECKING, CHECKING, CHECKING))).toBe("hidden");
+    expect(placement(steps(CHECKING, DONE, DONE, CHECKING))).toBe("hidden");
+  });
+
+  test("first while the project has no data, whatever else is known", () => {
+    expect(placement(steps(CHECKING, TODO, TODO, CHECKING))).toBe("first");
+    expect(placement(steps(DONE, TODO, TODO, DONE))).toBe("first");
+  });
+
+  test("last when a step is left or unchecked on a project with data, or its data is unknown", () => {
+    expect(placement(steps(TODO, DONE, DONE, DONE))).toBe("last");
+    expect(placement(steps(DONE, DONE, TODO, ELSEWHERE))).toBe("last");
+    expect(placement(steps(DONE, DONE, DONE, UNKNOWN))).toBe("last");
+    expect(placement(steps(DONE, UNKNOWN, UNKNOWN, DONE))).toBe("last");
   });
 });

@@ -21,7 +21,7 @@ import {
   total,
   useHomeMetrics,
 } from "./home-metrics";
-import { useSetupSteps } from "./home-setup";
+import { placement, useSetupSteps } from "./home-setup";
 import { SetupCard } from "./setup-card";
 
 const percent = new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 });
@@ -35,10 +35,12 @@ export function HomeOverview() {
   const errors = useHomeMetrics(project, range, "errors");
   const latency = useHomeMetrics(project, range, "latency");
   const setup = useSetupSteps(project);
+  const setupAt = placement(setup);
   const widen = () => setRange("30d");
 
   return (
     <div className="flex flex-col gap-6">
+      {setupAt === "first" ? <SetupCard steps={setup} /> : null}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <Tile title="Traces" which="traces" query={traces} range={range} onWiden={widen}>
           {(response) => (
@@ -135,7 +137,7 @@ export function HomeOverview() {
           )}
         </ChartSection>
       </div>
-      <SetupCard steps={setup} />
+      {setupAt === "last" ? <SetupCard steps={setup} /> : null}
     </div>
   );
 }

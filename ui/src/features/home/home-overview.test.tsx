@@ -324,7 +324,10 @@ describe("the set-up steps", () => {
 
   test("MCP operations recorded on either side count as MCP data", async () => {
     signIn();
-    serve({ bounds: () => json(bounds({ server: NONE, client: SEEN })) });
+    serve({
+      bounds: () => json(bounds({ server: NONE, client: SEEN })),
+      keys: () => json({ data: [] }),
+    });
     renderHome();
     await expectStep("Instrument an MCP server", "Done");
   });
@@ -445,5 +448,57 @@ describe("the set-up links", () => {
     ).toBeNull();
     expect(within(section("Set up")).queryByRole("link", { name: "Members" })).toBeNull();
     expect(link("How to instrument an MCP server").getAttribute("href")).toBe(MCP_GUIDE);
+  });
+});
+
+describe("where the set-up card sits", () => {
+  const before = (a: HTMLElement, b: HTMLElement) =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const card = () => screen.queryByRole("region", { name: "Set up" });
+
+  // Waits until the tiles have their answers and every set-up read was asked, then lets those answers land.
+  async function settled(reads: string[]) {
+    expect(await within(section("Traces")).findByText("1")).toBeTruthy();
+    await waitFor(() => {
+      for (const read of reads) expect(requested(read)).toBe(1);
+    });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  }
+
+  test("a project with no data leads with it, above the empty tiles", async () => {
+    serve({ bounds: () => json(EMPTY) });
+    renderHome();
+    await expectStep("Send your first trace", "To do");
+    expect(before(section("Set up"), section("Traces"))).toBe(true);
+  });
+
+  test("a project with data keeps it below the charts while a step is left", async () => {
+    signIn();
+    serve({ keys: () => json({ data: [] }) });
+    renderHome();
+    await expectStep("Create an API key", "To do");
+    expect(before(section("Latency percentiles"), section("Set up"))).toBe(true);
+  });
+
+  test("once every step is done it is gone", async () => {
+    signIn();
+    serve({});
+    renderHome();
+    await settled(["/data-bounds", "/api-keys", "/org/members"]);
+    expect(card()).toBeNull();
+  });
+
+  test("steps nobody here can do don't hold it open", async () => {
+    serve({});
+    renderHome();
+    await settled(["/data-bounds"]);
+    expect(card()).toBeNull();
+  });
+
+  test("nothing shows while the steps are checked, so a set-up project never flashes it", () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    renderHome();
+    expect(section("Traces").getAttribute("aria-busy")).toBe("true");
+    expect(card()).toBeNull();
   });
 });
