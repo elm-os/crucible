@@ -300,6 +300,7 @@ func TestARefusedExportWarnsOnceWithCrucibleMessage(t *testing.T) {
 	if err := crucible.Init(crucible.Options{Endpoint: server.URL, SecretKey: testKey}); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = crucible.Shutdown(context.Background()) })
 	ctx := context.Background()
 	for range 3 {
 		_, o := crucible.Observe(ctx, "step", crucible.Span)
