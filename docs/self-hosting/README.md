@@ -181,5 +181,5 @@ created container. To build it with cargo instead, see [development.md](../devel
 |---|---|---|
 | 8080 | The UI at `/`, the REST API under `/api/v1`, the MCP server at `/mcp`, OTLP/HTTP at `/v1/traces`, `/healthz` and `/readyz` | Yes |
 | 4318 | OTLP/HTTP at `/v1/traces` | Yes |
-| 4317 | OTLP/gRPC | No: add `- "4317:4317"` to the `ports` of the `crucible` service |
+| 4317 | OTLP/gRPC | No: add `- "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:4317:4317"` to the `ports` of the `crucible` service, so that `CRUCIBLE_BIND_ADDRESS` applies to it too |
 | 9464 | Prometheus `/metrics`, on the container's loopback interface by default | No ([operations](operations.md#metrics)) |
