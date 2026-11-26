@@ -2,8 +2,9 @@
 
 Crucible takes traces in OTLP, the OpenTelemetry protocol: protobuf or JSON over HTTP, and protobuf over gRPC. Any
 OpenTelemetry SDK, and the OpenTelemetry Collector, can send them without Crucible code. The Crucible SDKs for
-[TypeScript](sdk-typescript.md), [Python](sdk-python.md) and [Go](sdk-go.md) send the same OTLP and add helpers
-for agents and MCP servers. Crucible ingests traces only; it does not take logs or metrics.
+[TypeScript](sdk-typescript.md), [Python](sdk-python.md), [Go](sdk-go.md) and [Rust](../../sdk/rust/README.md) send
+the same OTLP and add helpers for agents and MCP servers. Crucible ingests traces only; it does not take logs or
+metrics.
 
 ## Endpoints
 
@@ -223,28 +224,30 @@ with 413, and single spans are rejected through partial success as described abo
 
 ## Attributes the trace views read
 
-The traces table, the trace page, the payload viewer, search and the REST API read these attributes. Where a row
-lists several keys, the first one present wins. `crucible.*` keys come first, and each falls back to an
-OpenTelemetry semantic-convention key where one exists, so an application instrumented with plain OpenTelemetry
-fills most fields with no change. Resource attributes are marked; every other key is a span attribute.
+The traces table, the trace page, the payload viewer, search and the REST API read these attributes, except
+`service.name`, which only the SQL workspace shows. Where a row lists several keys, the first one present wins.
+`crucible.*` keys come first, and each falls back to an OpenTelemetry semantic-convention key where one exists, so
+an application instrumented with plain OpenTelemetry fills most fields with no change. Resource attributes are
+marked; every other key is a span attribute.
 
 | Shown as (API field) | Keys | Notes |
 |---|---|---|
 | Trace name (`trace_name` in the trace list) | `crucible.trace.name` | The root span's value wins, else the latest. Without one, the UI shows the name of the trace's head span: the root span, or the earliest span while the root has not arrived |
-| Observation type (`observation_type`) | `crucible.observation.type`; else `mcp.method.name`; else `gen_ai.operation.name` | Values: `span`, `generation`, `event`, `embedding`, `agent`, `tool`, `chain`, `retriever`, `evaluator`, `guardrail`. An MCP `tools/call` span is `tool`. `gen_ai.operation.name` maps `chat`, `text_completion` and `generate_content` to `generation`, `embeddings` to `embedding`, `execute_tool` to `tool`, and `create_agent` and `invoke_agent` to `agent`. Default `span`. The agent graph draws the `agent`, `tool` and `generation` spans |
+| Observation type (`observation_type`) | `crucible.observation.type`; else `mcp.method.name`; else `gen_ai.operation.name` | Values: `span`, `generation`, `event`, `embedding`, `agent`, `tool`, `chain`, `retriever`, `evaluator`, `guardrail`. An MCP `tools/call` span is `tool`. `gen_ai.operation.name` maps `chat`, `text_completion` and `generate_content` to `generation`, `embeddings` to `embedding`, `execute_tool` to `tool`, and `create_agent` and `invoke_agent` to `agent`. Its other values, `retrieval` and `invoke_workflow` among them, give `span`; set `crucible.observation.type` to `retriever` or `chain` to type such spans. Default `span`. The agent graph draws the `agent`, `tool` and `generation` spans |
 | Status (`status_code`) | The span status | `unset`, `ok` or `error` |
 | Level (`level`) | `crucible.level` | `debug`, `default`, `warning` or `error`. Without it, a span whose status is error has level `error`, every other span `default`. The trace list's `error_count` counts spans of level `error` |
-| Model (`model`) | `gen_ai.response.model` | Only the model the response reports is shown. `gen_ai.request.model` prices a span that has no response model, but it is not shown |
-| Tokens (`input_tokens`, `output_tokens`, `total_tokens`) | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | The total is input plus output. `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` and `gen_ai.usage.reasoning.output_tokens` are parts of the input and output counts, not additions. The trace list's totals leave out a span that has a descendant carrying usage or cost, because it repeats what its descendants report; every span still shows its own counts |
-| Cost (`total_cost_usd`) | `crucible.cost.total`, `crucible.cost.<usage key>` | USD as a decimal string or a double. A provided cost wins. Otherwise the server prices the token usage with its bundled price table (`crates/crucible-normalize/data/prices.json`), by the response model, else the request model; a model the table does not know costs 0 |
+| Model (`model`) | `gen_ai.response.model` | Only the model the response reports is shown. `gen_ai.request.model` prices a span that has no response model, but it is not shown: it is the `model_requested` column of `crucible_sql.spans` in the [SQL workspace](sql-workspace.md) |
+| Tokens (`input_tokens`, `output_tokens`, `total_tokens`) | `gen_ai.usage.input_tokens`, else the deprecated `gen_ai.usage.prompt_tokens`; `gen_ai.usage.output_tokens`, else the deprecated `gen_ai.usage.completion_tokens` | The total is input plus output. `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` and `gen_ai.usage.reasoning.output_tokens` are parts of the input and output counts, not additions. The trace list's totals leave out a span that has a descendant carrying usage or cost, because it repeats what its descendants report; every span still shows its own counts |
+| Cost (`total_cost_usd`) | `crucible.cost.total`, `crucible.cost.<usage key>` | USD as a decimal string or a double. A provided cost wins, so `crucible.cost.total` prices a model the price table does not list. Otherwise the server prices the token usage with its bundled price table, by the response model, else the request model; [priced models](priced-models.md) lists the models it prices. A model the table does not list gets no cost: the traces and spans lists show $0, the REST API returns 0, and `cost_source` in `crucible_sql.spans` is `none` |
 | Session and user (`session_id`, `user_id` in the trace list) | `crucible.session.id`, `session.id`, `gen_ai.conversation.id`; `crucible.user.id`, `user.id` | Set them on every span at span start. Within one request, a span without a value takes the value of the request's root span for its trace, else of the earliest span that has one |
+| Service (no view or API field) | Resource `service.name` | Stored as the `service_name` column of `crucible_sql.spans`, which the SQL workspace reads. The UI, the REST API and the MCP server do not show it, and it is not repeated among the resource attributes |
 | Environment (`environment` in the trace list) | `crucible.environment`, resource `deployment.environment.name`, resource `deployment.environment` | Default `default` |
 | Release (`release` in the trace list) | `crucible.release`, resource `service.version` | |
 | Trace tags (`tags` in the trace list) | `crucible.trace.tags`, a string array | |
 | Input and output (the payload route's `input` and `output`, search) | `crucible.input`, `gen_ai.input.messages`, `gen_ai.tool.call.arguments`; `crucible.output`, `gen_ai.output.messages`, `gen_ai.tool.call.result` | A `crucible.*` string is kept as is, other JSON as JSON (`io_shape: raw`). The messages are JSON (`io_shape: genai_messages`). A span that sends both a `crucible.*` key and messages keeps the `crucible.*` value, and the messages stay among its attributes. A tool span's captured MCP arguments and results become its input and output |
 | System instructions (the payload route's `system_instructions`) | `gen_ai.system_instructions` | JSON |
 | Tool definitions (the payload route's `tool_definitions`) | `gen_ai.tool.definitions` | JSON |
-| Metadata (search's `metadata` field) | `crucible.metadata.<key>` | Each key becomes one entry of the span's metadata, searchable as `key=value` |
+| Metadata (search's `metadata` field) | `crucible.metadata.<key>` | Each key becomes one entry of the span's metadata, searchable as `key=value`. Search and the Metadata filter of the traces and spans lists match it; the span panel does not show it, and `metadata_kv` in `crucible_sql.span_payloads` holds it |
 | Attributes (the payload route's `attributes` and `resource_attributes`) | Every other key | Keys that a field above consumed are not repeated there |
 
 The trace list's `release` and `tags` fill in once the spans reach ClickHouse; until then they are empty.
@@ -255,6 +258,12 @@ The server also reads and stores `crucible.tags` (span tags), `crucible.version`
 `gen_ai.system`), `gen_ai.tool.name` and `gen_ai.response.finish_reasons`. The SQL workspace's
 `crucible_sql.spans` and `crucible_sql.span_payloads` views and `crucible-jsonl` exports carry them. The full list
 of keys is in [contract 10.6](../architecture/contracts.md#106-source-keys-for-fields-without-a-semantic-convention).
+
+The trace page and the REST API's span rows do not show these. In `crucible_sql.spans` they are the columns `tags`,
+`version`, `trace_public`, `prompt_name`, `prompt_version`, `completion_start_time`, `provider`, `tool_names` and
+`finish_reasons`; in `crucible_sql.span_payloads` they are `trace_metadata` and `model_parameters`, which holds the
+request parameters and the `crucible.model_parameters.<key>` values. The traces and spans lists can filter on the
+version. `crucible.trace.public` does not set the trace's Public flag.
 
 Spans that carry `mcp.method.name`, which the Crucible SDKs and `crucible proxy` send with the keys of
 [contract 9.1](../architecture/contracts.md#91-wire-attribute-contract), are stored as spans like any other: a

@@ -5,8 +5,9 @@ place of the Langfuse keys. Observation types, levels, models, token usage, cost
 map to Crucible's fields. The SDK calls that go to Langfuse's REST API (scores, prompts, datasets) are not served;
 [moving from Langfuse](../migration/langfuse.md) lists each one and what it does against Crucible.
 
-Verified with langfuse 5.2.0 (Python), and @langfuse/otel and @langfuse/tracing 6.1.1 with @opentelemetry/sdk-node
-0.208.0 (JavaScript).
+The Python example below runs unchanged with langfuse 3.11.0, 3.15.0, 4.18.0 and 5.2.0; [moving from
+Langfuse](../migration/langfuse.md#what-changes) says what older versions need. The JavaScript setup was verified
+with @langfuse/otel and @langfuse/tracing 6.1.1 with @opentelemetry/sdk-node 0.208.0.
 
 ## Pointing it at Crucible
 
@@ -54,6 +55,22 @@ sdk.start();
 An OpenTelemetry exporter that sent spans to a Langfuse OTLP endpoint can send them to the same path on Crucible,
 with either form of [authentication](../guides/sending-traces.md#authentication).
 
+### When nothing arrives
+
+When an export fails, the SDK logs only `Failed to export spans batch code: 401, reason: Unauthorized` or
+`Failed to export spans batch code: 404, reason: Not Found`, without Crucible's reason, and the program exits as
+usual. This request sends the same keys to the same path and shows Crucible's answer:
+
+```sh
+curl -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" -X POST "$LANGFUSE_BASE_URL/api/public/otel/v1/traces" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+- `{}` means the address and the key pair work.
+- A 401 means Crucible refused the keys; the message in the body gives its reason.
+- A 404 means the address is wrong. A trailing slash in `LANGFUSE_BASE_URL` is one cause: the SDK then posts to
+  `//api/public/otel/v1/traces`, which answers 404, and the trace is lost.
+
 ## What maps
 
 | Crucible field | Langfuse attribute |
@@ -74,7 +91,7 @@ with either form of [authentication](../guides/sending-traces.md#authentication)
 | User | `user.id`, `langfuse.user.id` |
 | Session | `session.id`, `langfuse.session.id` |
 | Trace tags | `langfuse.trace.tags` |
-| Public flag | `langfuse.trace.public` |
+| Trace public (`trace_public` in SQL, not the trace's Public flag) | `langfuse.trace.public` |
 | Environment, release, version | `langfuse.environment`, `langfuse.release`, `langfuse.version` |
 
 - `propagate_attributes` (Python) and `propagateAttributes` (JavaScript) write the user, session, tags, trace name,
