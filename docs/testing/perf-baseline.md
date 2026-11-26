@@ -410,6 +410,9 @@ steps run the `crucible` binary of those images.
 |---|---|---|
 | `fd9d0ac` | every frame over 16 KiB | every block |
 | `f21827a` | a frame over 16 KiB that durable frames follow | the blocks of a batch that durable frames follow when it seals |
+| `45daf03` | a frame over 16 KiB that durable frames follow | every block |
+
+The branch ends with `fd9d0ac`'s behaviour: [where this leaves the shipper](#where-this-leaves-the-shipper).
 
 ### A batch seals once the batch before it is encoded
 
@@ -498,6 +501,63 @@ the window between the metric scrapes around the load (31.3 to 31.6 s):
   be encoded and freed.
 - Offered 100,000 spans/s, `fd9d0ac` kept up (above); offered 150,000, ingest takes more of the 2 CPUs and the
   shipper shares them with it.
+
+### `45daf03`: encoding by jobs moves the ack p99
+
+`45daf03` keeps `f21827a`'s gate on stage A and encodes every block by a job, as `fd9d0ac` does. The rule for its
+rotation was written before the run: shifted when every one of its steps has a higher ack p99 than every base step.
+From 00:16 to 00:30 UTC on 2026-11-26:
+
+| Build | Ack p99 per step, ms | Median p99 | Median p99.9 | Freshness p95 | Jobs per step, stage A and encode |
+|---|---|---|---|---|---|
+| base `8134c64` | 5.14, 5.60, 8.90 | 5.60 | 13.5 | 564 to 568 ms | none |
+| `fd9d0ac` | 6.88, 7.01, 7.41 | 7.01 | 16.7 | 516 ms | 6,000 and 590 |
+| `45daf03` | 7.32, 7.54, 6.78 | 7.32 | 14.0 | 515 to 516 ms | 48 to 59 and 590 |
+
+The third base step held a stall (p99.9 93.7 ms), so the ranges overlap and the rule read "level", and the gates ran,
+from 00:30 to 00:47 UTC, probe `honest`:
+
+| Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first | Result |
+|---|---|---|---|---|---|---|---|
+| ack | Throughput, acknowledged spans/s | 609,373 | 593,570 | -2.6% | 0.078 | +0.7% | no regression |
+| ack | Durable-ack p99, ms | 5.23 | 6.36 | +21.6% | 0.039 | +10.6% | **regression**, higher in 6 of 7 pairs |
+| e2e | Sustained, shipped spans/s | 63,576 | 95,423 | +50.1% | | -1.1% | invalid: 5 of 7 candidate arms kept up |
+| e2e | Freshness p95, ms | 565.29 | 516.25 | -8.7% | 1.00 | +0.4% | no regression, lower in 7 of 7 pairs |
+
+- The ack p99 of the e2e path's freshness arms, at the same 10,000 spans/s, was higher in 7 of 7 pairs (4.1 to 5.3
+  ms against 6.4 to 7.6 ms).
+- With 48 to 59 stage A jobs per step against `fd9d0ac`'s 6,000, the ack p99 rose as much: encoding by jobs is what
+  moves it, and the gate on stage A buys nothing.
+
+`baseline.sh sustained-step 1k plain 150000 30`, two steps each, from 00:47 to 00:58 UTC:
+
+| | Base | Base | `45daf03` | `45daf03` | `fd9d0ac` | `fd9d0ac` |
+|---|---|---|---|---|---|---|
+| Shipped spans/s, run and drain | 57,288 | 58,901 | 65,208 | 61,551 | 62,665 | 60,918 |
+| Ack p50 / p99 ms | 2.9 / 29.6 | 2.7 / 21.3 | 4.0 / 42.7 | 4.1 / 33.8 | 4.2 / 46.1 | 4.6 / 32.9 |
+| Crucible CPUs used of 2 | 1.24 | 1.26 | 1.59 | 1.45 | 1.52 | 1.56 |
+| Encoding jobs' hold, share of the window | | | 83.5% | 86.9% | 84.9% | 86.0% |
+
+Nothing was lost or duplicated in any step.
+
+### Where this leaves the shipper
+
+The branch keeps `fd9d0ac`'s behaviour: stage A as a job on every frame over 16 KiB, encoding by a job for every
+block, the seal rule, and the work on the task while ingest is busy. On the gate's small rig, 2 CPUs:
+
+- **Offered 100,000 spans/s it keeps up**: 6 of the 7 arms of `fd9d0ac`'s gate shipped 94,491 to 96,689 spans/s,
+  the seventh 81,721, where base ships about 62,000. The gate cannot compare the two: its small rig offers 100,000
+  spans/s, and an arm that ships 90% of that counts as not saturated, so a build that gains more than about 45% reads
+  `invalid` there.
+- **Offered 150,000 spans/s**, ingest takes more of the 2 CPUs: about 61,000 to 63,000 against 56,000 to 59,000.
+- **Freshness p95 at 10,000 spans/s** falls from about 565 to about 516 ms: a pair's insert starts once its own block
+  is encoded.
+- **Durable-ack p99 at 10,000 spans/s** rises by about 1 to 2.5 ms, from about 5 ms to 6 to 7.5 ms: every rotation
+  step of a build that encodes by jobs is above the base median, `45daf03`'s gate reads regression, and the
+  freshness arms rose in 12 of 14 pairs. Gating the encoding on the log's state took the rise away, and the gain with it (`f21827a`). The full
+  rig, with 6 CPUs, is where the durable-ack p99 decides ([`perf.md`](perf.md)).
+- Untested lead for the next round: stage B and the rows cost about twice as much per span on the task, and
+  encoding 1.5 to 1.8 times as much, when records and rows are built on one thread and freed on another.
 
 ## Incomplete: remaining runs
 
