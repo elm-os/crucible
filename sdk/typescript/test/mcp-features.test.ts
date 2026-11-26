@@ -66,6 +66,11 @@ async function inMemory(
   return collector.spans.filter((span) => span.attributes["mcp.method.name"] === "tools/call");
 }
 
+/** The recorded call of `tool`. */
+function callOf(tool: string): DecodedSpan | undefined {
+  return collector.spans.find((span) => span.attributes["gen_ai.tool.name"] === tool);
+}
+
 /** The attributes that differ between tool calls of one in-memory session. */
 function callAttributes(span: DecodedSpan | undefined): Record<string, unknown> {
   const {
@@ -237,6 +242,50 @@ describe("error marks", () => {
       "crucible.mcp.error.subclass": "business",
     });
     expect([missing, malformed, fail].map((span) => span?.status.code)).toEqual([2, 2, 2]);
+  });
+
+  test("arguments the MCP SDK refused and an unknown tool are the caller's fault", async () => {
+    const server = buildServer();
+    server.registerTool(
+      "report",
+      { inputSchema: z.object({}), outputSchema: z.object({ orders: z.number() }) },
+      // No structured content: the SDK refuses the result after the handler ran, which is the server's fault.
+      async () => ({ content: [{ type: "text", text: "3 orders" }] }),
+    );
+    const [clientSide, serverSide] = inMemoryPair();
+    await instrument(server).connect(serverSide);
+    const client = newClient("legacy");
+    await client.connect(clientSide);
+    const refused = await client.callTool({ name: "echo", arguments: { text: 42 } });
+    await client.callTool({ name: "cancel_order", arguments: {} }).catch(() => undefined);
+    await client.callTool({ name: "report", arguments: {} }).catch(() => undefined);
+    await client.close();
+    await flush();
+    expect(refused.isError).toBe(true);
+    // The SDK checked the arguments against the input schema before the handler ran.
+    expect(callAttributes(callOf("echo"))).toEqual({
+      "gen_ai.tool.name": "echo",
+      "crucible.mcp.result_type": "complete",
+      "crucible.mcp.content.blocks.text": 1n,
+      "error.type": "tool_error",
+      "rpc.response.status_code": "-32602",
+      "crucible.mcp.error.class": "validation",
+    });
+    expect(callAttributes(callOf("cancel_order"))).toEqual({
+      "gen_ai.tool.name": "cancel_order",
+      "error.type": "-32602",
+      "rpc.response.status_code": "-32602",
+      "crucible.mcp.error.class": "not_found",
+    });
+    expect(callAttributes(callOf("report"))).toEqual({
+      "gen_ai.tool.name": "report",
+      "crucible.mcp.result_type": "complete",
+      "crucible.mcp.content.blocks.text": 1n,
+      "error.type": "tool_error",
+    });
+    expect(["echo", "cancel_order", "report"].map((tool) => callOf(tool)?.status.code)).toEqual([
+      2, 2, 2,
+    ]);
   });
 });
 

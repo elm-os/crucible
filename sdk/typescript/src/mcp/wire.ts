@@ -89,6 +89,20 @@ export function putImplementation(
   put(attributes, `${prefix}.version`, info?.version);
 }
 
+/** The text of the first text block of a tool result. */
+export function firstText(result: Fields): string | undefined {
+  if (!Array.isArray(result.content)) {
+    return undefined;
+  }
+  for (const block of result.content) {
+    const item = fields(block);
+    if (item?.type === "text") {
+      return text(item.text);
+    }
+  }
+  return undefined;
+}
+
 /** Error message cap (contract 3.5 `error_message`). */
 const ERROR_MESSAGE_BYTES = 2_048;
 

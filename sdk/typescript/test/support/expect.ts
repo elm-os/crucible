@@ -156,6 +156,7 @@ export function workload(shape: Shape): Op[] {
       "gen_ai.tool.name": "missing",
       "rpc.response.status_code": "-32602",
       "error.type": "-32602",
+      "crucible.mcp.error.class": "not_found",
     },
     { code: 2, message: "Tool missing not found" },
   );
