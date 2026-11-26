@@ -1079,18 +1079,10 @@ impl ClickHouseStore {
         self.inner.config.cluster.as_ref()
     }
 
-    /// How many of the four generated service users (contract 7.1) the store holds, read as `crucible_admin`: on
-    /// one server, those it holds; with a cluster configured, those of the replica that answers with the most.
+    /// How many of the four generated service users (contract 7.1) the store holds, read as `crucible_admin`: those
+    /// of the server it talks to, or, with a cluster configured and none there, those of the replica that answers
+    /// with the most. Only that second read goes to every replica, so a start reads one server when the users exist.
     pub async fn service_users(&self) -> Result<u64, StoreError> {
-        if let Some(cluster) = &self.inner.config.cluster {
-            let replicas = self.cluster_replicas(cluster).await?;
-            let holdings = self.holdings(cluster, &replicas).await?;
-            return Ok(holdings
-                .iter()
-                .map(|holding| holding.service_users)
-                .max()
-                .unwrap_or(0));
-        }
         let mut b = Binder::default();
         let users = b.strings(&service_user_names());
         let answer = self
@@ -1101,7 +1093,19 @@ impl ClickHouseStore {
                 )),
             )
             .await?;
-        count("the service users", &answer)
+        let here = count("the service users", &answer)?;
+        match &self.inner.config.cluster {
+            Some(cluster) if here == 0 => {
+                let replicas = self.cluster_replicas(cluster).await?;
+                let holdings = self.holdings(cluster, &replicas).await?;
+                Ok(holdings
+                    .iter()
+                    .map(|holding| holding.service_users)
+                    .max()
+                    .unwrap_or(0))
+            }
+            _ => Ok(here),
+        }
     }
 
     /// What the startup checks of a replicated deployment need from the server (contract 5.8), read as
