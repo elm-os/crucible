@@ -160,7 +160,7 @@ fn advanced(mut stored: Schedule, pass: Pass, period: u64, whole: bool, last: u6
 /// A period as an error says it: in hours, or in minutes when it is not whole hours.
 fn span(every: Duration) -> String {
     let minutes = every.as_secs() / 60;
-    if minutes >= 60 && minutes % 60 == 0 {
+    if minutes >= 60 && minutes.is_multiple_of(60) {
         format!("{} h", minutes / 60)
     } else {
         format!("{minutes} min")
