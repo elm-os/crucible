@@ -437,9 +437,6 @@ struct Setup {
     restart: Option<(usize, u64)>,
     /// With jobs otherwise in place, the encoding jobs are held for this many microseconds of the run.
     hold_encodes: Option<u64>,
-    /// The frames arrive one at a time while the shipper runs, this many microseconds apart, instead of all
-    /// before it starts.
-    trickle: Option<u64>,
 }
 
 impl Setup {
@@ -453,7 +450,6 @@ impl Setup {
             deletion_failures: None,
             restart: None,
             hold_encodes: None,
-            trickle: None,
         }
     }
 
@@ -635,7 +631,7 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
             env.spawner = spawner;
         }
         let (wal, report) = Box::pin(Wal::open(&env, wal_config)).await.unwrap();
-        if !rest.is_empty() && setup.trickle.is_none() {
+        if !rest.is_empty() {
             last = append(&wal, rest).await;
         }
         let shipper =
@@ -648,12 +644,6 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
             let result = Box::pin(shipper.run()).await;
             *slot.lock().unwrap() = Some((result, started, clock.now()));
         }));
-        if let Some(gap) = setup.trickle {
-            for frame in rest {
-                env.clock.sleep(Duration::from_micros(gap)).await;
-                last = append(&wal, std::slice::from_ref(frame)).await;
-            }
-        }
         let mut sealed_while_held = 0;
         if let (Some(micros), Some(hold)) = (setup.hold_encodes, &hold) {
             env.clock.sleep(Duration::from_micros(micros)).await;
@@ -793,42 +783,10 @@ fn stage_a_runs_ahead_of_stage_b_and_the_phases_add_up() {
     assert_eq!(in_place.phase("wait_stage_a"), 0, "{:?}", in_place.phases);
     let charged: u64 = deferred.phases.iter().map(|(_, micros)| micros).sum();
     assert_eq!(charged, deferred.ran, "{:?}", deferred.phases);
-    // Every request ran stage A as a job: the log was written before the shipper started, so frames followed each
-    // one. Every block was encoded by a job too: the batches with rows seal full, with frames after them, and the
-    // last batch, sealed at its linger once the shipper caught up, holds only the repeats of the later requests.
+    // Every request ran stage A as a job, and every block was encoded by one.
     let (stage_a, encode) = deferred.jobs;
     assert_eq!(stage_a, 24);
     assert_eq!(encode, deferred.inserts.len() as u64);
-}
-
-/// A shipper that keeps up with the log reads each frame as the last durable one, so it runs stage A on its task,
-/// one frame at a time, beside ingest: it offers no stage A job, and its window holds one frame. It encodes every
-/// block by a job all the same.
-#[test]
-fn a_shipper_that_keeps_up_runs_stage_a_on_its_task() {
-    let log = large_requests(12);
-    let trickle = Some(50_000);
-    let in_place = ship(
-        17,
-        &log,
-        Setup {
-            trickle,
-            ..Setup::in_place(40)
-        },
-    );
-    let deferred = ship(
-        17,
-        &log,
-        Setup {
-            trickle,
-            ..Setup::deferred(40, 2_000)
-        },
-    );
-    assert!(!deferred.inserts.is_empty());
-    assert_eq!(deferred.jobs, (0, deferred.inserts.len() as u64));
-    assert_eq!(deferred.stats.frames_ahead_peak, 1);
-    assert_eq!(in_place.tokens(), deferred.tokens());
-    assert_eq!(in_place.within_log(), deferred.within_log());
 }
 
 /// A node that starts on a log a node before it shipped rebuilds stage B from the retained prefix with stage A of
@@ -863,10 +821,10 @@ fn a_restart_rebuilds_stage_b_with_its_jobs_ahead() {
     // the rebuilt duplicate window drops the 80 repeats, which would make 280 rows without it.
     assert_eq!((in_place.span_rows, deferred.span_rows), (200, 200));
     assert_eq!(in_place.stats.frames_ahead_peak, 1);
-    // Two frames per stage A permit, and the 24 frames the rebuild replays all ran stage A as jobs, with the log
-    // durable past them.
+    // Two frames per stage A permit, and stage A of every request, the 24 the rebuild replays included, ran as a
+    // job.
     assert_eq!(deferred.stats.frames_ahead_peak, 8, "{:?}", deferred.stats);
-    assert!(deferred.jobs.0 >= 24, "{:?}", deferred.jobs);
+    assert_eq!(deferred.jobs.0, 28);
 }
 
 /// A batch seals only once the blocks of every batch before it are encoded, so that besides the open batch only the

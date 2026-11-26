@@ -3,10 +3,9 @@
 //! select (contract 13.3, step 3): those of the `Tombstone` frames it has passed, and every request the control
 //! store holds that can select a frame, which it reads before it admits the frame.
 //!
-//! Stage A of the frames read ahead ([`Window`]) runs as blocking jobs while the shipper is behind the log, and the
-//! encoding of each sealed batch's blocks always does, each under its share of the CPU budget ([`CpuStage`]); the
-//! task keeps reading, stage B, the rows and the WAL's records. A batch seals once the blocks of every batch before
-//! it are encoded.
+//! Stage A of the frames read ahead ([`Window`]) and the encoding of each sealed batch's blocks run as blocking
+//! jobs under their shares of the CPU budget ([`CpuStage`]); the task keeps reading, stage B, the rows and the
+//! WAL's records. A batch seals once the blocks of every batch before it are encoded.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1254,10 +1253,8 @@ impl Shipper {
             let token = pair_token(&id, pair)?;
             unencoded.fetch_add(1, Ordering::AcqRel);
             let (left, encoded) = (Arc::clone(&unencoded), Arc::clone(&ctx.encoded));
-            // The block is encoded once, by a job that owns the rows and frees them, then counts the batch down;
-            // every attempt of the pair sends those bytes (contract 5.2). Encoding a whole batch on the task when
-            // it seals caught up would stall it for the batch's encoding, so a shipper near its capacity keeps
-            // its jobs.
+            // The block is encoded once, by a job that owns the rows and frees them, and every attempt of the
+            // pair sends those bytes (contract 5.2).
             let block = ctx.encode.run(&ctx.env, move || {
                 let block = block(&id, pair, rows, marker_at, compression, marker);
                 if left.fetch_sub(1, Ordering::AcqRel) == 1 {

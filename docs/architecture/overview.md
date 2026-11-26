@@ -73,8 +73,8 @@ spans are turned into records, made readable from memory, and copied to ClickHou
 5. **Index.** The in-memory recent-span index makes a span readable as soon as it is acknowledged.
 6. **Seal and ship.** The shipper seals a batch (`BatchSeal` in the WAL), encodes one Native block per table and
    partition, and inserts it with a deterministic deduplication token. Unknown outcomes are probed before any retry.
-   Encoding, and normalization while the shipper is behind the log, run on blocking threads under their shares of
-   the CPU budget, and the shipper's task keeps what depends on the order of the log.
+   Normalization and encoding run on blocking threads under their shares of the CPU budget; the shipper's task keeps
+   what depends on the order of the log.
 7. **Checkpoint.** A low-watermark `Checkpoint` record lets fully shipped WAL segments be deleted.
 
 Facts (tags, flags, scores, corrections) and deletion tombstones travel the same path as WAL frames of their own.

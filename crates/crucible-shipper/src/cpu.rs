@@ -1,9 +1,6 @@
 //! The shipper's blocking jobs under the CPU budget (contract 2.14): stage A of the frames read ahead of stage B,
 //! and the encoding of the blocks of a sealed batch, each stage under its own share of `cpu.permits`.
 //!
-//! The shipper offers stage A as jobs only while it is behind the log, so one that keeps up normalizes on its task,
-//! one frame at a time, beside ingest; it offers the encoding of every block as a job.
-//!
 //! A job takes a permit of its stage before it is spawned. One that finds none waits without a thread and runs
 //! on the thread of the job that passes its permit on, first come, first served. Each job's wait (from the offer
 //! to its start) and hold (its run) are recorded by stage. While ingest is busy, as in a burst, the work runs in
@@ -69,10 +66,15 @@ impl CpuStage {
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
-        if self.ingest.as_ref().is_some_and(|ingest| ingest.busy()) {
-            return Pending::ready(work());
-        }
         let (sender, result) = oneshot::channel();
+        if self.ingest.as_ref().is_some_and(|ingest| ingest.busy()) {
+            // The receiver is held below.
+            let _held = sender.send(work());
+            return Pending {
+                result,
+                _waiting: None,
+            };
+        }
         let clock = Arc::clone(&env.clock);
         let offered = clock.now();
         let (wait, hold) = (self.wait.clone(), self.hold.clone());
@@ -108,17 +110,6 @@ pub(crate) struct Pending<T> {
 }
 
 impl<T> Pending<T> {
-    /// The result of work done in place.
-    pub(crate) fn ready(value: T) -> Self {
-        let (sender, result) = oneshot::channel();
-        // The receiver is held below.
-        let _held = sender.send(value);
-        Self {
-            result,
-            _waiting: None,
-        }
-    }
-
     /// The job's result if it has ended, or `Err(Cancelled)` when it ended without one: it panicked, or the
     /// runtime dropped it while shutting down. `None` while it runs or waits; call it no more once it answered.
     pub(crate) fn try_take(&mut self) -> Option<Result<T, Cancelled>> {

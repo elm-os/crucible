@@ -1,8 +1,8 @@
-//! The frames read ahead of stage B (contract 3.2). Stage A is pure per frame, so while the shipper is behind the
-//! log it runs on each frame that carries rows as a blocking job under the stage A share of the CPU budget, while
-//! the shipper task does stage B of the frames before it. Stage B takes the frames strictly in LSN order, each
-//! with the records its stage A made, whatever order the jobs end in. A frame is charged to
-//! `normalize.cache_bytes` from its read until stage B takes it (contract 4.8).
+//! The frames read ahead of stage B (contract 3.2). Stage A is pure per frame, so it runs on each frame that
+//! carries rows as a blocking job under the stage A share of the CPU budget, while the shipper task does stage B
+//! of the frames before it. Stage B takes the frames strictly in LSN order, each with the records its stage A
+//! made, whatever order the jobs end in. A frame is charged to `normalize.cache_bytes` from its read until
+//! stage B takes it (contract 4.8).
 
 use std::collections::VecDeque;
 use std::future;
@@ -120,17 +120,12 @@ impl Window {
         self.gauge.set(i64::try_from(bytes).unwrap_or(i64::MAX));
     }
 
-    /// Adds the next frame of the log and starts its stage A when it carries rows: as a job when the frame is
-    /// large and the log holds durable frames after it, otherwise on the task. A shipper that keeps up with the
-    /// log reads each frame as the last durable one, so it runs stage A on its task, as one thread, and leaves
-    /// the CPUs to ingest.
+    /// Adds the next frame of the log and starts its stage A when it carries rows: on the task for a small
+    /// frame, otherwise as a job.
     pub(crate) fn push(&mut self, ctx: &Arc<Ctx>, frame: WalFrame, norm: NormCtx<'static>) {
         let bytes = charge(&frame);
-        let behind = ctx.wal.durable_lsn() > frame.lsn();
         let stage_a = match frame.record_type() {
-            RecordType::IngestRequest | RecordType::FactBatch
-                if bytes <= INLINE_MAX_BYTES || !behind =>
-            {
+            RecordType::IngestRequest | RecordType::FactBatch if bytes <= INLINE_MAX_BYTES => {
                 StageA::Done(read_frame(&ctx.wal, &frame, &norm, &ctx.config))
             }
             RecordType::IngestRequest | RecordType::FactBatch => {

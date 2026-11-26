@@ -10,15 +10,14 @@
 //! after a probe read absent. A `Checkpoint` frame follows once a batch and every earlier batch are resolved, and
 //! garbage collection of the WAL runs from there.
 //!
-//! The task keeps the order-dependent work: reading the log, stage B, the rows and the WAL's records. While the log
-//! holds durable frames past those the task works on, stage A, pure per frame (contract 3.2), runs on the frames
-//! the task reads ahead, up to twice the stage A share of the CPU budget and `normalize.cache_bytes`, each as a
-//! blocking job, and stage B takes the frames strictly in LSN order with the records their jobs made; a shipper
-//! that keeps up runs stage A on its task. Each block of a sealed batch is encoded by a blocking job under the
-//! encode share, and the bytes are kept until the pair resolves, so every retry sends them unchanged (contract
-//! 5.2). A batch seals only once every batch before it is encoded, so besides the open batch only the batch being
-//! encoded holds rows. While ingest is busy the task does both itself, and so does the simulation's, whose spawner
-//! runs blocking jobs in place.
+//! The task keeps the order-dependent work: reading the log, stage B, the rows and the WAL's records. Stage A, pure
+//! per frame (contract 3.2), runs on the frames the task reads ahead, up to twice the stage A share of the CPU
+//! budget and `normalize.cache_bytes`, each as a blocking job; stage B takes the frames strictly in LSN order with
+//! the records their jobs made. Each block of a sealed batch is encoded by a blocking job under the encode share,
+//! and the bytes are kept until the pair resolves, so every retry sends them unchanged (contract 5.2). A batch
+//! seals only once every batch before it is encoded, so besides the open batch only the batch being encoded holds
+//! rows. While ingest is busy, the task does the jobs' work itself; the simulation's spawner runs blocking jobs in
+//! place, so there the task does too.
 //!
 //! After a restart, the sealed batches that no checkpoint covers are shipped again with their recorded boundaries
 //! and identical tokens, every pair probed first; pairs named by a `Quarantine` frame stay resolved; the unsealed
