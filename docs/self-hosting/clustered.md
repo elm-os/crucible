@@ -34,7 +34,9 @@ flowchart LR
 ## Run it with Docker Compose
 
 `deploy/compose/compose.cluster.yaml` runs two ClickHouse 26.8 replicas and one ClickHouse Keeper beside Crucible and
-Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need.
+Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so it is the only file you need. It
+needs Docker Compose 2.23.1 or newer, which reads that configuration from the file, and step 2 needs `openssl` and a
+POSIX shell.
 
 1. Download the Compose file into a new folder, and work in that folder:
 
@@ -57,11 +59,46 @@ Postgres 18. The file holds the ClickHouse and Keeper configuration itself, so i
    ```
 
 4. Create the organization and its owner as in the
-   [quickstart](quickstart.md#3-create-the-organization-and-its-owner), with
-   `docker compose -f compose.cluster.yaml exec crucible crucible admin init ...`.
+   [quickstart](quickstart.md#3-create-the-organization-and-its-owner). The setup link is in the logs:
 
-The optional settings of `compose.yaml` (`CRUCIBLE_IMAGE`, `CRUCIBLE_BIND_ADDRESS`, `CRUCIBLE_HTTP_PORT`,
-`CRUCIBLE_OTLP_HTTP_PORT`) work the same way here.
+   ```sh
+   docker compose -f compose.cluster.yaml logs crucible | grep 'setup/?token='
+   ```
+
+   Or, without a browser, `crucible admin init` reads the password from standard input: pipe it in, with `-T` so
+   that `docker compose exec` opens no terminal, as a script needs:
+
+   ```sh
+   printf '%s\n' "$OWNER_PASSWORD" | docker compose -f compose.cluster.yaml exec -T crucible \
+     crucible admin init --org-name Acme --email you@example.com --name 'Your Name'
+   ```
+
+Every `docker compose` command of the quickstart works here with `-f compose.cluster.yaml` after `docker compose`,
+because the folder holds no `compose.yaml`. Without it, Compose answers `no configuration file provided`. For
+example:
+
+```sh
+docker compose -f compose.cluster.yaml exec crucible crucible admin create-key --project default
+docker compose -f compose.cluster.yaml exec crucible crucible admin reset-password <email>
+docker compose -f compose.cluster.yaml down        # keeps the data
+docker compose -f compose.cluster.yaml down -v     # removes it
+```
+
+Optional settings, in `.env`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image: a release tag such as `0.1`, or the tag of an image you built |
+| `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on |
+| `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the web UI, the REST API and OTLP/HTTP ingest |
+| `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | The host port of OTLP/HTTP ingest |
+
+The ports are published on every interface, so other machines on your network can send traces and sign in. Add
+`CRUCIBLE_BIND_ADDRESS=127.0.0.1` to `.env` to keep them on this machine.
+
+The file names its Compose project `crucible-cluster`, so a second copy on the same machine would share the first
+one's containers and volumes. Give a second copy its own project name, with `-p <name>` on every command or
+`COMPOSE_PROJECT_NAME=<name>` in its `.env`, and its own ports.
 
 The file runs these services:
 
