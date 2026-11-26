@@ -130,7 +130,8 @@ jobs:
         run: |
           export CRUCIBLE_E2E_BIN="$PWD/target/release/crucible"
           export CRUCIBLE_E2E_OUT="$PWD/e2e-out"
-          export CRUCIBLE_E2E_CHROME="$(command -v google-chrome)"
+          chrome=$(command -v google-chrome) || { echo "google-chrome is not on PATH, and the UI check needs it" >&2; exit 1; }
+          export CRUCIBLE_E2E_CHROME="$chrome"
           cargo test --locked --package crucible --test e2e -- --nocapture
       - name: Report
         if: always()
