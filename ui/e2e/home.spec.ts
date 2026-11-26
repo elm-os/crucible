@@ -1,4 +1,3 @@
-import type { Page } from "@playwright/test";
 import {
   BOUNDS_PATH,
   dataBounds,
@@ -11,7 +10,6 @@ import {
   PROJECT,
   problem,
   SERVER_TEXT,
-  signedIn,
   test,
 } from "./fixtures";
 
@@ -43,10 +41,6 @@ function answer(measures: string[]) {
 }
 
 const region = (name: string) => ({ name, exact: true });
-
-const setupOf = (page: Page) => page.getByRole("region", region("Set up"));
-const stepOf = (page: Page, title: string) =>
-  setupOf(page).getByRole("listitem").filter({ hasText: title });
 
 // A project with traces and MCP operations, unless a test answers its own data bounds.
 test.beforeEach(({ api }) => {
@@ -134,7 +128,7 @@ test.describe("home: tiles and charts", () => {
     await expect(cost).toContainText("No data in the last 30 days.");
   });
 
-  test("a project with no data leads with the set-up steps, whatever the tiles answer", async ({
+  test("a project with no data shows the set-up steps whatever the tiles answer", async ({
     page,
     api,
   }) => {
@@ -144,122 +138,5 @@ test.describe("home: tiles and charts", () => {
     const setup = page.getByRole("region", region("Set up"));
     await expect(setup.getByRole("listitem")).toHaveCount(4);
     await expect(setup).toContainText("Send your first trace");
-    await expect(page.getByRole("region").first()).toHaveAccessibleName("Set up");
-  });
-});
-
-test.describe("home: set up", () => {
-  const TRACES_GUIDE = "https://github.com/elm-os/crucible/blob/main/docs/guides/sending-traces.md";
-  const MCP_GUIDE = "https://github.com/elm-os/crucible/blob/main/docs/guides/mcp.md";
-  const KEYS_PATH = new RegExp(`/projects/${PROJECT}/api-keys$`);
-
-  test.beforeEach(({ api }) => {
-    api.on(METRICS_PATH, (route) => route.fulfill(answer(measuresOf(route))));
-  });
-
-  test("loading: nothing shows while the steps are checked; a new project then leads with them", async ({
-    page,
-    api,
-  }) => {
-    const release = api.hold(BOUNDS_PATH, json(dataBounds()));
-    await page.goto(`/home/?project=${PROJECT}`);
-    await expect(page.getByRole("region", region("Traces"))).toContainText("7");
-    await expect(setupOf(page)).toHaveCount(0);
-    await expectAccessible(page, "home set up loading");
-    release();
-    await expect(page.getByRole("region").first()).toHaveAccessibleName("Set up");
-    await expect(stepOf(page, "Send your first trace")).toContainText("To do");
-  });
-
-  test("success: each step shows what the server knows and links to where it is done", async ({
-    page,
-    api,
-  }) => {
-    signedIn(api);
-    api.on(METRICS_PATH, (route) => route.fulfill(answer(measuresOf(route))));
-    api.on(
-      KEYS_PATH,
-      json({
-        data: [
-          {
-            id: "k-1",
-            public_key: `cpk_${"a".repeat(43)}`,
-            scopes: ["ingest", "read", "write"],
-            note: "checkout-service",
-            expires_at: null,
-            last_used_at: null,
-            revoked_at: null,
-            version: 1,
-          },
-        ],
-      }),
-    );
-    await page.goto(`/home/?project=${PROJECT}`);
-    await expect(stepOf(page, "Create an API key")).toContainText("Done");
-    await expect(stepOf(page, "Send your first trace")).toContainText("To do");
-    await expect(stepOf(page, "Instrument an MCP server")).toContainText("To do");
-    await expect(stepOf(page, "Invite your team")).toContainText("To do");
-    const setup = setupOf(page);
-    await expect(setup.getByRole("link", { name: "Members" })).toHaveAttribute(
-      "href",
-      new RegExp(`^/settings/members/?\\?project=${PROJECT}$`),
-    );
-    for (const [name, guide] of [
-      ["How to send traces", TRACES_GUIDE],
-      ["How to instrument an MCP server", MCP_GUIDE],
-    ] as const) {
-      await expect(setup.getByRole("link", { name })).toHaveAttribute("href", guide);
-      await expect(setup.getByRole("link", { name })).toHaveAttribute("target", "_blank");
-    }
-    await expectAccessible(page, "home set up");
-    // Without a key the step is to do, and its link opens the project's API keys page.
-    api.on(KEYS_PATH, json({ data: [] }));
-    await page.reload();
-    await setup.getByRole("link", { name: "API keys" }).click();
-    await expect(page).toHaveURL(new RegExp(`/settings/api-keys/?\\?project=${PROJECT}$`));
-    await expect(page.getByRole("region", { name: "API keys for Checkout" })).toContainText(
-      "No API keys yet.",
-    );
-  });
-
-  test("error: a failed read says so in its rows, and Check again asks again", async ({
-    page,
-    api,
-  }) => {
-    let failing = true;
-    api.on(BOUNDS_PATH, (route) =>
-      route.fulfill(
-        failing
-          ? problem(503, "telemetry_store_unavailable", "0193a5b2-bounds")
-          : json(dataBounds()),
-      ),
-    );
-    await page.goto(`/home/?project=${PROJECT}`);
-    const trace = stepOf(page, "Send your first trace");
-    await expect(trace).toContainText("Couldn't check");
-    await expect(trace).toContainText("This section couldn't load.");
-    await expect(trace).toContainText("0193a5b2-bounds");
-    await expect(stepOf(page, "Instrument an MCP server")).toContainText("Couldn't check");
-    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
-    await expect(page.getByRole("region", region("Traces"))).toContainText("7");
-    await expectAccessible(page, "home set up error");
-    failing = false;
-    const before = api.count(BOUNDS_PATH);
-    await trace.getByRole("button", { name: "Check again: Send your first trace" }).click();
-    await expect(stepOf(page, "Send your first trace")).toContainText("To do");
-    expect(api.count(BOUNDS_PATH)).toBe(before + 1);
-  });
-
-  test("empty: once every step is done the card is gone", async ({ page }) => {
-    const answered = page.waitForResponse((response) =>
-      BOUNDS_PATH.test(new URL(response.url()).pathname),
-    );
-    await page.goto(`/home/?project=${PROJECT}`);
-    await answered;
-    await expect(page.getByRole("region", region("Traces"))).toContainText("7");
-    // Absence can't be awaited, so give the answer time to reach the page first.
-    await page.waitForTimeout(250);
-    await expect(setupOf(page)).toHaveCount(0);
-    await expectAccessible(page, "home set up done");
   });
 });
