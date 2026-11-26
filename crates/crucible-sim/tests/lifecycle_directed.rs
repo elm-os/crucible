@@ -1483,7 +1483,7 @@ fn a_server_of_an_earlier_version_holds_project_deletions_until_it_is_gone() {
                 listed[0]
                     .error
                     .as_deref()
-                    .is_some_and(|why| why.contains("0.1.3")),
+                    .is_some_and(|why| why.contains("(0.1.3)") && why.contains("Upgrade or stop")),
                 "{listed:?}"
             );
             let one = node.service.deletion(scope, listed[0].id).await.unwrap();

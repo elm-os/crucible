@@ -195,6 +195,23 @@ impl Run<'_> {
         Ok(Pair::Free)
     }
 
+    /// A purge whose partition holds rows of its project again after its delete ran and the mask removed what it
+    /// deleted: those rows arrived after the delete, and a purge takes every row of its project whatever its arrival
+    /// (contract 13.4), so it is planned again, with its attempts as they were. Rows that keep landing therefore keep
+    /// the purge going rather than give it up, and it is verified once a check finds the partition without them.
+    async fn again(&mut self, action: &LifecycleAction) -> Result<Pair, JobError> {
+        tracing::debug!(
+            action = %action.key, table = action.table.name(), partition = %action.partition,
+            "rows of a deleted project landed after its purge; the purge runs again"
+        );
+        let row = LifecycleAction {
+            mutation: None,
+            ..self.next(action, ActionState::Planned)
+        };
+        self.write(vec![row]).await?;
+        Ok(Pair::Free)
+    }
+
     /// Sends the action's call to the store, after recording it as issued under the fencing token. A purge of a
     /// project deletion is recorded and sent as a drop or a delete, whichever its partition allows now.
     async fn issue(&mut self, action: &LifecycleAction) -> Result<Pair, JobError> {
@@ -345,7 +362,7 @@ impl Run<'_> {
                         .await?;
                     Ok(Pair::Free)
                 }
-                Ok(_) => self.failed(action, "rows match the delete again").await,
+                Ok(_) => self.again(action).await,
                 // The store did not answer: the next run asks again.
                 Err(_) => Ok(Pair::Free),
             };

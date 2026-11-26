@@ -13,7 +13,7 @@ use crucible_control::{
 };
 use crucible_records::{
     AlertRuleId, ChannelId, DeletionRequestId, DeletionState, ExportJobId, Lsn, PartitionId,
-    ProjectId, SavedQueryId, SqlRunId, TableId, TraceId, UserId, WalEpoch,
+    ProjectId, SavedQueryId, SqlRunId, TableId, Timestamp, TraceId, UserId, WalEpoch,
 };
 use crucible_schema::{Granularity, route};
 
@@ -35,6 +35,8 @@ fn node(n: u64, checkpoint: u64) -> Node {
         version: format!("0.0.{n}"),
         checkpoint_lsn: Lsn::new(checkpoint),
         address: String::new(),
+        // The node's clock, which the store keeps as given.
+        node_clock: Some(at(i64::try_from(checkpoint).unwrap_or(0))),
     }
 }
 
@@ -75,10 +77,16 @@ fn shapes(requests: &[DeletionRequest]) -> Vec<(String, DeletionState)> {
         .collect()
 }
 
-fn nodes(nodes: &[Node]) -> Vec<(String, u64)> {
+fn nodes(nodes: &[Node]) -> Vec<(String, u64, Option<Timestamp>)> {
     nodes
         .iter()
-        .map(|node| (node.version.clone(), node.checkpoint_lsn.get()))
+        .map(|node| {
+            (
+                node.version.clone(),
+                node.checkpoint_lsn.get(),
+                node.node_clock,
+            )
+        })
         .collect()
 }
 

@@ -64,6 +64,7 @@ pub struct LifecycleConfig {
     /// How far a node's clock may be from the database clock. The retention executor computes its cut-offs this
     /// far behind the database clock, so that it removes no row that a node with a slower clock still serves, and
     /// a project deletion takes it into the instant before which no project can write, the end of what it may drop.
+    /// While a live node's clock is more than half of it off, a project deletion drops nothing.
     pub clock_margin: Duration,
     /// Whether the deployment stores media (an object store is configured): a completed deletion request
     /// then reports the media place `done`, otherwise `not_present`.
@@ -86,7 +87,7 @@ impl Default for LifecycleConfig {
             mask_cycle: Duration::from_secs(6 * 3_600),
             deletion_every: Duration::from_secs(30),
             node_every: Duration::from_secs(5),
-            live_within: Duration::from_secs(60),
+            live_within: crucible_control::LIVE_WITHIN,
             granularity: Granularity::Day,
             max_attempts: 8,
             clock_margin: Duration::from_secs(3_600),

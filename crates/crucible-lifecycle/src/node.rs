@@ -130,6 +130,8 @@ impl NodeState {
             version: self.version.clone(),
             checkpoint_lsn: self.log.watermark(),
             address: self.address.clone(),
+            // The leader compares it with the database clock before a project deletion drops a partition.
+            node_clock: Some(now),
         })
         .await?;
         let open = repo.open_requests().await?;

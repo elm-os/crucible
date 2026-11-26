@@ -16,7 +16,7 @@ use crucible_records::{
 use crate::sql::{Cols, P, int};
 use crate::store::{Handle, every, first};
 
-const NODE: &str = "wal_epoch, heartbeat_at, version, checkpoint_lsn, address";
+const NODE: &str = "wal_epoch, heartbeat_at, version, checkpoint_lsn, address, node_clock";
 
 fn node(c: &mut Cols<'_>) -> Result<Node, TxError> {
     Ok(Node {
@@ -25,6 +25,7 @@ fn node(c: &mut Cols<'_>) -> Result<Node, TxError> {
         version: c.text()?,
         checkpoint_lsn: Lsn::new(c.u64()?),
         address: c.text()?,
+        node_clock: c.opt_ts()?,
     })
 }
 
@@ -94,16 +95,17 @@ fn action(c: &mut Cols<'_>) -> Result<LifecycleAction, TxError> {
 impl LifecycleRepo for Handle {
     async fn heartbeat(&self, node: &Node) -> Result<(), TxError> {
         self.write(
-            "INSERT INTO nodes (wal_epoch, heartbeat_at, version, checkpoint_lsn, address) \
-             VALUES ($1, clock_timestamp(), $2, $3, $4) \
+            "INSERT INTO nodes (wal_epoch, heartbeat_at, version, checkpoint_lsn, address, node_clock) \
+             VALUES ($1, clock_timestamp(), $2, $3, $4, $5) \
              ON CONFLICT (wal_epoch) DO UPDATE SET heartbeat_at = clock_timestamp(), \
              version = EXCLUDED.version, checkpoint_lsn = EXCLUDED.checkpoint_lsn, \
-             address = EXCLUDED.address RETURNING 1",
+             address = EXCLUDED.address, node_clock = EXCLUDED.node_clock RETURNING 1",
             &[
                 P::Uuid(node.wal_epoch.uuid()),
                 P::Text(&node.version),
                 int(node.checkpoint_lsn.get())?,
                 P::Text(&node.address),
+                P::OptTs(node.node_clock),
             ],
         )
         .await?;

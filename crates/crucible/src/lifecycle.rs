@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crucible_api::{ProjectSettings, ProjectSettingsSource};
 use crucible_control::{ControlStore, DeletionRequest, DeletionSelector, Node, TxError};
-use crucible_env::{Env, TelemetryStore};
+use crucible_env::{Clock, Env, TelemetryStore};
 use crucible_export::ExportObjects;
 use crucible_ingest::EventHorizon;
 use crucible_jobs::Job;
@@ -31,8 +31,10 @@ use crucible_shipper::{DeletionRequests, DeletionsUnavailable, KnownDeletion};
 use crucible_wal::Wal;
 use futures::future::BoxFuture;
 
-/// The version this node writes into the node registry.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The version this node writes into the node registry: the release number with build metadata that says the node
+/// reads deletion requests of kind `project`, which servers of 0.1.3 and earlier, registered by their bare release
+/// number, cannot (contract 13.4).
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+project-deletions");
 
 /// The deletion requests read in one statement.
 const REQUESTS_PAGE: u32 = 500;
@@ -72,7 +74,11 @@ impl Lifecycle {
             node,
             stores: Arc::default(),
             objects,
-            deletions: Arc::new(ControlDeletions { control, wal }),
+            deletions: Arc::new(ControlDeletions {
+                control,
+                wal,
+                clock: Arc::clone(&env.clock),
+            }),
             max_event_age,
         }
     }
@@ -157,6 +163,8 @@ impl EventHorizon for Horizon {
 pub(crate) struct ControlDeletions {
     control: Arc<dyn ControlStore>,
     wal: Wal,
+    /// The node's clock, which its registration carries beside the database clock.
+    clock: Arc<dyn Clock>,
 }
 
 fn unavailable(error: TxError) -> DeletionsUnavailable {
@@ -207,6 +215,7 @@ impl DeletionRequests for ControlDeletions {
                 version: VERSION.to_owned(),
                 checkpoint_lsn: self.wal.watermark().map_or(Lsn::ZERO, |w| w.last_lsn()),
                 address: String::new(),
+                node_clock: Some(self.clock.wall_now()),
             })
             .await
             .map_err(unavailable)?;
@@ -361,6 +370,7 @@ mod tests {
             let deletions = ControlDeletions {
                 control: Arc::new(model.clone()),
                 wal,
+                clock: Arc::clone(&host.env.clock),
             };
             body(deletions, model).await
         })
@@ -419,10 +429,20 @@ mod tests {
             );
             // Deleting a project selects every frame of it received before, as its tombstone does.
             assert_eq!(all[3].tombstone.selector, TombstoneSelector::Project);
-            // The node registered before it read, so the executor waits for it from here on.
+            // The node registered before it read, so the executor waits for it from here on, with its own clock
+            // and a version that reads project deletions.
             let live = repo.live_nodes(Duration::from_secs(60)).await.unwrap();
             assert_eq!(live.len(), 1);
             assert_eq!(live[0].wal_epoch, deletions.wal.epoch());
+            assert!(
+                live[0]
+                    .clock_skew()
+                    .is_some_and(|skew| skew.abs() < 1_000_000),
+                "{:?}",
+                live[0]
+            );
+            assert!(live[0].reads_project_requests(), "{}", live[0].version);
+            assert!(live[0].version.starts_with(env!("CARGO_PKG_VERSION")));
             // A tombstone's request is found by its id, with its issuer.
             let found = deletions
                 .request(PROJECT, all[1].tombstone.request_id)
@@ -506,6 +526,7 @@ mod tests {
             let deletions = ControlDeletions {
                 control: Arc::new(model),
                 wal,
+                clock: Arc::clone(&host.env.clock),
             };
             let error = deletions
                 .requested_after(Timestamp::from_micros(0))

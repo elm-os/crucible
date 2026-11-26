@@ -182,7 +182,8 @@ pub struct DeletionRequest {
     pub places: Vec<DeletionPlace>,
     /// Why the request failed, or what a request that has not ended waits for and how to fix it (for a
     /// deletion by user: a project salt that the server cannot read; for a project deletion: a read of the
-    /// telemetry store that failed, which the server tries again).
+    /// telemetry store or a removal from the object store that failed, which the server tries again, or the servers
+    /// of an earlier version that it waits for during a rolling upgrade).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     #[ts(optional)]

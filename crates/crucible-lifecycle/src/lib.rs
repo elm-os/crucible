@@ -13,7 +13,8 @@
 //!   also issues, polls and verifies the actions of the other jobs.
 //! - **Purge sweep** (`lifecycle-sweep`): hourly for each project deleted in the last 30 days, daily for those
 //!   deleted before. It probes every table of the project for rows that landed after its purge and plans their
-//!   purge, which the deletion executor sends and verifies (13.4).
+//!   purge, which the deletion executor sends and verifies (13.4). A project it cannot probe is recorded on its
+//!   request and holds back no other, and it finishes a failed project deletion once no table holds the project.
 //! - **Node timer** ([`node_job`], `lifecycle-node`): every 5 s on every node. Heartbeat, pending-deletion
 //!   set, tombstone and acknowledgement, checkpoint report, retention snapshot (13.3, steps 2 and 4).
 //! - **[`Service`]**: what the API calls: retention settings and deletion requests.

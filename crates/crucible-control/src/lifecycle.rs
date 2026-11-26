@@ -48,6 +48,13 @@ text_enum! {
     }
 }
 
+/// A node is live while its latest heartbeat is at most this old on the database clock (contract 13.3).
+pub const LIVE_WITHIN: Duration = Duration::from_secs(60);
+
+/// The newest release whose servers cannot read a deletion request of kind `project`: they refuse its selector, and
+/// one such row fails their every read of deletion requests (contract 13.4).
+const LAST_RELEASE_WITHOUT_PROJECT_REQUESTS: (u64, u64, u64) = (0, 1, 3);
+
 /// A node of the deployment (contract 11.1): one WAL directory.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Node {
@@ -55,12 +62,42 @@ pub struct Node {
     pub wal_epoch: WalEpoch,
     /// The database clock at its latest heartbeat. Written by the store, not by the node.
     pub heartbeat_at: Timestamp,
-    /// The build version.
+    /// The build version. A server of 0.1.3 or earlier registers its bare release number; a later build registers
+    /// a later release or more than the number (`0.1.3+project-deletions`).
     pub version: String,
     /// The node's checkpoint watermark at the heartbeat.
     pub checkpoint_lsn: Lsn,
     /// Where peers reach the node; empty when it has no peer address.
     pub address: String,
+    /// The node's own clock when it sent its latest heartbeat, kept beside `heartbeat_at` so that the leader sees
+    /// how far it is from the database clock; `None` in a row that a version before this field wrote.
+    pub node_clock: Option<Timestamp>,
+}
+
+impl Node {
+    /// Whether the node's server reads deletion requests of kind `project`: every build after 0.1.3 does.
+    pub fn reads_project_requests(&self) -> bool {
+        release(&self.version).is_none_or(|version| version > LAST_RELEASE_WITHOUT_PROJECT_REQUESTS)
+    }
+
+    /// How far the node's clock was ahead of the database clock at its latest heartbeat, in microseconds (behind
+    /// when negative); `None` when the row holds no clock of the node.
+    pub fn clock_skew(&self) -> Option<i64> {
+        self.node_clock
+            .map(|clock| clock.micros().saturating_sub(self.heartbeat_at.micros()))
+    }
+}
+
+/// `major.minor.patch` of a bare release number such as `0.1.3`; `None` for any other version.
+fn release(version: &str) -> Option<(u64, u64, u64)> {
+    let mut numbers = version.split('.').map(|part| {
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        part.parse::<u64>().ok()
+    });
+    let found = (numbers.next()??, numbers.next()??, numbers.next()??);
+    numbers.next().is_none().then_some(found)
 }
 
 /// What a deletion request removes inside its project (contract 13.3).
@@ -334,8 +371,8 @@ impl RetentionFloor {
 /// Retention and deletion rows.
 #[async_trait]
 pub trait LifecycleRepo: Send + Sync {
-    /// Registers the node or refreshes its row: the heartbeat becomes the database clock. `node.heartbeat_at`
-    /// is ignored.
+    /// Registers the node or refreshes its row: the heartbeat becomes the database clock, and `node.node_clock`, the
+    /// node's own clock, is kept beside it. `node.heartbeat_at` is ignored.
     async fn heartbeat(&self, node: &Node) -> Result<(), TxError>;
     /// The nodes whose heartbeat is within `within` of the database clock, ordered by epoch.
     async fn live_nodes(&self, within: Duration) -> Result<Vec<Node>, TxError>;
@@ -469,6 +506,48 @@ mod tests {
         assert!(DeletionSelector::parse(DeletionKind::Trace, &project.to_text()).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Trace, r#"{"trace_ids":["zz"]}"#).is_err());
         assert!(DeletionSelector::parse(DeletionKind::Session, r#"{"other":1}"#).is_err());
+    }
+
+    fn node(version: &str, heartbeat_at: i64, node_clock: Option<i64>) -> Node {
+        Node {
+            wal_epoch: WalEpoch::from_bytes([1; 16]),
+            heartbeat_at: Timestamp::from_micros(heartbeat_at),
+            version: version.to_owned(),
+            checkpoint_lsn: Lsn::ZERO,
+            address: String::new(),
+            node_clock: node_clock.map(Timestamp::from_micros),
+        }
+    }
+
+    /// Contract 13.4: the releases up to 0.1.3, which register their bare release number, cannot read a deletion
+    /// request of kind `project`; a later release, and any build that registers more than a release number (a build
+    /// of the source between releases, or a test), can.
+    #[test]
+    fn only_releases_up_to_0_1_3_cannot_read_project_deletions() {
+        for old in ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.0.9"] {
+            assert!(!node(old, 0, None).reads_project_requests(), "{old}");
+        }
+        for new in [
+            "0.1.4",
+            "0.2.0",
+            "1.0.0",
+            "0.1.3+project-deletions",
+            "0.1.2+project-deletions",
+            "0.1.3-rc.1",
+            "test",
+            "sim",
+            "",
+        ] {
+            assert!(node(new, 0, None).reads_project_requests(), "{new}");
+        }
+    }
+
+    /// A node's skew is its own clock at the heartbeat less the database clock at the heartbeat.
+    #[test]
+    fn a_node_reports_how_far_its_clock_is_from_the_database_clock() {
+        assert_eq!(node("t", 1_000, Some(4_000)).clock_skew(), Some(3_000));
+        assert_eq!(node("t", 4_000, Some(1_000)).clock_skew(), Some(-3_000));
+        assert_eq!(node("t", 4_000, None).clock_skew(), None);
     }
 
     proptest! {

@@ -13,13 +13,17 @@
 //!   partition that holds the project's rows, whatever their arrival (the project takes no new data once
 //!   deleted). Each time a purge is sent it is decided again whether it drops the partition or deletes the
 //!   project's rows from it: it drops only when the partition ends before every project, live or made later, can
-//!   write ([`write_horizon`]) and every project with rows there is deleted ([`Purges::kind`]);
-//! - a deleted project without a project deletion request, deleted before deleting a project made one, gets one
-//!   at the start of every run, so an upgrade purges the projects deleted before it;
+//!   write ([`write_horizon`]), every live node's clock is close to the database clock ([`clocks_agree`]) and every
+//!   project with rows there is deleted ([`Purges::kind`]);
+//! - a deleted project without a project deletion request, deleted before deleting a project made one or while a
+//!   node of an earlier version was live, gets one at the start of every run once no live node runs a version that
+//!   cannot read it ([`held`]), so an upgrade purges the projects deleted before it;
 //! - it is `applied` when every delete has finished, `verified` when every delete is verified after the mask
 //!   cycle, and `completed` once the places outside ClickHouse are accounted for: for a project deletion, once
-//!   its remaining objects and its control-plane rows are removed too;
-//! - it is `failed` when one of its actions was given up.
+//!   its remaining objects and its control-plane rows are removed too ([`finish`]). A step of those that fails is
+//!   recorded on the request, which stays `verified`, and the next run tries again;
+//! - it is `failed` when one of its actions was given up. A failed project deletion is finished by the purge sweep
+//!   once it finds no row of the project in any table.
 //!
 //! Every write is fenced, and what a request has planned so far is in its `places` document, so a new leader
 //! continues where the last one stopped.
@@ -244,11 +248,28 @@ pub(crate) struct Purges {
     /// [`write_horizon`], read once per run: as time passes it only moves later, and a project made after the read
     /// writes nothing before it.
     horizon: Option<Timestamp>,
+    /// Whether every live node's clock is within half the clock margin of the database clock ([`clocks_agree`]),
+    /// read once per run.
+    clocks: Option<bool>,
+}
+
+/// Whether every node of `live` reported, at its latest heartbeat, a clock within half of `margin` of the database
+/// clock. The drop rule ([`write_horizon`]) holds while every clock is within the margin, so a node whose clock is
+/// further off, or that reports none (a version before nodes reported their clocks), keeps every partition from
+/// being dropped: the purge deletes the project's rows instead, which is correct whatever the clocks say.
+pub(crate) fn clocks_agree(live: &[Node], margin: Duration) -> Result<(), Vec<&Node>> {
+    let limit = duration_micros(margin) / 2;
+    let off: Vec<&Node> = live
+        .iter()
+        .filter(|node| node.clock_skew().is_none_or(|skew| skew.saturating_abs() > limit))
+        .collect();
+    if off.is_empty() { Ok(()) } else { Err(off) }
 }
 
 impl Purges {
     /// The kind a purge is sent as: the drop of its partition when the partition ends before every project can
-    /// write ([`write_horizon`]) and every project with rows there is deleted, otherwise the delete of its project's
+    /// write ([`write_horizon`]), every live node's clock is close enough to the database clock for that horizon to
+    /// hold ([`clocks_agree`]) and every project with rows there is deleted, otherwise the delete of its project's
     /// rows, which keeps every other project's. It is decided each time the purge is sent. No project, live or made
     /// later, can write into a partition that ends before the horizon, so nothing that lands after the partition's
     /// projects are listed goes with a drop. Every other action keeps its kind.
@@ -271,6 +292,10 @@ impl Purges {
             return Ok(ActionKind::Drop);
         }
         if !config.drops_within_event_age() && window.to() > self.horizon(ctx, config).await? {
+            return Ok(ActionKind::Delete);
+        }
+        // The horizon holds only while every server's clock is close to the database clock.
+        if !self.clocks(ctx, config).await? {
             return Ok(ActionKind::Delete);
         }
         // While the store cannot list the partition's projects, the delete is the safe choice.
@@ -308,6 +333,33 @@ impl Purges {
         );
         self.horizon = Some(horizon);
         Ok(horizon)
+    }
+
+    /// [`clocks_agree`] over the live nodes; when one is off, a warning names it with how far its clock is off.
+    async fn clocks(&mut self, ctx: &LeaderCtx, config: &LifecycleConfig) -> Result<bool, JobError> {
+        if let Some(agree) = self.clocks {
+            return Ok(agree);
+        }
+        let live = ctx.store().lifecycle().live_nodes(config.live_within).await?;
+        let agree = match clocks_agree(&live, config.clock_margin) {
+            Ok(()) => true,
+            Err(off) => {
+                for node in off {
+                    // Ahead of the database clock when positive; none from a version that does not report it.
+                    let skew_seconds = node.clock_skew().map(|micros| micros / 1_000_000);
+                    tracing::warn!(
+                        node = %node.wal_epoch, version = %node.version, skew_seconds,
+                        "a server's clock is more than {} minutes from the Postgres server's clock, or it reports \
+                         none, so a project deletion deletes the project's rows instead of dropping partitions; \
+                         set the server's clock right (for example with NTP)",
+                        config.clock_margin.as_secs() / 120
+                    );
+                }
+                false
+            }
+        };
+        self.clocks = Some(agree);
+        Ok(agree)
     }
 
     /// Whether a project is deleted. A project the control store does not have counts as live.
@@ -803,39 +855,6 @@ impl Executor<'_> {
         Ok(())
     }
 
-    /// Expires the exports of the project that were created before the request and removes their files from
-    /// this node (contract 13.4). The expiry is a fenced write; a file on another node goes at that node's
-    /// next sweep. Files on the object store go once the expiry has committed, because the transaction must not
-    /// wait on the store; what that misses, the sweep removes.
-    async fn purge_exports(&self, request: &DeletionRequest) -> JobResult {
-        let disk = Arc::clone(&self.ctx.env.disk);
-        let now = self.ctx.env.clock.wall_now();
-        let (project_id, requested_at) = (request.project_id, request.requested_at);
-        let purged = self
-            .ctx
-            .fenced(move |tx| {
-                Box::pin(async move {
-                    crucible_export::purge(tx, disk.as_ref(), project_id, requested_at, now)
-                        .await
-                        .map_err(|error| match error {
-                            FilesError::Store(error) => error,
-                            other => TxError::Unavailable(other.to_string()),
-                        })
-                })
-            })
-            .await?;
-        if let Some(objects) = &self.shared.exports
-            && let Err(error) = objects.remove(&purged.expired).await
-        {
-            tracing::warn!(
-                %error,
-                request = %request.id,
-                "removing the export files of a deletion from the object store failed; the exports sweep removes them"
-            );
-        }
-        Ok(())
-    }
-
     /// Plans a project deletion (contract 13.4), a table of [`project_reach`] at a time: one purge for each
     /// partition that holds the project's rows ([`find`]). A purge is planned as a delete of the project's rows, and
     /// each time it is sent it becomes the drop of its partition instead when no project can write there any more and
@@ -927,46 +946,26 @@ impl Executor<'_> {
         self.save(request).await
     }
 
-    /// The control-plane side of a project deletion, once every place of its telemetry is verified (contract
-    /// 13.4): every object left under the project's key prefix, then the project's rows, its salt among them,
-    /// in one fenced statement. An object store that does not answer holds the request at `verified`, and the
-    /// next run tries again, because a deleted project's objects are swept by nothing else.
-    async fn purge_project(&self, request: &DeletionRequest) -> JobResult {
-        if let Some(objects) = &self.shared.exports {
-            let removed = objects
-                .remove_project(request.project_id)
-                .await
-                .map_err(|error| {
-                    JobError::Failed(format!(
-                        "removing the deleted project's objects failed: {error}"
-                    ))
-                })?;
-            if removed > 0 {
-                tracing::info!(request = %request.id, project = %request.project_id, removed, "removed the objects of a deleted project");
-            }
-        }
-        let project_id = request.project_id;
-        let purged = self
-            .ctx
-            .fenced(move |tx| {
-                Box::pin(async move { tx.lifecycle().purge_project(project_id).await })
-            })
-            .await?;
-        tracing::info!(
-            request = %request.id,
-            project = %project_id,
-            memberships = purged.memberships,
-            alert_rules = purged.alert_rules,
-            channels = purged.channels,
-            secrets = purged.secrets,
-            saved_queries = purged.saved_queries,
-            sql_runs = purged.sql_runs,
-            export_jobs = purged.export_jobs,
-            api_keys = purged.api_keys,
-            salts = purged.salts,
-            "removed the control-plane rows of a deleted project"
+    /// A step of a request whose telemetry is verified failed (contract 13.3, step 8): the request stays `verified`
+    /// and records it, with one more failed attempt, so that the list of deletion requests shows why, and the next
+    /// run tries again.
+    async fn retry(&self, request: &mut DeletionRequest, error: &JobError) -> JobResult {
+        let why = format!(
+            "{error}; the server tries again every {} s",
+            self.shared.config.deletion_every.as_secs()
         );
-        Ok(())
+        request.attempts = request.attempts.saturating_add(1);
+        // Once per failure that repeats, rather than at every run.
+        if request.error.as_deref() == Some(why.as_str()) {
+            tracing::debug!(request = %request.id, %error, attempts = request.attempts, "the last step of a deletion request failed again");
+        } else {
+            tracing::warn!(
+                request = %request.id, project = %request.project_id, %error, attempts = request.attempts,
+                "the last step of a deletion request failed; the next run of the deletion executor tries again"
+            );
+        }
+        request.error = Some(why);
+        self.save(request).await
     }
 
     async fn step(&self, mut request: DeletionRequest) -> JobResult {
@@ -1040,25 +1039,18 @@ impl Executor<'_> {
             request.state = DeletionState::Verified;
         }
         if request.state == DeletionState::Verified {
-            // Step 8. Export files made before the request are expired and removed. The media uses of the
-            // request's traces went with each page, and their objects go with the media collector's next run;
-            // without an object store there is no media. Comments have no store yet. A place that is not there
-            // is reported as not present, so that the request's status says what was and was not reached. A
-            // project deletion then removes the project's objects and control-plane rows.
-            self.purge_exports(&request).await?;
-            let project = request.selector == DeletionSelector::Project;
-            if project {
-                self.purge_project(&request).await?;
-                progress
-                    .other
-                    .insert(CONTROL_PLANE.to_owned(), "done".to_owned());
+            match finish(self.ctx, self.shared, &request, &mut progress).await {
+                Ok(()) => {
+                    request.state = DeletionState::Completed;
+                    request.error = None;
+                }
+                Err(JobError::LeaseLost) => return Err(JobError::LeaseLost),
+                // The request is saved as `verified`, its telemetry gone, with what failed.
+                Err(error) => {
+                    request.places = progress.to_text();
+                    return self.retry(&mut request, &error).await;
+                }
             }
-            for place in OTHER_PLACES {
-                let reached = place == EXPORT_FILES || (place == MEDIA && self.shared.config.media);
-                let status = if reached { "done" } else { "not_present" };
-                progress.other.insert(place.to_owned(), status.to_owned());
-            }
-            request.state = DeletionState::Completed;
         }
         if (request.state, &progress) != (before.0, &before.1) {
             request.places = progress.to_text();
@@ -1068,21 +1060,167 @@ impl Executor<'_> {
     }
 }
 
+/// Step 8 of a request whose telemetry is verified (contract 13.3): the export files made before it are expired and
+/// removed, and a project deletion then removes the project's objects and control-plane rows. The media uses of the
+/// request's traces went with each page, and their objects go with the media collector's next run; without an object
+/// store there is no media. Comments have no store yet. A place that is not there is reported as not present, so that
+/// the request's status says what was and was not reached. Every step can run again: on an error the stored request
+/// is as it was, and the caller records the error and tries again.
+pub(crate) async fn finish(
+    ctx: &LeaderCtx,
+    shared: &Shared,
+    request: &DeletionRequest,
+    progress: &mut Progress,
+) -> JobResult {
+    purge_exports(ctx, shared, request).await?;
+    if request.selector == DeletionSelector::Project {
+        purge_project(ctx, shared, request).await?;
+        progress
+            .other
+            .insert(CONTROL_PLANE.to_owned(), "done".to_owned());
+    }
+    for place in OTHER_PLACES {
+        let reached = place == EXPORT_FILES || (place == MEDIA && shared.config.media);
+        let status = if reached { "done" } else { "not_present" };
+        progress.other.insert(place.to_owned(), status.to_owned());
+    }
+    Ok(())
+}
+
+/// Expires the exports of the project that were created before the request and removes their files from this node
+/// (contract 13.4). The expiry is a fenced write; a file on another node goes at that node's next sweep. Files on the
+/// object store go once the expiry has committed, because the transaction must not wait on the store; what that
+/// misses, the exports sweep removes, and for a project deletion the removal of the project's objects that follows.
+async fn purge_exports(ctx: &LeaderCtx, shared: &Shared, request: &DeletionRequest) -> JobResult {
+    let disk = Arc::clone(&ctx.env.disk);
+    let now = ctx.env.clock.wall_now();
+    let (project_id, requested_at) = (request.project_id, request.requested_at);
+    let purged = ctx
+        .fenced(move |tx| {
+            Box::pin(async move {
+                crucible_export::purge(tx, disk.as_ref(), project_id, requested_at, now)
+                    .await
+                    .map_err(|error| match error {
+                        FilesError::Store(error) => error,
+                        other => TxError::Unavailable(other.to_string()),
+                    })
+            })
+        })
+        .await?;
+    if let Some(objects) = &shared.exports
+        && let Err(error) = objects.remove(&purged.expired).await
+    {
+        tracing::warn!(
+            %error,
+            request = %request.id,
+            "removing the export files of a deletion from the object store failed; the exports sweep removes them, \
+             or for a project deletion the removal of the project's objects"
+        );
+    }
+    Ok(())
+}
+
+/// The control-plane side of a project deletion, once every place of its telemetry is verified (contract 13.4): every
+/// object left under the project's key prefix, then the project's rows, its salt among them, in one fenced statement.
+/// When the object store refuses, the error says what to check, and the request that is being finished stays where
+/// it is and records the error with one more failed attempt: nothing else removes a deleted project's objects, so the
+/// next run tries again until the store answers.
+async fn purge_project(ctx: &LeaderCtx, shared: &Shared, request: &DeletionRequest) -> JobResult {
+    if let Some(objects) = &shared.exports {
+        let removed = objects
+            .remove_project(request.project_id)
+            .await
+            .map_err(|error| {
+                JobError::Failed(format!(
+                    "the object store refused to remove the deleted project's objects under {} ({error}); check \
+                     that the object store is reachable and that the server's credentials may list and delete \
+                     objects under that prefix",
+                    objects.project_root(request.project_id)
+                ))
+            })?;
+        if removed > 0 {
+            tracing::info!(request = %request.id, project = %request.project_id, removed, "removed the objects of a deleted project");
+        }
+    }
+    let project_id = request.project_id;
+    let purged = ctx
+        .fenced(move |tx| Box::pin(async move { tx.lifecycle().purge_project(project_id).await }))
+        .await?;
+    tracing::info!(
+        request = %request.id,
+        project = %project_id,
+        memberships = purged.memberships,
+        alert_rules = purged.alert_rules,
+        channels = purged.channels,
+        secrets = purged.secrets,
+        saved_queries = purged.saved_queries,
+        sql_runs = purged.sql_runs,
+        export_jobs = purged.export_jobs,
+        api_keys = purged.api_keys,
+        salts = purged.salts,
+        "removed the control-plane rows of a deleted project"
+    );
+    Ok(())
+}
+
 /// Who makes the project deletion request of a project deleted without one.
 pub const EARLIER_DELETION_BY: &str = "system:upgrade";
 /// The idempotency key of that request, so that a project gets one whichever leader makes it.
 const EARLIER_DELETION_KEY: &str = "project-purge";
 
-/// Makes the project deletion request of every deleted project that has none (contract 13.4): a project
-/// deleted before deleting a project made that request, by this version or by an older server during an
-/// upgrade, is purged as one deleted now. Each request is made under one idempotency key per project, so
-/// leaders that race make it once, and a later run finds nothing to do.
-async fn request_earlier_deletions(ctx: &LeaderCtx) -> JobResult {
-    for project_id in ctx.store().lifecycle().deleted_without_request().await? {
+/// The id of the project deletion request that the leader makes for a project deleted without one: the project's
+/// own id, so that the list of deletion requests shows a held request under the id it is made with ([`held`]).
+pub(crate) fn earlier_deletion_id(project_id: ProjectId) -> DeletionRequestId {
+    DeletionRequestId::from_uuid(project_id.uuid())
+}
+
+/// Why no project deletion request can be made now: a live node runs 0.1.3 or earlier, which cannot read one, and one
+/// such row would fail its every read of deletion requests (contract 13.4). The text names each such node and what to
+/// do; `None` when every live node reads them.
+pub(crate) fn held(live: &[Node]) -> Option<String> {
+    let earlier: Vec<String> = live
+        .iter()
+        .filter(|node| !node.reads_project_requests())
+        .map(|node| format!("the server with WAL epoch {} ({})", node.wal_epoch, node.version))
+        .collect();
+    (!earlier.is_empty()).then(|| {
+        format!(
+            "the purge waits until every server runs a version later than 0.1.3, which can read it; still on an \
+             earlier version: {}. Upgrade or stop it, and the purge starts within a minute",
+            earlier.join(", ")
+        )
+    })
+}
+
+/// Makes the project deletion request of every deleted project that has none (contract 13.4): a project deleted before
+/// deleting a project made that request, by this version or by an older server during an upgrade, or while a server
+/// of an earlier version was live, is purged as one deleted now. Nothing is made while a live node cannot read such a
+/// request ([`held`]); the run warns which nodes hold it, and the list of the project's deletion requests says so.
+/// Each request is made under one idempotency key per project and with the project's id, so leaders that race make it
+/// once, and a later run finds nothing to do.
+async fn request_earlier_deletions(ctx: &LeaderCtx, shared: &Shared) -> JobResult {
+    let unrequested = ctx.store().lifecycle().deleted_without_request().await?;
+    if unrequested.is_empty() {
+        return Ok(());
+    }
+    let live = ctx
+        .store()
+        .lifecycle()
+        .live_nodes(shared.config.live_within)
+        .await?;
+    if let Some(why) = held(&live) {
+        tracing::warn!(
+            projects = unrequested.len(),
+            why,
+            "the purge of a deleted project waits for every server to run a version that can read it"
+        );
+        return Ok(());
+    }
+    for project_id in unrequested {
         let request = DeletionRequest {
             idempotency_key: Some(EARLIER_DELETION_KEY.to_owned()),
             ..DeletionRequest::project(
-                DeletionRequestId::from_uuid(ctx.env.new_id()),
+                earlier_deletion_id(project_id),
                 project_id,
                 ctx.env.clock.wall_now(),
                 EARLIER_DELETION_BY.to_owned(),
@@ -1109,7 +1247,7 @@ async fn request_earlier_deletions(ctx: &LeaderCtx) -> JobResult {
 /// One pass of the deletion executor.
 pub(crate) async fn run(ctx: LeaderCtx, shared: Arc<Shared>) -> JobResult {
     advance(&ctx, &shared).await?;
-    request_earlier_deletions(&ctx).await?;
+    request_earlier_deletions(&ctx, &shared).await?;
     let requests = ctx.store().lifecycle().open_requests().await?;
     if requests.is_empty() {
         return Ok(());
@@ -1237,6 +1375,7 @@ mod tests {
             version: String::new(),
             checkpoint_lsn: Lsn::ZERO,
             address: String::new(),
+            node_clock: Some(Timestamp::EPOCH),
         }
     }
 
@@ -1247,6 +1386,42 @@ mod tests {
             tombstone_lsn: Lsn::new(5),
             passed_at: passed.then_some(Timestamp::EPOCH),
         }
+    }
+
+    /// Contract 13.4: a live node whose clock was more than half the clock margin from the database clock at its latest
+    /// heartbeat, or that reported no clock, keeps every partition from being dropped.
+    #[test]
+    fn a_node_whose_clock_is_off_by_more_than_half_the_margin_keeps_every_partition() {
+        let hour = Duration::from_secs(3_600);
+        let off_by = |minutes: Option<i64>| Node {
+            node_clock: minutes.map(|minutes| Timestamp::from_micros(minutes * 60_000_000)),
+            ..node(1)
+        };
+        assert!(clocks_agree(&[], hour).is_ok());
+        assert!(clocks_agree(&[off_by(Some(0)), off_by(Some(30)), off_by(Some(-30))], hour).is_ok());
+        assert_eq!(
+            clocks_agree(&[off_by(Some(0)), off_by(Some(31))], hour)
+                .unwrap_err()
+                .len(),
+            1
+        );
+        assert!(clocks_agree(&[off_by(Some(-31))], hour).is_err());
+        assert!(clocks_agree(&[off_by(None)], hour).is_err());
+    }
+
+    /// Contract 13.4: a project deletion request is held while a live node runs 0.1.3 or earlier, and the reason names
+    /// each such node with its version.
+    #[test]
+    fn a_project_deletion_is_held_while_a_live_node_cannot_read_it() {
+        let running = |version: &str| Node {
+            version: version.to_owned(),
+            ..node(2)
+        };
+        assert_eq!(held(&[]), None);
+        assert_eq!(held(&[running("0.1.4"), running("0.1.3+project-deletions")]), None);
+        let why = held(&[running("0.1.4"), running("0.1.2")]).unwrap();
+        assert!(why.contains(&format!("{} (0.1.2)", node(2).wal_epoch)), "{why}");
+        assert!(why.contains("Upgrade or stop"), "{why}");
     }
 
     #[test]

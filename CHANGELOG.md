@@ -36,7 +36,24 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - Rows of a deleted project that reach ClickHouse after its purge, from a server that was behind, cut off from
   Postgres or down, are deleted by the purge sweep within about an hour of landing for 30 days after the deletion,
   and within a day after that. The request stays completed and reports `late_purges` and `late_purged_at`, which
-  the Settings list shows as late rows removed.
+  the Settings list shows as late rows removed. One hourly pass covers about 7,000 projects deleted in the last 30
+  days, a pass that runs past its hour does not delay the next, and while a deletion still finds the project's rows
+  the sweep checks the tables it has finished.
+- A deleted project that the purge sweep cannot check holds back no other: its request shows the error and the
+  failed attempts, the pass goes on, and the next pass checks it again.
+- Rows of a deleted project that keep landing never fail its deletion: a purge that finds rows of the project that
+  landed after its delete runs again without counting a failed attempt. A project deletion that failed for good is
+  finished by the purge sweep once no table holds a row of the project: its objects and its rows in Postgres go.
+- While the object store refuses, a project deletion whose telemetry is removed stays `verified`, shows the error and
+  the failed attempts, and the server tries again every 30 seconds.
+- During a rolling upgrade from 0.1.3 or earlier, which cannot read a project deletion request, no such request is
+  made while a server of those versions runs: the deleted project's list of deletion requests shows it as pending and
+  names the servers it waits for, and the server that holds the `lifecycle` lease makes it within a minute of the last
+  one stopping. Servers register their version as the release number followed by `+project-deletions`.
+- Each server reports its clock with its heartbeat (Postgres migration `V12__node_clock` adds the column). While a
+  running server's clock is more than 30 minutes from the Postgres server's clock, a project deletion deletes the
+  project's rows instead of dropping partitions, and the log names the server and how far its clock is off. Keep
+  server clocks within an hour of the Postgres server's clock.
 - A project deletion finds the partitions that hold the project's rows from ClickHouse's list of partitions and a
   check that stops at the first row of the project in each, so a project of any size is found. A read that keeps
   failing shows on the request as `error` with `attempts`, and the Settings list says that the server keeps trying.

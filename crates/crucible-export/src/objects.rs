@@ -76,7 +76,7 @@ impl ExportObjects {
     }
 
     /// Where every key of a project starts: its export files and its media.
-    fn project_root(&self, project_id: ProjectId) -> String {
+    pub fn project_root(&self, project_id: ProjectId) -> String {
         let lead = if self.prefix.is_empty() { "" } else { "/" };
         format!("{}{lead}{project_id}/", self.prefix)
     }

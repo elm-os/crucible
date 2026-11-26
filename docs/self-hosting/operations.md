@@ -1,7 +1,8 @@
 # Operations
 
-Upgrades, backups, health checks, metrics and logs of a running deployment. The commands assume the Compose setup
-of the [quickstart](quickstart.md), run from `deploy/compose/` in a POSIX shell (Linux, macOS, or WSL on Windows).
+Upgrades, server clocks, backups, health checks, metrics and logs of a running deployment. The commands assume the
+Compose setup of the [quickstart](quickstart.md), run from `deploy/compose/` in a POSIX shell (Linux, macOS, or WSL on
+Windows).
 
 ## Upgrades
 
@@ -63,6 +64,10 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   With Postgres, a server that starts while another one copies waits for it: it stays not ready, logs that another
   node holds the migrations lease, and tries again until the copy has finished. Without Postgres there is no lease,
   so start one server at a time.
+- With several servers, upgrade every one of them. Servers of 0.1.3 and earlier cannot read the deletion request
+  that deleting a project makes, so while one of them runs, a project deletion waits to start its purge, and its
+  list of deletion requests names the servers it waits for. Once a project deletion has started, do not start a
+  server of 0.1.3 or earlier again ([rolling upgrades](retention-and-deletion.md#rolling-upgrades-from-013-or-earlier)).
 - A copy that did not finish (its server stopped, or the hour ran out) leaves the step unfinished, and ClickHouse
   may still be running it after its server stopped. The next migration refuses the step, so the server stays not
   ready, with a message that says to stop every server, then, as the ClickHouse admin user, end the copy with
@@ -70,6 +75,19 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   `TRUNCATE TABLE crucible.mcp_tool_rollup_hourly`, and migrate again. When ClickHouse no longer runs the copy,
   ClickHouse 26.11 and newer answer the `KILL QUERY` with `No query to kill` (code 785): nothing is left to end, so
   go on to the `TRUNCATE TABLE`. When the hour ran out, give ClickHouse more cores before migrating again.
+
+## Server clocks
+
+Keep every server's clock within an hour of the Postgres server's clock, for example with NTP on each host. Liveness
+and leases use the Postgres clock, but each server stamps the data it receives with its own clock and checks the age
+of each span against it, and retention and project deletion allow an hour between a server's clock and the Postgres
+server's.
+
+Each server reports its clock with its heartbeat, every 5 seconds. While a running server's clock is more than 30
+minutes from the Postgres server's clock, a project deletion deletes the project's rows instead of dropping whole
+partitions, which is slower but correct whatever the clocks say, and the server that holds the `lifecycle` lease logs
+a warning with that server's WAL epoch and how far its clock is off, in seconds. Set the clock right and the next
+deletion drops partitions again.
 
 ## Backups
 

@@ -587,6 +587,7 @@ fn deleting_a_project_while_a_server_of_an_earlier_version_runs_holds_its_purge(
                 version: "0.1.3".to_owned(),
                 checkpoint_lsn: crucible_records::Lsn::ZERO,
                 address: String::new(),
+                node_clock: None,
             })
             .await
             .unwrap();
