@@ -395,6 +395,9 @@ class CrucibleMiddleware:
             if _field(result, "isError", "is_error") is True:
                 tool = ctx.params.get("name") if isinstance(ctx.params, Mapping) else None
                 text = _first_text(result)
+                if text is not None:
+                    # The status message, which mcp's own middleware sets after this one returns, without it.
+                    _pipeline.note_tool_error(span.get_span_context().span_id, text)
                 refused = _seam.refusal(tool, text) if isinstance(tool, str) and text is not None else None
                 if operation.validation:
                     attributes[_keys.ERROR_CLASS] = "validation"

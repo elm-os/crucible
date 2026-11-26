@@ -26,7 +26,7 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import Event, ReadableSpan, Span, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
-from opentelemetry.trace import Status
+from opentelemetry.trace import Status, StatusCode
 
 from crucible_sdk import _context, _feedback, _keys
 from crucible_sdk._scrub import Scrubber
@@ -45,6 +45,21 @@ SCRUBBER = Scrubber.builtin()
 # status message).
 STATUS_CHARS = 8192
 EVENT_CHARS = 16384
+
+# The message of each MCP tool error whose span has not ended, by span id. mcp's own middleware sets a tool error's
+# status after the SDK's middleware returns, without a description, so the processor takes the message when the
+# span ends and the export path puts it in the status.
+_TOOL_ERRORS: dict[int, str] = {}
+# Spans of a tracer provider without the processor never take theirs; this bounds what they leave.
+_TOOL_ERRORS_MAX = 4096
+
+
+def note_tool_error(span_id: int, message: str) -> None:
+    """Keeps the message of the tool error of span `span_id` until the span ends, cut to more than the export path
+    reads of a status message."""
+    if len(_TOOL_ERRORS) >= _TOOL_ERRORS_MAX:
+        _TOOL_ERRORS.clear()
+    _TOOL_ERRORS[span_id] = message[: 2 * STATUS_CHARS]
 
 
 @dataclass(frozen=True)
@@ -133,7 +148,7 @@ class Pipeline:
         self.config = config
         self._exporter = exporter if exporter is not None else _exporter(config)
         self._cond = threading.Condition(threading.Lock())
-        self._queue: deque[tuple[ReadableSpan, int]] = deque()
+        self._queue: deque[tuple[ReadableSpan, int, str | None]] = deque()
         self._queued_bytes = 0
         self._accepted = 0
         self._handled = 0
@@ -148,8 +163,8 @@ class Pipeline:
         self._thread = threading.Thread(target=self._run, name="crucible-sdk-export", daemon=True)
         self._thread.start()
 
-    def enqueue(self, span: ReadableSpan) -> None:
-        size = span_bytes(span)
+    def enqueue(self, span: ReadableSpan, tool_error: str | None = None) -> None:
+        size = span_bytes(span) + len(tool_error or "")
         with self._cond:
             if self._stopping:
                 return
@@ -157,7 +172,7 @@ class Pipeline:
                 self._dropped += 1
                 first_drop = self._dropped == 1
             else:
-                self._queue.append((span, size))
+                self._queue.append((span, size, tool_error))
                 self._queued_bytes += size
                 self._accepted += 1
                 if len(self._queue) >= self.config.batch_size:
@@ -213,9 +228,9 @@ class Pipeline:
                         return
                     continue
                 batch = [self._queue.popleft() for _ in range(min(len(self._queue), self.config.batch_size))]
-            ok = self._send([span for span, _ in batch])
+            ok = self._send([(span, tool_error) for span, _, tool_error in batch])
             with self._cond:
-                self._queued_bytes -= sum(size for _, size in batch)
+                self._queued_bytes -= sum(size for _, size, _ in batch)
                 self._handled += len(batch)
                 if ok:
                     self._exported += len(batch)
@@ -223,25 +238,29 @@ class Pipeline:
                     self._failed += len(batch)
                 self._cond.notify_all()
 
-    def _send(self, batch: Sequence[ReadableSpan]) -> bool:
+    def _send(self, batch: Sequence[tuple[ReadableSpan, str | None]]) -> bool:
         # The exporter's own HTTP spans, if anything instruments it, must not feed back into this queue.
         token = context_api.attach(context_api.set_value(context_api._SUPPRESS_INSTRUMENTATION_KEY, True))
         try:
-            return self._exporter.export([self._prepare(span) for span in batch]) is SpanExportResult.SUCCESS
+            exported = self._exporter.export([self._prepare(span, tool_error) for span, tool_error in batch])
+            return exported is SpanExportResult.SUCCESS
         except Exception:
             logger.debug("crucible_sdk: export failed", exc_info=True)
             return False
         finally:
             context_api.detach(token)
 
-    def _prepare(self, span: ReadableSpan) -> ReadableSpan:
-        """The span as Crucible receives it: the init resource overlaid, MCP error text scrubbed."""
+    def _prepare(self, span: ReadableSpan, tool_error: str | None = None) -> ReadableSpan:
+        """The span as Crucible receives it: the init resource overlaid, a tool error's message as its status, MCP
+        error text scrubbed."""
         resource = self._resource(span.resource)
         is_mcp = _keys.MCP_METHOD in (span.attributes or {})
         if resource is span.resource and not is_mcp:
             return span
         status, events = span.status, span.events
         if is_mcp:
+            if tool_error and status.status_code is StatusCode.ERROR and not status.description:
+                status = Status(StatusCode.ERROR, tool_error)
             if status.description:
                 status = Status(status.status_code, SCRUBBER.bounded_text(status.description, STATUS_CHARS))
             events = tuple(_scrub_event(event) for event in events)
@@ -305,13 +324,15 @@ class CrucibleProcessor(SpanProcessor):
             _context.apply_to_span(span)
 
     def on_end(self, span: ReadableSpan) -> None:
+        # Taken before any return, so that no message outlives its span.
+        tool_error = _TOOL_ERRORS.pop(span.context.span_id, None) if _TOOL_ERRORS and span.context else None
         pipeline = _State.pipeline
         if pipeline is None:
             return
         rate = pipeline.config.sample_rate
         if rate < 1.0 and span.context is not None and (span.context.trace_id & 0xFFFFFFFFFFFFFFFF) >= rate * 2**64:
             return
-        pipeline.enqueue(span)
+        pipeline.enqueue(span, tool_error)
 
     def shutdown(self) -> None:
         shutdown()
