@@ -114,10 +114,10 @@ without a release, and for a tag that holds the workflow, which runs from its ow
 
 ## 4. Point the docs at the new release
 
-- The quickstart, the README and the self-hosting pages download the Compose files from the release tag
-  (`https://raw.githubusercontent.com/elm-os/crucible/vX.Y.Z/deploy/compose/...`) and name the installers on the
-  release (`.../releases/download/vX.Y.Z/...`). Replace the old tag in each, then run the quickstart on the
-  published image.
+- The quickstart, the README and the self-hosting pages, `docs/self-hosting/clustered.md` among them, download the
+  Compose files from the release tag (`https://raw.githubusercontent.com/elm-os/crucible/vX.Y.Z/deploy/compose/...`)
+  and name the installers on the release (`.../releases/download/vX.Y.Z/...`). Replace the old tag in each, then
+  run the quickstart on the published image.
 - The SDK guides (`docs/guides/sdk-typescript.md`, `docs/guides/sdk-python.md` and `docs/guides/sdk-go.md`) and the
   READMEs in `sdk/typescript`, `sdk/python`, `sdk/go` and `sdk/rust` install the SDKs from the release: the package
   downloads (`.../releases/download/vX.Y.Z/...`), the Go module tag (`@vX.Y.Z`) and the Rust git tag
