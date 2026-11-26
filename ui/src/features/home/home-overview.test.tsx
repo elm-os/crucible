@@ -1,10 +1,17 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ApiKey } from "@/api/generated/ApiKey";
+import type { DataBounds } from "@/api/generated/DataBounds";
+import type { Meta } from "@/api/generated/Meta";
 import type { MetricsResponse } from "@/api/generated/MetricsResponse";
 import type { MetricsSeries } from "@/api/generated/MetricsSeries";
+import type { OrgMember } from "@/api/generated/OrgMember";
+import type { TimeRange } from "@/api/generated/TimeRange";
 import { createQueryClient } from "@/components/providers";
+import { setAuth } from "@/lib/auth";
+import { PROJECT_A, sessionInfo } from "@/test/session";
 import { HomeOverview } from "./home-overview";
 
 vi.mock("next/navigation", () => import("@/test/navigation"));
@@ -54,12 +61,109 @@ function response(list: MetricsSeries[], partial = false): MetricsResponse {
   };
 }
 
-// Answers each metrics query by the measures it asks for.
-function answer(body: (measures: string[]) => Response) {
-  fetchMock.mockImplementation(async (_url, init) => {
-    const request = JSON.parse(String(init?.body)) as { measures: { measure: string }[] };
-    return body(request.measures.map((m) => m.measure));
+const WHOLE: Meta = { as_of: "2026-11-17T09:30:00.000000Z", partial: false, consistency: "strong" };
+const SEEN: TimeRange = {
+  first: "2026-11-17T09:00:00.000000Z",
+  last: "2026-11-17T09:25:00.000000Z",
+};
+const NONE: TimeRange = { first: null, last: null };
+
+function bounds(
+  fields: { spans?: TimeRange; client?: TimeRange; server?: TimeRange; meta?: Meta } = {},
+): DataBounds {
+  return {
+    spans: fields.spans ?? SEEN,
+    mcp: { client: fields.client ?? NONE, server: fields.server ?? SEEN },
+    retention_horizon: null,
+    max_window_days: 30,
+    server_time: "2026-11-17T09:30:00.000000Z",
+    meta: fields.meta ?? WHOLE,
+  };
+}
+
+// A project nobody has sent anything to.
+const EMPTY = bounds({ spans: NONE, server: NONE });
+
+function apiKey(fields: Partial<ApiKey> = {}): ApiKey {
+  return {
+    id: "k-1",
+    public_key: `cpk_${"a".repeat(43)}`,
+    scopes: ["ingest", "read", "write"],
+    note: "checkout-service",
+    expires_at: null,
+    last_used_at: null,
+    revoked_at: null,
+    version: 1,
+    ...fields,
+  };
+}
+
+function member(fields: Partial<OrgMember> = {}): OrgMember {
+  return {
+    user_id: sessionInfo().user.id,
+    email: "ada@example.com",
+    name: "Ada Lovelace",
+    role: "owner",
+    status: "active",
+    ...fields,
+  };
+}
+
+const TEAM = [member(), member({ user_id: "u-2", email: "grace@example.com", role: "member" })];
+
+interface Server {
+  metrics?: (measures: string[]) => Response;
+  bounds?: () => Response;
+  keys?: () => Response;
+  members?: () => Response;
+}
+
+const path = (url: unknown) => new URL(String(url), "http://localhost").pathname;
+
+// Answers each request by its path, and each metrics query by the measures it asks for. A project with
+// data unless a test says otherwise.
+function serve(server: Server) {
+  fetchMock.mockImplementation(async (url, init) => {
+    const at = path(url);
+    if (at.endsWith("/metrics/query")) {
+      const request = JSON.parse(String(init?.body)) as { measures: { measure: string }[] };
+      const measures = request.measures.map((m) => m.measure);
+      return server.metrics
+        ? server.metrics(measures)
+        : json(response(measures.map((m) => series(m, m === "duration" ? "p50" : "sum", [1]))));
+    }
+    if (at.endsWith("/data-bounds")) return server.bounds ? server.bounds() : json(bounds());
+    if (at.endsWith("/api-keys")) return server.keys ? server.keys() : json({ data: [apiKey()] });
+    if (at === "/api/v1/org/members") {
+      return server.members ? server.members() : json({ data: TEAM });
+    }
+    throw new Error(`no answer for ${at}`);
   });
+}
+
+function answer(metrics: (measures: string[]) => Response) {
+  serve({ metrics });
+}
+
+const requested = (suffix: string) =>
+  fetchMock.mock.calls.filter(([url]) => path(url).endsWith(suffix)).length;
+
+function signIn(fields: Parameters<typeof sessionInfo>[0] = {}) {
+  setAuth({ mode: "session", session: sessionInfo(fields) });
+  window.history.replaceState(null, "", `/home/?project=${PROJECT_A}`);
+}
+
+// The row of one set-up step.
+function step(title: string): HTMLElement {
+  const row = within(section("Set up"))
+    .getAllByRole("listitem")
+    .find((item) => within(item).queryByText(title) !== null);
+  if (!row) throw new Error(`no step "${title}"`);
+  return row;
+}
+
+async function expectStep(title: string, status: string) {
+  await waitFor(() => expect(within(step(title)).getByText(status)).toBeTruthy());
 }
 
 function renderHome() {
@@ -106,7 +210,7 @@ describe("the home tiles and charts", () => {
     expect(within(section("Error rate")).getByText("1 of 10 spans")).toBeTruthy();
     expect(await within(section("Latency")).findByText("2 ms p50")).toBeTruthy();
     // The charts share the tiles' answers: five queries, no more.
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(requested("/metrics/query")).toBe(5);
     const latency = section("Latency percentiles");
     expect(within(latency).getByText("p50")).toBeTruthy();
     expect(within(latency).getByText("p95")).toBeTruthy();
@@ -127,10 +231,10 @@ describe("the home tiles and charts", () => {
     expect(await within(cost).findByText("This section couldn't load.")).toBeTruthy();
     expect(await within(section("Tokens")).findByText("1")).toBeTruthy();
     failCost = false;
-    const calls = fetchMock.mock.calls.length;
+    const calls = requested("/metrics/query");
     await act(async () => within(cost).getByRole("button", { name: "Retry cost" }).click());
     expect(await within(cost).findByText("$1.00")).toBeTruthy();
-    expect(fetchMock.mock.calls.length).toBe(calls + 1);
+    expect(requested("/metrics/query")).toBe(calls + 1);
   });
 
   test("no data is empty only when the answer is whole", async () => {
@@ -176,5 +280,119 @@ describe("the home tiles and charts", () => {
     });
     expect(result.ok, result.error?.message).toBe(true);
     expect(within(section("Latency percentiles")).getByRole("table")).toBeTruthy();
+  });
+});
+
+describe("the set-up steps", () => {
+  test("each step reads the project's state: a key, a first trace, MCP data and a team", async () => {
+    signIn();
+    serve({
+      bounds: () => json(bounds({ server: NONE })),
+      keys: () => json({ data: [apiKey({ revoked_at: "2026-11-01T00:00:00.000000Z" }), apiKey()] }),
+      members: () => json({ data: TEAM }),
+    });
+    renderHome();
+    await expectStep("Create an API key", "Done");
+    await expectStep("Send your first trace", "Done");
+    await expectStep("Instrument an MCP server", "To do");
+    await expectStep("Invite your team", "Done");
+  });
+
+  test("a revoked or expired key, a lone owner and no data leave their steps to do", async () => {
+    signIn();
+    serve({
+      bounds: () => json(EMPTY),
+      keys: () =>
+        json({
+          data: [
+            apiKey({ revoked_at: "2026-11-01T00:00:00.000000Z" }),
+            apiKey({ id: "k-2", expires_at: "2026-11-01T00:00:00.000000Z" }),
+          ],
+        }),
+      members: () => json({ data: [member()] }),
+    });
+    renderHome();
+    for (const title of [
+      "Create an API key",
+      "Send your first trace",
+      "Instrument an MCP server",
+      "Invite your team",
+    ]) {
+      await expectStep(title, "To do");
+    }
+  });
+
+  test("MCP operations recorded on either side count as MCP data", async () => {
+    signIn();
+    serve({ bounds: () => json(bounds({ server: NONE, client: SEEN })) });
+    renderHome();
+    await expectStep("Instrument an MCP server", "Done");
+  });
+
+  test("a project member never sees the key step stuck at to do, and no keys are asked for", async () => {
+    signIn({
+      org: { ...sessionInfo().org, role: "member" },
+      projects: [
+        {
+          id: PROJECT_A,
+          name: "Checkout",
+          slug: "checkout",
+          role: "member",
+          permissions: ["read", "write_facts", "edit_content"],
+        },
+      ],
+    });
+    serve({ bounds: () => json(EMPTY) });
+    renderHome();
+    await waitFor(() =>
+      expect(
+        within(step("Create an API key")).getByText(
+          "Only project admins create API keys. Ask an admin of Checkout for one.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(within(step("Create an API key")).queryByText("To do")).toBeNull();
+    await expectStep("Invite your team", "Done");
+    expect(requested("/api-keys")).toBe(0);
+  });
+
+  test("a members list the role can't read says who invites people", async () => {
+    signIn({ org: { ...sessionInfo().org, role: "viewer" } });
+    serve({
+      bounds: () => json(EMPTY),
+      members: () =>
+        new Response(JSON.stringify({ code: "forbidden" }), {
+          status: 403,
+          headers: { "content-type": "application/problem+json" },
+        }),
+    });
+    renderHome();
+    await waitFor(() =>
+      expect(
+        within(step("Invite your team")).getByText(
+          "Owners and admins of Analytical Engines invite people.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(within(step("Invite your team")).queryByText("To do")).toBeNull();
+  });
+
+  test("without a control plane, keys come from the keys file and nobody is invited", async () => {
+    serve({ bounds: () => json(EMPTY) });
+    renderHome();
+    await waitFor(() =>
+      expect(
+        within(step("Create an API key")).getByText(
+          "This server reads its keys from the keys file.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(step("Invite your team")).getByText(
+        "This server runs without a control plane, so it has no sign-in or members. Set postgres.url (CRUCIBLE_POSTGRES_URL) to turn them on.",
+      ),
+    ).toBeTruthy();
+    await expectStep("Send your first trace", "To do");
+    expect(requested("/api-keys") + requested("/org/members")).toBe(0);
   });
 });

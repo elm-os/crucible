@@ -5,7 +5,6 @@ import { Button } from "@ui-sdk/react/button";
 import type { ReactNode } from "react";
 import type { MetricsResponse } from "@/api/generated/MetricsResponse";
 import { EmptyState } from "@/components/empty-state";
-import { TodoIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
 import { isWhole, MetaNotice } from "@/components/status";
 import { TimeSeriesChart } from "@/components/time-series-chart";
@@ -22,21 +21,8 @@ import {
   total,
   useHomeMetrics,
 } from "./home-metrics";
-
-const SETUP_STEPS = [
-  { id: "api-key", title: "Create an API key", body: "Create one in Settings, under API keys." },
-  {
-    id: "first-trace",
-    title: "Send your first trace",
-    body: "Point an OpenTelemetry exporter at this server's OTLP endpoint.",
-  },
-  {
-    id: "mcp-server",
-    title: "Instrument an MCP server",
-    body: "Wrap the server with a Crucible SDK, or run it behind the Crucible proxy.",
-  },
-  { id: "invite", title: "Invite your team", body: "Invite people in Settings, under Members." },
-] as const;
+import { useSetupSteps } from "./home-setup";
+import { SetupCard } from "./setup-card";
 
 const percent = new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 });
 
@@ -48,6 +34,7 @@ export function HomeOverview() {
   const tokens = useHomeMetrics(project, range, "tokens");
   const errors = useHomeMetrics(project, range, "errors");
   const latency = useHomeMetrics(project, range, "latency");
+  const setup = useSetupSteps(project);
   const widen = () => setRange("30d");
 
   return (
@@ -148,25 +135,7 @@ export function HomeOverview() {
           )}
         </ChartSection>
       </div>
-      <SectionFrame title="Set up">
-        <ol className="flex flex-col">
-          {SETUP_STEPS.map((step) => (
-            <li
-              key={step.id}
-              className="flex items-start gap-3 border-t border-ash-border py-3 first:border-t-0"
-            >
-              <TodoIcon className="mt-0.5 shrink-0 text-ink-soft" />
-              <div className="flex flex-col gap-0.5">
-                <p className="text-data font-medium">
-                  {step.title}
-                  <span className="ms-2 text-label font-normal text-ink-soft">To do</span>
-                </p>
-                <p className="text-label text-ink-soft">{step.body}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </SectionFrame>
+      <SetupCard steps={setup} />
     </div>
   );
 }

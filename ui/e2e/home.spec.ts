@@ -1,4 +1,6 @@
 import {
+  BOUNDS_PATH,
+  dataBounds,
   expect,
   expectAccessible,
   json,
@@ -39,6 +41,11 @@ function answer(measures: string[]) {
 }
 
 const region = (name: string) => ({ name, exact: true });
+
+// A project with traces and MCP operations, unless a test answers its own data bounds.
+test.beforeEach(({ api }) => {
+  api.on(BOUNDS_PATH, json(dataBounds({ spans: true, server: true })));
+});
 
 test.describe("home: tiles and charts", () => {
   test("loading: every tile and chart holds its place and is announced", async ({ page, api }) => {
