@@ -74,11 +74,17 @@ file, and step 2 needs `openssl` and a POSIX shell.
    ```
 
 The folder holds no `compose.yaml`, so every `docker compose` command of the quickstart needs `-f compose.cluster.yaml`
-here; without it, Compose answers `no configuration file provided`. For example:
+here; without it, Compose answers `no configuration file provided`. For example, an API key and a password-reset
+link:
 
 ```sh
 docker compose -f compose.cluster.yaml exec crucible crucible admin create-key --project default
-docker compose -f compose.cluster.yaml exec crucible crucible admin reset-password <email>
+docker compose -f compose.cluster.yaml exec crucible crucible admin reset-password you@example.com
+```
+
+And to stop it:
+
+```sh
 docker compose -f compose.cluster.yaml down        # keeps the data
 docker compose -f compose.cluster.yaml down -v     # removes it
 ```
