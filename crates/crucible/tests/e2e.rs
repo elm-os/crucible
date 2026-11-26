@@ -542,6 +542,36 @@ impl Trace {
         }
         assert_eq!(detail["trace_id"], self.trace_id.as_str(), "{when}");
         assert_eq!(detail["span_count"], 2, "{when}: {detail}");
+        // The detail's summary names, places and counts the trace as the list's row does. Its sums are exact
+        // over the trace's spans, so they equal the row's once the row's sums are.
+        let summary = &detail["summary"];
+        assert_eq!(summary["span_count"], 2, "{when}: {detail}");
+        assert_eq!(summary["error_count"], 1, "{when}: {detail}");
+        for field in [
+            "name",
+            "trace_name",
+            "head_kind",
+            "start_time",
+            "duration_us",
+            "user_id",
+            "session_id",
+            "environment",
+            "release",
+        ] {
+            assert_eq!(summary[field], item[field], "{when}: summary {field} in {detail}");
+        }
+        if settled {
+            for field in [
+                "span_count",
+                "error_count",
+                "total_cost_usd",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+            ] {
+                assert_eq!(summary[field], item[field], "{when}: summary {field} in {detail}");
+            }
+        }
         let spans = detail["spans"].as_array().unwrap();
         let span = |id: &str| {
             spans
