@@ -28,6 +28,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The trace page's header shows the same cost, tokens, duration and error count as the trace list: an agent span
   that reports its run's total usage is no longer added on top of its model calls, and a large trace's header covers
   the whole trace. In 0.1.3 the header added up the spans it had loaded.
+- The trace page is titled with the trace name when one is set, as the trace list names the trace, with the root
+  span's name below it, and its header shows the trace's user and session, each linked to its page, its environment
+  and its release. In 0.1.3 the page showed only the root span's name.
 
 ## [0.1.3] - 2026-11-26
 

@@ -232,6 +232,42 @@ describe("the trace page", () => {
     expect(screen.queryByText("7,610")).toBeNull();
   });
 
+  test("the header is titled with the trace name, names the root span, and shows who and where", async () => {
+    const named = summary({
+      name: "run_agent",
+      trace_name: "research assistant",
+      user_id: "user-42",
+      session_id: "sess-migrate-1",
+      environment: "staging",
+      release: "2.7.0",
+    });
+    fetchMock.mockResolvedValue(json(detail({ summary: named })));
+    renderPage();
+    const title = await screen.findByText("research assistant");
+    expect(title.tagName).toBe("P");
+    expect(screen.getByText("Root span run_agent")).toBeTruthy();
+    const facts = within(screen.getAllByRole("definition")[0]?.closest("dl") as HTMLElement);
+    expect(facts.getByRole("link", { name: "user-42" }).getAttribute("href")).toMatch(
+      /^\/user\/?\?project=p-1&user=user-42$/,
+    );
+    expect(facts.getByRole("link", { name: "sess-migrate-1" }).getAttribute("href")).toMatch(
+      /^\/session\/?\?project=p-1&session=sess-migrate-1$/,
+    );
+    expect(facts.getByText("staging")).toBeTruthy();
+    expect(facts.getByText("2.7.0")).toBeTruthy();
+  });
+
+  test("without a trace name the header is titled with the root span's name alone", async () => {
+    fetchMock.mockResolvedValue(json(detail()));
+    renderPage();
+    await screen.findByText("1 error");
+    const header = screen.getByText("1 error").closest("div")?.parentElement as HTMLElement;
+    expect(within(header).getByText("agent run")).toBeTruthy();
+    expect(screen.queryByText(/^Root span/)).toBeNull();
+    expect(screen.queryByText("User")).toBeNull();
+    expect(screen.queryByText("Release")).toBeNull();
+  });
+
   test("choosing a span writes it to the URL and fills the span panel", async () => {
     fetchMock.mockResolvedValue(json(detail()));
     renderPage();
