@@ -17,13 +17,15 @@ Make a folder for Crucible, download the Compose file of the release into it, an
 mkdir crucible && cd crucible
 curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.3/deploy/compose/compose.yaml
 printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
+echo 'CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1.3' >> .env
 ```
 
-`.env` holds the ClickHouse admin password, the Postgres password and the master key, 32 random bytes as 64
-hexadecimal characters. Keep the master key. Crucible derives the passwords of its four ClickHouse service users from
-it, and the users are created once: a server started with a different master key cannot log in to the same
-ClickHouse data. The API keys and the sign-in provider secrets in Postgres depend on it too. To start over, remove
-the volumes with `docker compose down -v`.
+`.env` holds the ClickHouse admin password, the Postgres password, the master key, 32 random bytes as 64
+hexadecimal characters, and the image of the release the Compose file comes from. Without `CRUCIBLE_IMAGE`, the
+Compose file runs `ghcr.io/elm-os/crucible:latest`. Keep the master key. Crucible derives the passwords of its four
+ClickHouse service users from it, and the users are created once: a server started with a different master key
+cannot log in to the same ClickHouse data. The API keys and the sign-in provider secrets in Postgres depend on it
+too. To start over, remove the volumes with `docker compose down -v`.
 
 ## 2. Start
 
@@ -32,7 +34,7 @@ docker compose up -d --wait
 curl -s http://127.0.0.1:8080/readyz     # "ready"
 ```
 
-Compose pulls the image `ghcr.io/elm-os/crucible:latest`, ClickHouse 26.8 and Postgres 18 on the first start.
+Compose pulls the Crucible image that `.env` names, ClickHouse 26.8 and Postgres 18 on the first start.
 `--wait` returns once the `ready` service reports Crucible's `/readyz` as healthy. On start Crucible applies the
 Postgres migrations and the ClickHouse schema (`--migrate`) and records each step in the ledger in Postgres, checks
 the ClickHouse server (version 26.3 or newer, the settings and functions it relies on), inserts one block twice
@@ -41,6 +43,12 @@ to prove that deduplication works, and loads the API keys from Postgres. Until t
 
 The ports are published on every interface, so other machines on your network can send traces and sign in. Add
 `CRUCIBLE_BIND_ADDRESS=127.0.0.1` to `.env` to keep them on this machine.
+
+The Compose file names the project `crucible`, and Compose names its volumes after it, such as
+`crucible_clickhouse-data`. A second Crucible started on the same machine from another folder would use the same
+volumes, so give it a project name and host ports of its own in its `.env`, for example
+`COMPOSE_PROJECT_NAME=crucible-test`, `CRUCIBLE_HTTP_PORT=8081` and `CRUCIBLE_OTLP_HTTP_PORT=4319`, or pass the
+name to every command as `docker compose -p crucible-test`.
 
 ## 3. Create the organization and its owner
 
@@ -79,12 +87,22 @@ project chosen in the header, `Default` at first. To use another project, choose
 tabs (owners and admins have it), give it a name, and the page moves to that project's API keys.
 
 Choose **Create key** and copy the secret key, `csk_...`, from the dialog. It is shown once: Crucible keeps only a
-hash of it. A new key may ingest, read and write (the scopes `ingest`, `read` and `write`).
+hash of it. A key made there has the scopes `ingest`, `read` and `write`, so it can send traces, read the project's
+data and write feedback, tags and comments.
 
-From the command line, `crucible admin create-key` makes a key and prints `project_id`, `public_key` and `secret_key`:
+A key that may do less, such as one for an exporter that only sends traces (`ingest`) or for an agent that only
+reads (`read`), is made through the API or from the command line. Through the API, a project admin who is signed in
+sends `POST /api/v1/projects/{project_id}/api-keys` with a body such as `{"note": "exporter", "scopes": ["ingest"]}`
+([API](../api/README.md#authentication) shows how to sign in and send the CSRF token).
+[Security](security.md#api-keys-and-roles) lists what each scope allows.
+
+From the command line, `crucible admin create-key` makes a key and prints `project_id`, `public_key` and `secret_key`.
+`--scopes` takes a comma-separated list from `ingest`, `read`, `write`, `delete` and `sql`, by default
+`ingest,read,write`, and `--note` adds a note that Settings shows with the key:
 
 ```sh
 docker compose exec crucible crucible admin create-key --project default
+docker compose exec crucible crucible admin create-key --project default --scopes ingest --note exporter
 ```
 
 A key made there reaches the running server within 5 seconds; until then ingest answers 401 with it.
@@ -140,8 +158,12 @@ of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
 
 ## People and outages
 
-- Invite people from **Settings**, **Members**: the invitation link is shown once, to pass on. Crucible sends no
-  sign-in email, so a forgotten password is reset with
+- Invite people from **Settings**, **Members**: the invitation link is shown once, to pass on. The link starts with
+  the address you opened the UI at, and one made at `127.0.0.1:8080` opens only on this machine. So before you
+  invite, open the UI at the address your team uses, or set `server.public_url` to it, as
+  `CRUCIBLE_SERVER_PUBLIC_URL` in the `environment` of the `crucible` service
+  ([configuration](configuration.md#docker-compose-variables)): the UI then signs in at that address only, besides
+  any in `server.allowed_origins`. Crucible sends no sign-in email, so a forgotten password is reset with
   `docker compose exec crucible crucible admin reset-password <email>`, which prints a one-time link valid for
   30 minutes. Without `server.public_url` it prints the path,
   `/reset/?token=...`, to open at the address you reach the server at.
