@@ -7,12 +7,16 @@
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
+use crucible_env::{QueryError, TelemetryStore as _};
+use crucible_plan::test_support::query_plan;
 use crucible_plan::{
-    EXPORT_LOOKUP_SPANS, ExportKey, ExportSelection, FactTable, RetentionClamp, Row, Value,
-    export_facts, export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
+    EXPORT_LOOKUP_SPANS, ExportKey, ExportSelection, FactTable, Literal, MAX_LIST, Node,
+    PointLookup, QueryClass, RetentionClamp, Row, Value, export_facts, export_mcp_content,
+    export_mcp_ops, export_payloads, export_spans, export_ties,
 };
 use crucible_records::{McpSide, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
-use crucible_schema::{Column, RetentionSettings, SpanCoreCol};
+use crucible_schema::{Column, RetentionSettings, SpanCoreCol, SpanPayloadCol};
+use crucible_store_clickhouse::render;
 
 use crate::blocks::Rows;
 use crate::differential::{insert, rows, stamped};
@@ -392,7 +396,7 @@ pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
         same("the payload rows of a page", &payloads, &keys.len())?;
         // The facts of the page's traces.
         let traces: Vec<TraceId> = keys.iter().map(|(_, trace, _)| *trace).collect();
-        for chunk in traces.chunks(crucible_plan::MAX_LIST) {
+        for chunk in traces.chunks(MAX_LIST) {
             rows(
                 ctx,
                 live(export_facts(
@@ -414,8 +418,92 @@ pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
         after = last;
     }
     same("the spans of the large export", &exported, &LARGE)?;
+
+    // A selection of more traces than one plan holds, scanned one chunk of MAX_LIST traces per plan and merged in
+    // key order, as the export job reads it.
+    let named: Vec<TraceId> = (0..MAX_LIST + 88).map(|n| large_span(n).0).collect();
+    let mut merged = Vec::new();
+    for chunk in named.chunks(MAX_LIST) {
+        let selection = ExportSelection {
+            trace_ids: chunk,
+            user_id: None,
+            session_id: None,
+        };
+        let page = rows(
+            ctx,
+            live(export_spans(
+                scope,
+                window,
+                &clamp(),
+                selection,
+                as_of,
+                None,
+                PAGE,
+            )?)?,
+        )
+        .await
+        .with_context(|| format!("the spans of {} named traces", chunk.len()))?;
+        for row in &page {
+            merged.push(Cols(row).key()?);
+        }
+    }
+    merged.sort_unstable();
+    let expected: Vec<ExportKey> = (0..named.len())
+        .map(|n| {
+            let (trace, span, start) = large_span(n);
+            (start.floor_minute(), trace.trace_hash(), start, span)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    same("the spans of the named traces", &merged, &expected)?;
+    let too_many = ExportSelection {
+        trace_ids: &named,
+        user_id: None,
+        session_id: None,
+    };
+    expect(
+        export_spans(scope, window, &clamp(), too_many, as_of, None, PAGE).is_err(),
+        || format!("one plan took {} traces, above {MAX_LIST}", named.len()),
+    )?;
+
+    // A statement above the field budget is refused before it is sent, as too broad; the server would refuse
+    // it before the query starts.
+    let keys: Vec<Vec<Literal>> = (0..2 * EXPORT_LOOKUP_SPANS)
+        .map(|n| {
+            let (trace, span, start) = large_span(n);
+            vec![
+                start.floor_minute().into(),
+                Literal::from(trace.trace_hash()),
+                Literal::from(span),
+                Literal::from(trace),
+            ]
+        })
+        .collect();
+    let lookup = PointLookup::new(
+        TableId::SpanPayload,
+        [
+            SpanPayloadCol::StartMinute,
+            SpanPayloadCol::TraceHash,
+            SpanPayloadCol::SpanId,
+            SpanPayloadCol::TraceId,
+        ],
+        keys,
+        [SpanPayloadCol::SpanId],
+    )?;
+    let over = query_plan(scope, window, QueryClass::Export, Node::PointLookup(lookup));
+    let fields = render::read_fields(&over)?;
+    let refused = ctx.store.execute(over).await.err();
+    same(
+        &format!("a lookup of {fields} fields"),
+        &refused,
+        &Some(QueryError::TooBroad),
+    )?;
     Ok(format!(
-        "{exported} spans in {pages} pages of at most {PAGE}"
+        "{exported} spans in {pages} pages of at most {PAGE}, with payload lookups of at most \
+         {EXPORT_LOOKUP_SPANS} spans; {} named traces in plans of at most {MAX_LIST}; a lookup of {fields} \
+         fields refused before it was sent",
+        named.len()
     ))
 }
 
