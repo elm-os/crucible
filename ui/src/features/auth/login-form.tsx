@@ -70,7 +70,7 @@ const FLOW_ERROR_UNKNOWN: Copy = {
 const LOGIN_COPY: CopyByCode = {
   invalid_credentials: {
     title: "That email and password don't match an account.",
-    detail: "Check both and try again. Passwords are case-sensitive.",
+    detail: "Check them and try again.",
   },
   forbidden: {
     title: "This account can't sign in.",
@@ -141,7 +141,6 @@ export function LoginForm() {
     body = (
       <FormAlert
         copy={failureCopy(error, "Couldn't load the ways to sign in.")}
-        requestId={error.requestId}
         action={<Button onClick={() => mode.refetch()}>Try again</Button>}
       />
     );
@@ -250,10 +249,7 @@ function PasswordSignIn({ next }: { next: string }) {
         <FieldError match="valueMissing">Enter your password.</FieldError>
       </Field>
       {failure ? (
-        <FormAlert
-          copy={failureCopy(failure, "Couldn't sign you in.", LOGIN_COPY)}
-          requestId={failure.requestId}
-        />
+        <FormAlert copy={failureCopy(failure, "Couldn't sign you in.", LOGIN_COPY)} />
       ) : null}
       <Button type="submit" data-variant="solid" disabled={busy} aria-busy={busy}>
         {busy ? "Signing in" : "Sign in"}

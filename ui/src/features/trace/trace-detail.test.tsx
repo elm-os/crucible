@@ -312,7 +312,7 @@ describe("the trace page", () => {
     );
     renderPage();
     expect(await screen.findByText("This isn't in this project.")).toBeTruthy();
-    expect(screen.getByText("r2")).toBeTruthy();
+    expect(screen.queryByText("r2")).toBeNull();
   });
 
   test("a store outage is one section error with a retry, and the panel stands aside", async () => {

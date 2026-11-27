@@ -279,9 +279,8 @@ const TEST_FAILURES: Readonly<Record<string, string>> = {
   no_address: "The receiver's host name has no address. Check the name.",
   dns_failed: "The receiver's host name couldn't be looked up. Check the name.",
   protocol_error: "The receiver didn't answer in HTTP. Check the URL and its port.",
-  receiver_rejected:
-    "The receiver refused the test (a 4xx answer). Check the URL and its credentials.",
-  receiver_failed: "The receiver failed (a 5xx answer). Check the receiver's own logs.",
+  receiver_rejected: "The receiver refused the test. Check the URL and its credentials.",
+  receiver_failed: "The receiver ran into an error of its own. Check the receiver's logs.",
   redirect_not_followed:
     "The receiver answered with a redirect, which Crucible doesn't follow. Use the final URL.",
   metadata_address: "The URL points at a cloud metadata address, which Crucible never calls.",

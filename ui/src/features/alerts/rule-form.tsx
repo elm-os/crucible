@@ -33,7 +33,13 @@ import type { AlertRule } from "@/api/generated/AlertRule";
 import type { AlertRuleInput } from "@/api/generated/AlertRuleInput";
 import type { SessionProject } from "@/api/generated/SessionProject";
 import { DialogBody } from "@/components/dialog-body";
-import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
+import {
+  type CopyByCode,
+  FormAlert,
+  failureCopy,
+  fieldFailed,
+  focusField,
+} from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
 import { scopedHref } from "@/components/shell/nav";
 import { formatTime } from "@/lib/format";
@@ -82,7 +88,7 @@ const PREVIEW_COPY: CopyByCode = {
   telemetry_store_unavailable: {
     title: "The preview couldn't read the data.",
     detail:
-      "The telemetry store isn't answering. The rule can still be saved; try the preview again in a moment.",
+      "Crucible can't reach the database with this project's data. The rule can still be saved; try the preview again in a moment.",
   },
 };
 
@@ -212,14 +218,16 @@ function RuleForm({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const input = read(event.currentTarget);
-    if (input !== null) save.mutate(input);
+    if (input === null) focusField(event.currentTarget, "threshold");
+    else save.mutate(input);
   };
 
   const runPreview = () => {
     const form = formRef.current;
     if (form === null || !form.reportValidity()) return;
     const input = read(form);
-    if (input !== null) preview.mutate(input);
+    if (input === null) focusField(form, "threshold");
+    else preview.mutate(input);
   };
 
   const busy = save.isPending;
@@ -532,7 +540,6 @@ function RuleForm({
               ) : channels.isError ? (
                 <FormAlert
                   copy={failureCopy(asUiError(channels.error), "Couldn't load the channels.")}
-                  requestId={asUiError(channels.error).requestId}
                   action={<Button onClick={() => channels.refetch()}>Retry channels</Button>}
                 />
               ) : channels.data.data.length === 0 ? (
@@ -613,7 +620,6 @@ function RuleForm({
             {previewFailure ? (
               <FormAlert
                 copy={failureCopy(previewFailure, "The preview couldn't run.", PREVIEW_COPY)}
-                requestId={previewFailure.requestId}
               />
             ) : null}
             {preview.isSuccess ? <PreviewResult preview={preview.data} source={source} /> : null}
@@ -621,10 +627,7 @@ function RuleForm({
         </DialogBody>
 
         {failure ? (
-          <FormAlert
-            copy={failureCopy(failure, "Couldn't save the rule.", RULE_COPY)}
-            requestId={failure.requestId}
-          />
+          <FormAlert copy={failureCopy(failure, "Couldn't save the rule.", RULE_COPY)} />
         ) : null}
         <div className="flex justify-end gap-2">
           <DialogClose>Cancel</DialogClose>

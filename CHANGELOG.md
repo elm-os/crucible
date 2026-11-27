@@ -89,6 +89,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SQL page's schema browser keeps column names on one line, shows an enum column as `Enum8` with its values on
   the line below, and gives the unit of the cost, duration and token columns. Result headers show the short type,
   with the full type on hover.
+- The web UI shows a request's code only beside an unexpected failure (a server fault, an unknown error, or an
+  answer that is not from Crucible), as "If this keeps happening, give your administrator this code" with a Copy
+  code button; a wrong password, a field to correct, a conflict, a missing permission or a rate limit shows none.
+  In 0.1.3 every error printed a bare "Reference" id.
 
 ## [0.1.3] - 2026-11-26
 

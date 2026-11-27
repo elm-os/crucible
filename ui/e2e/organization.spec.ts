@@ -106,7 +106,7 @@ test.describe("settings: organization", () => {
     const alert = region(page).getByRole("alert");
     await expect(alert).toContainText("These settings changed since the page loaded.");
     await expect(alert).toContainText("Enter your change again, then save.");
-    await expect(alert).toContainText("req-stale");
+    await expect(alert).not.toContainText("req-stale");
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
     await expectAccessible(page, "organization reloaded after someone else's change");
 
@@ -133,7 +133,7 @@ test.describe("settings: organization", () => {
     const alert = region(page).getByRole("alert");
     await expect(alert).toContainText("Password sign-in is the only way to sign in.");
     await expect(alert).toContainText("Turn on a sign-in provider on the Sign-in page first");
-    await expect(alert).toContainText("req-last");
+    await expect(alert).not.toContainText("req-last");
     await expect(region(page).getByText("Turn on a sign-in provider first.")).toBeVisible();
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
     await expectAccessible(page, "organization refusing to turn off the only way in");

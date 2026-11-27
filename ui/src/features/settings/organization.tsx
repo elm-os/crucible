@@ -21,7 +21,13 @@ import type { Org } from "@/api/generated/Org";
 import type { OrgPatch } from "@/api/generated/OrgPatch";
 import type { ProjectAccess } from "@/api/generated/ProjectAccess";
 import { EmptyState } from "@/components/empty-state";
-import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
+import {
+  type CopyByCode,
+  FormAlert,
+  failureCopy,
+  fieldFailed,
+  focusField,
+} from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
 import { useAuth } from "@/lib/auth";
@@ -214,7 +220,11 @@ function OrganizationForm({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!editable || save.isPending || domains === "invalid" || !changed) return;
+    if (!editable || save.isPending || !changed) return;
+    if (domains === "invalid") {
+      focusField(event.currentTarget, "allowed_email_domains");
+      return;
+    }
     save.mutate(patch);
   };
 
@@ -346,7 +356,6 @@ function OrganizationForm({
       {failure ? (
         <FormAlert
           copy={failureCopy(failure, "Couldn't save the organization settings.", SAVE_COPY)}
-          requestId={failure.requestId}
         />
       ) : null}
       {editable ? (

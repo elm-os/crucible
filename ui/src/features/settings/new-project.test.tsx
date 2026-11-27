@@ -184,13 +184,16 @@ describe("what a refusal says", () => {
     await fillAndCreate();
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(title);
-    expect(alert.textContent).toContain("req-3");
+    // An outcome the person can fix: no code for an administrator.
+    expect(alert.textContent).not.toContain("req-3");
     expect(screen.queryByText(SERVER_TEXT)).toBeNull();
     for (const label of ["Name", "Slug"]) {
       expect(input(label).getAttribute("aria-invalid"), label).toBe(
         label === field ? "true" : null,
       );
     }
+    // Focus lands on the field to fix.
+    if (field !== null) expect(document.activeElement).toBe(input(field));
     expect(push).not.toHaveBeenCalled();
   });
 

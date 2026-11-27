@@ -12,6 +12,7 @@ import type { TraceListPage } from "@/api/generated/TraceListPage";
 import type { ListFilters, TimeWindow } from "@/api/types";
 import { EmptyState } from "@/components/empty-state";
 import { FilterBar, type FilterConflict } from "@/components/filter-bar";
+import { AlertIcon } from "@/components/icons";
 import { LoadMore } from "@/components/load-more";
 import { Section } from "@/components/section";
 import { isWhole, MetaNotice, TraceStatusLabel } from "@/components/status";
@@ -170,7 +171,19 @@ function NewTraces({
       onShow();
     }
   }, [refresh, onShow]);
-  if (count === 0) return null;
+  if (count === 0) {
+    // A failed check says so where the count would show; the next one runs on its own. The list keeps
+    // its own error state, so this line stays quiet and carries no code.
+    return tail.isError && !restart ? (
+      <p
+        data-live-tail="failed"
+        className="mb-3 flex items-center gap-1.5 text-label text-ink-soft"
+      >
+        <AlertIcon className="shrink-0" />
+        Couldn&apos;t check for new traces. Checking again every {POLL_MS / 1000} seconds.
+      </p>
+    ) : null;
+  }
   const more = count >= 100 && tail.data?.has_more;
   const label = `Show ${more ? "100+" : count} new ${count === 1 ? "trace" : "traces"}`;
   return (
