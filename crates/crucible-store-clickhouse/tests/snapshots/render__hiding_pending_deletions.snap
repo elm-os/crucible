@@ -1,0 +1,17 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "rendered(&plan(QueryClass::List, Node::Scan(scan)).hiding(&hidden))"
+---
+SELECT span_id FROM crucible.span_core WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (name = {p5:String} AND NOT ((trace_id IN {p6:Array(FixedString(16))} AND received_at < arrayElement({p7:Array(DateTime64(6, 'UTC'))}, indexOf({p6:Array(FixedString(16))}, trace_id)))) AND NOT ((user_id IN {p8:Array(String)} AND received_at < arrayElement({p9:Array(DateTime64(6, 'UTC'))}, indexOf({p8:Array(String)}, user_id)))) AND NOT ((session_id IN {p10:Array(String)} AND received_at < arrayElement({p11:Array(DateTime64(6, 'UTC'))}, indexOf({p10:Array(String)}, session_id)))))
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911400"
+p5: String = "root"
+p6: Array(FixedString(16)) = "['\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1','\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2\\xb2']"
+p7: Array(DateTime64(6, 'UTC')) = "['1794907830.000000','1794907810.000000']"
+p8: Array(String) = "['it\\'s ada']"
+p9: Array(DateTime64(6, 'UTC')) = "['1794907820.000000']"
+p10: Array(String) = "['s-1']"
+p11: Array(DateTime64(6, 'UTC')) = "['1794907840.000000']"
