@@ -27,6 +27,7 @@ import type { DashboardCreate } from "./generated/DashboardCreate";
 import type { DashboardDuplicate } from "./generated/DashboardDuplicate";
 import type { DashboardList } from "./generated/DashboardList";
 import type { DashboardPatch } from "./generated/DashboardPatch";
+import type { DataBounds } from "./generated/DataBounds";
 import type { DeletionRequest } from "./generated/DeletionRequest";
 import type { DeletionRequestCreate } from "./generated/DeletionRequestCreate";
 import type { DeletionRequestList } from "./generated/DeletionRequestList";
@@ -220,6 +221,11 @@ export async function checkConnection(connection: Connection): Promise<Connectio
 
 function projectPath(project: string, rest: string): string {
   return `/projects/${encodeURIComponent(project)}${rest}`;
+}
+
+// The first and last minute with spans, and with MCP operations on each side; null when there are none.
+export function getDataBounds(project: string, signal?: AbortSignal): Promise<DataBounds> {
+  return apiGet(projectPath(project, "/data-bounds"), {}, signal);
 }
 
 export function listTraces(

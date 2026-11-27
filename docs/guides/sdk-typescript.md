@@ -346,6 +346,14 @@ own, shown as grouped by **Session handle**. The operations without a session ha
 `tools/list` and calls to tools that `handleParams` does not name, are grouped by the client's trace when an
 instrumented client made them, and otherwise form one **Process** session.
 
+Over stdio, stdout carries the protocol, so a server logs to stderr, `stats()` included:
+
+```ts
+import { stats } from "@elm-os/crucible";
+
+setInterval(() => console.error(JSON.stringify(stats())), 60_000).unref();
+```
+
 ### Errors and identity in tool handlers
 
 Inside a tool handler these calls refine the operation being handled; outside one they do nothing:
@@ -364,6 +372,23 @@ the hash and the issuer, in the MCP operation's `user_subject_hash` and `user_is
 
 A tool handler that throws and one that returns `isError: true` look the same on the wire: both are tool errors
 unless the handler calls `annotateError` or a mark.
+
+A tool error's message is the text of the result's first text block, which holds a thrown error's message. It is
+sent whether or not a capture rule covers the tool, scrubbed with the same rules as captured content and cut at
+2,048 bytes; MCP **Errors** groups by it, and the **Operation** page shows it.
+
+Calls the MCP SDK refuses before any handler runs are recorded as caller faults, with JSON-RPC code -32602, which
+MCP analytics leaves out of calls, errors and latency unless **Include caller faults** is on:
+
+- arguments that fail a tool's input schema, which the SDK answers with `Input validation error: Invalid arguments
+  for tool <name>: ...`, have the class `validation`;
+- a call to a tool that does not exist, `Tool <name> not found`, has the class `not_found`.
+
+Handler errors and output-schema failures (`Output validation error: ...`) stay tool errors, class
+`tool_execution`.
+
+Each `tools/list` answer is recorded with the listed tools' names and schemas, so MCP **Tools** shows each tool's
+schema hash, and **Unused** lists the tools a server listed in the selected range that had no calls in it.
 
 ### Content capture and scrubbing
 
@@ -447,6 +472,19 @@ counted. Ending a span never blocks, whether the collector is up, refusing conne
 Within `exportTimeoutMs` the OpenTelemetry exporter the SDK uses retries a refused export, such as a 503 with
 `Retry-After`, when the server's delay fits in the time left. A batch that still fails, or that does not finish in
 time, counts as failed and is not sent again.
+
+On the first failed export after `init`, the SDK emits one Node warning with the code `CRUCIBLE_EXPORT`, which Node
+prints on stderr, so a stdio server's protocol is safe. It names the traces URL, the status and Crucible's reason,
+or the connection error, and where the endpoint and the key come from:
+
+```text
+(node:<pid>) [CRUCIBLE_EXPORT] Warning: Crucible could not send spans: http://127.0.0.1:4318/v1/traces answered 401 (this server does not accept the secret key; check that it was copied whole and that the server lists it); spans go to endpoint (CRUCIBLE_ENDPOINT), an OTLP listener, with secretKey (CRUCIBLE_SECRET_KEY), a secret key that has the ingest scope. stats().failed counts the spans not sent; this warning is not repeated.
+```
+
+Every failing answer the exporter does not retry (any status but 2xx, 429, 502, 503 and 504) reads
+`answered <status> (<Crucible's reason>)`; without such an answer the warning reads
+`the export to <traces URL> failed (<error>)`, such as `(connect ECONNREFUSED 127.0.0.1:4318)`. Later failures only
+count in `stats().failed`. Handle it like any Node warning, with `process.on("warning", ...)` or `node --no-warnings`.
 
 `stats()` returns the counters of the exporter that `init` started. They are all zero before `init` and again after
 `shutdown`, so read them before you shut down:
