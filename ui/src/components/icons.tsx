@@ -85,3 +85,21 @@ export function TickIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function MailIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m4 7 8 6 8-6" />
+    </Icon>
+  );
+}
+
+export function LockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+      <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
+    </Icon>
+  );
+}

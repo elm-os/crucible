@@ -10,6 +10,7 @@ import {
 import { useState } from "react";
 import { MenuIcon } from "../icons";
 import { Nav } from "./nav";
+import { Brand } from "@/components/brand";
 
 export function MobileNav() {
   const [open, setOpen] = useState(false);
@@ -20,7 +21,9 @@ export function MobileNav() {
       </DrawerTrigger>
       <DrawerBackdrop className="bg-midnight-ink/20" />
       <DrawerContent className="flex h-full w-72 max-w-[85vw] flex-col gap-4 border-e border-ash-border bg-parchment-white p-4">
-        <DrawerTitle className="wordmark">Crucible</DrawerTitle>
+        <DrawerTitle className="flex">
+          <Brand />
+        </DrawerTitle>
         <Nav onNavigate={() => setOpen(false)} />
       </DrawerContent>
     </Drawer>

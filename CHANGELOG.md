@@ -93,6 +93,11 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   answer that is not from Crucible), as "If this keeps happening, give your administrator this code" with a Copy
   code button; a wrong password, a field to correct, a conflict, a missing permission or a rate limit shows none.
   In 0.1.3 every error printed a bare "Reference" id.
+- The sign-in, setup, invitation and reset pages have a new layout: two rounded panels fill the window, the form on
+  the left, with icons in the email and password fields, and on wide screens a picture of Crucible on the right. On
+  the sign-in page, sign-in providers follow the password form under "Or continue with", and a line says how a new
+  person gets an invitation. Crucible shows the brand mark it shares with rightmodeler beside its name on these pages
+  and in the sidebar, and uses it as the browser tab icon.
 
 ## [0.1.3] - 2026-11-26
 

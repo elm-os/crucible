@@ -285,3 +285,19 @@ body {
   z-index: 1;
   box-shadow: 0 4px 12px color-mix(in srgb, var(--color-midnight-ink) 18%, transparent);
 }
+
+/* The sign-in showcase's hairline grid on ink. Decoration only. */
+@utility showcase-grid {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in srgb, var(--color-parchment-white) 7%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-parchment-white) 7%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 56px 56px;
+}
