@@ -22,7 +22,7 @@ from mcp_types import CallToolRequestParams, CallToolResult, ElicitResult, Imple
 import crucible_sdk
 import crucible_sdk.mcp
 from conformance import reference_server
-from crucible_sdk import _keys
+from crucible_sdk import _keys, _pipeline
 from crucible_sdk.mcp import _seam
 from crucible_sdk.mcp._middleware import CrucibleMiddleware
 from tests.collector import Collector, ExportedSpan
@@ -129,6 +129,58 @@ async def test_a_raising_tool_is_a_tool_error(sdk: Collector, mode: str) -> None
     [call] = mcp_spans(sdk, "tools/call")
     assert call.attributes["error.type"] == "tool_error"
     assert "crucible.mcp.error.subclass" not in call.attributes
+
+
+@pytest.mark.anyio
+async def test_a_tool_error_carries_its_first_text_block_as_its_message(sdk: Collector, mode: str) -> None:
+    async with connect(reference_server.instrumented(), mode) as client:
+        await client.call_tool("fail", {"reason": "gateway refused, write to jane.doe@example.com"})
+        await client.call_tool("throw", {"message": "boom"})
+        await client.call_tool("echo", {"text": 42})
+        await client.call_tool("echo", {"text": "fine"})
+    calls = {(s.attributes["gen_ai.tool.name"], s.status_code): s.status_message for s in mcp_spans(sdk, "tools/call")}
+    # Scrubbed on the export path, as every MCP status message is.
+    assert calls["fail", 2] == "gateway refused, write to [redacted:email]"
+    # mcp keeps a crash's own text on the server.
+    assert calls["throw", 2] == "Error executing tool throw"
+    assert calls["echo", 2].startswith("Error executing tool echo: 1 validation error for echoArguments")
+    assert calls["echo", 0] == ""
+    assert b"jane.doe@example.com" not in sdk.raw()
+    # Each message left with its span.
+    assert not _pipeline._TOOL_ERRORS
+
+
+@pytest.mark.anyio
+async def test_a_tool_error_message_is_cut_at_2_kib_as_the_other_sdks_cut_it(sdk: Collector, mode: str) -> None:
+    async with connect(reference_server.instrumented(), mode) as client:
+        await client.call_tool("fail", {"reason": "é" * 1500})
+        await client.call_tool("fail", {"reason": "x" * 2040 + " jane.doe@example.com"})
+    messages = sorted(s.status_message for s in mcp_spans(sdk, "tools/call"))
+    # 2,048 UTF-8 bytes on a character boundary (contract 3.5), scrubbed before the cut.
+    assert messages == ["x" * 2040 + " [redact", "é" * 1024]
+    assert b"jane.doe@example.com" not in sdk.raw()
+
+
+@pytest.mark.anyio
+async def test_calls_refused_before_the_tool_ran_are_the_callers_fault(sdk: Collector, mode: str) -> None:
+    async with connect(reference_server.instrumented(), mode) as client:
+        results = [
+            await client.call_tool("echo", {"text": 42}),
+            await client.call_tool("cancel_order", {}),
+            await client.call_tool("throw", {"message": "boom"}),
+        ]
+    # mcp answers all three with an isError result.
+    assert all(result.is_error for result in results)
+    calls = {s.attributes["gen_ai.tool.name"]: s.attributes for s in mcp_spans(sdk, "tools/call")}
+    # The arguments failed the tool's input model, and no tool has that name: the -32602 each stands for.
+    assert calls["echo"]["crucible.mcp.error.class"] == "validation"
+    assert calls["cancel_order"]["crucible.mcp.error.class"] == "not_found"
+    for refused in (calls["echo"], calls["cancel_order"]):
+        assert refused["rpc.response.status_code"] == "-32602"
+        assert refused["error.type"] == "tool_error"
+    # A tool that ran and raised keeps its class.
+    assert "crucible.mcp.error.class" not in calls["throw"]
+    assert "rpc.response.status_code" not in calls["throw"]
 
 
 @pytest.mark.anyio

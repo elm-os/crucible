@@ -89,7 +89,8 @@ Or, signed in as a project admin, send `POST /api/v1/projects/{project_id}/api-k
 ([how to sign in](../api/README.md#authentication)).
 
 `POST projects/{project_id}/sql/run` takes `sql`, `from`, `to` and the values of other parameters, and returns the
-columns, the rows (as text, in ClickHouse's text form), whether the result was cut, and what the server read. With a
+columns, the rows, with each cell as ClickHouse's JSON output writes it (64-bit integers and dates as strings, other
+numbers as JSON numbers), whether the result was cut, and what the server read. With a
 key that has the `sql` scope:
 
 ```sh

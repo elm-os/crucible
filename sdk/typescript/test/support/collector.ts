@@ -1,5 +1,6 @@
 // An in-process fake OTLP/HTTP collector. It accepts only `POST /v1/traces` with a protobuf body and the expected
-// Bearer key, decodes the spans, and can be switched to stall (never answer) or fail (503). It also answers
+// Bearer key, decodes the spans, and can be switched to stall (never answer) or fail (503). Another key is refused
+// as Crucible refuses it: 401 with a protobuf `google.rpc.Status` that carries `refusal`. It also answers
 // `POST /api/v1/projects/{id}/feedback`, from `feedbackAnswers` while that list holds any, else with 201.
 
 import { createServer, type IncomingHttpHeaders } from "node:http";
@@ -32,6 +33,8 @@ export interface Collector {
   /** Spans of accepted requests, in arrival order. */
   readonly spans: DecodedSpan[];
   mode: CollectorMode;
+  /** The message of the 401 that refuses another key. */
+  refusal: string;
   /** Answers to the next feedback posts, taken in order. */
   readonly feedbackAnswers: FeedbackAnswer[];
   /** Resolves with the spans once `predicate` holds; rejects after `timeoutMs`. */
@@ -40,6 +43,24 @@ export interface Collector {
 }
 
 export const TEST_KEY = "csk_0TestKeyForTheFakeCollector00000000000000";
+
+/** Crucible's refusal of a well-formed secret key that it does not know. */
+export const UNKNOWN_KEY =
+  "this server does not accept the secret key; check that it was copied whole and that the server lists it";
+
+/** A `google.rpc.Status` in protobuf: field 1 the code, field 2 the message. */
+function status(code: number, message: string): Buffer {
+  const text = Buffer.from(message);
+  const length: number[] = [];
+  for (let rest = text.length; ; rest >>>= 7) {
+    if (rest < 0x80) {
+      length.push(rest);
+      break;
+    }
+    length.push((rest & 0x7f) | 0x80);
+  }
+  return Buffer.concat([Buffer.from([0x08, code, 0x12, ...length]), text]);
+}
 
 export async function startCollector(key: string = TEST_KEY): Promise<Collector> {
   const requests: CollectedRequest[] = [];
@@ -51,6 +72,7 @@ export async function startCollector(key: string = TEST_KEY): Promise<Collector>
     requests,
     spans,
     mode: "accept",
+    refusal: UNKNOWN_KEY,
     feedbackAnswers: [],
     async waitFor(predicate, timeoutMs = 10_000) {
       const deadline = Date.now() + timeoutMs;
@@ -108,7 +130,10 @@ export async function startCollector(key: string = TEST_KEY): Promise<Collector>
       return;
     }
     if (req.headers.authorization !== `Bearer ${key}`) {
-      res.writeHead(401).end();
+      // UNAUTHENTICATED is gRPC code 16.
+      res
+        .writeHead(401, { "content-type": "application/x-protobuf" })
+        .end(status(16, collector.refusal));
       return;
     }
     spans.push(...decodeTraces(body));

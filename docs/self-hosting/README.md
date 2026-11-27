@@ -101,6 +101,7 @@ CRUCIBLE_CLICKHOUSE_USER=crucible_admin
 CRUCIBLE_CLICKHOUSE_PASSWORD=<that user's password>
 CRUCIBLE_POSTGRES_URL=postgres://crucible:<password>@postgres.internal:5432/crucible
 CRUCIBLE_MASTER_KEY=<openssl rand -hex 32>
+CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1.3
 ```
 
 ```sh

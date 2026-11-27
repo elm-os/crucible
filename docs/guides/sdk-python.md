@@ -156,7 +156,7 @@ output.
 
 The setters act on the current span, so they also work inside spans that another instrumentation opened.
 
-[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show on main.
+[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show.
 Two notes for agents: the views show the model from `gen_ai.response.model`, which no helper sets, so set it on the
 span as the example does; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that
 `tags` sets.
@@ -281,6 +281,11 @@ middleware was removed, `instrument` puts it back. It returns the server it was 
 | `identity` | `"none"` sends no identity at all: no user, tenant, handle, token claims, user agent or IP prefix |
 | `transport` | `"stdio"`, `"streamable_http"` or `"sse"`. By default a message with an HTTP request is HTTP and anything else is stdio |
 | `server_name`, `server_version` | Default to the server's own name and version |
+
+The MCP **Sessions** page groups a server's operations by the first of these that an operation has: the session id
+of a session-based HTTP connection, its session handle, the trace of the client span that made the call, and the
+server process. So on stdio, `handle_params` makes each value, each order id in the example above, a session of its
+own, shown as grouped by **Session handle**.
 
 ### What the middleware sends
 
