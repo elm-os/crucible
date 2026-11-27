@@ -563,6 +563,26 @@ children, each with `child_count`; read the levels below with the children route
 `GET projects/{project_id}/traces/{trace_id}/spans?parent_span_id=<span id>`, which pages through the direct
 children of one span in start order.
 
+The answer also holds `summary`, the head and the totals of the whole trace, also when `paged` is true, or null
+when `spans` is empty:
+
+- `name`: the head span's name. The head is the trace's root span (the earliest one when there are several), else
+  its earliest span; `head_kind` is `root`, or `provisional` while the root span has not been received.
+- `trace_name`: the root span's trace name, else the latest one a span set; empty when no span set one.
+- `start_time` and `duration_us`: from the first span's start to the last span's end.
+- `status_code` and `level`: the head span's.
+- `span_count`, and `error_count`: the spans whose status or level is `error`.
+- `total_cost_usd`, `input_tokens`, `output_tokens` and `total_tokens`: counted as the trace list counts them. A
+  span whose child spans report usage is left out, so a parent that repeats its children's usage counts once. Up to
+  5,000 spans they are exact; above that they are the stored sums plus the spans received since.
+- `user_id` and `session_id`: picked like the trace name; `environment` and `release`: the head span's (`release`
+  is empty until the store serves the head span).
+- `saturated`: whether a count stopped at 2^53 - 1.
+
+Span objects, here, in the children route and in search hits, carry `input_truncated` and `output_truncated`: true
+when the input or output was cut at the size limit, and is then stored as opaque text, false when it was not, and
+null for a span that has not reached ClickHouse.
+
 ## Lists and filters
 
 | List | Rows | Takes |
