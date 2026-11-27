@@ -38,6 +38,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 base64 = { workspace = true }
 crucible-auth = { workspace = true, features = ["test-support"] }
+# The key rows of the Postgres key snapshot, whose scopes the scope refusals need.
+crucible-control = { workspace = true }
 crucible-env-prod = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 # The seeded ack-before-sync defect, which the durability test must catch.

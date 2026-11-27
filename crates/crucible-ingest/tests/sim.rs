@@ -982,6 +982,120 @@ fn basic_auth_takes_a_key_pair_and_says_what_is_wrong() {
     });
 }
 
+/// A key the control plane knows that lacks the `ingest` scope is refused with 403 (gRPC `PERMISSION_DENIED`) and
+/// the scope it lacks, on `/v1/traces` in both encodings, on a compat route with Basic and Bearer, and over gRPC
+/// by secret and by pair (contracts 1.7 and 12.2). A key the snapshot does not hold keeps the 401, a pair whose
+/// public key is another key's still hears that, and a key with the scope is accepted.
+#[test]
+fn a_known_key_without_the_ingest_scope_is_403_with_the_scope_it_lacks() {
+    use std::sync::Arc;
+
+    use crucible_auth::{DbKeys, LookupKey, MintedKey, OutageMode, ScopeGap, Scopes, mint};
+    use crucible_control::{ApiKey, KeyScope, KeySnapshot};
+    use crucible_env::ChaChaRng;
+    use crucible_ingest::Ingest;
+    use crucible_records::{ApiKeyId, Uuid};
+
+    run(31, |sim| async move {
+        let disk = sim.disk("disk");
+        let host = sim.host("node/boot-1", &disk, 0);
+        let (wal, _report) = Wal::open(&host.env, wal_config()).await.unwrap();
+        let lookup = LookupKey::new([6; 32]);
+        let rng = ChaChaRng::from_u64(6);
+        let (reader, sender) = (mint(&rng, &lookup), mint(&rng, &lookup));
+        let row = |n: u8, minted: &MintedKey, scopes: &[KeyScope]| ApiKey {
+            id: ApiKeyId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000, u128::from(n))),
+            project_id: PROJECT,
+            public_key: minted.public_key.clone(),
+            secret_salt: minted.salt,
+            secret_hash: minted.hash,
+            lookup_tag: minted.lookup_tag,
+            scopes: scopes.to_vec(),
+            import: false,
+            note: String::new(),
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+            version: 1,
+        };
+        let keys = DbKeys::new(&host.env, lookup, OutageMode::default());
+        keys.load(&KeySnapshot {
+            max_seq: 1,
+            keys: vec![
+                row(1, &reader, &[KeyScope::Read]),
+                row(2, &sender, &[KeyScope::Ingest]),
+            ],
+        });
+        let config = compat_config();
+        let service = Ingest::new(&host.env, wal.clone(), &wal_config(), Arc::new(keys), config);
+        let (router, grpc) = (service.router(), service.grpc_router());
+        let requests = |outcome| {
+            host.recorder
+                .counter_value(&registry::INGEST_REQUESTS, &[outcome])
+        };
+        let says = ScopeGap {
+            needed: KeyScope::Ingest,
+            has: Scopes::of(&[KeyScope::Read]),
+        }
+        .to_string();
+        let request = export(vec![good_span(1, NOW_NANOS)]);
+        let req = Req::protobuf(&request);
+        let (bearer, pair) = (
+            format!("Bearer {}", reader.secret),
+            basic(&reader.public_key, &reader.secret),
+        );
+        for req in [
+            req.clone().with("authorization", &bearer),
+            req.clone().to(COMPAT_PATH).with("authorization", &pair),
+            req.clone().to(COMPAT_PATH).with("authorization", &bearer),
+        ] {
+            let reply = send(&router, req.clone()).await;
+            assert_eq!(reply.status, StatusCode::FORBIDDEN, "{req:?}");
+            assert_eq!(reply.header("www-authenticate"), None);
+            let status = reply.rpc_status();
+            assert_eq!((status.code, status.message.as_str()), (7, says.as_str()));
+        }
+        let json = Req::json(serde_json::to_vec(&request).unwrap()).with("authorization", &bearer);
+        let reply = send(&router, json).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            reply.json(),
+            serde_json::json!({ "code": 7, "message": says })
+        );
+        for authorization in [&bearer, &pair] {
+            let sent = grpc_request(request.clone(), Some(authorization.as_str()));
+            let status = grpc_client(&grpc).export(sent).await.unwrap_err();
+            assert_eq!(
+                (status.code(), status.message()),
+                (Code::PermissionDenied, says.as_str())
+            );
+        }
+
+        // An unknown key, and a pair whose public key is another key's, keep their 401.
+        let unknown = format!("Bearer {}", unknown_secret());
+        let mixed = basic(&sender.public_key, &reader.secret);
+        for (authorization, expected) in [
+            (&unknown, "does not accept the secret key"),
+            (&mixed, PAIR_MISMATCH),
+        ] {
+            let reply = send(&router, req.clone().with("authorization", authorization)).await;
+            assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{authorization}");
+            let status = reply.rpc_status();
+            assert_eq!(status.code, 16);
+            assert!(status.message.contains(expected), "{}", status.message);
+        }
+        let sent = grpc_request(request.clone(), Some(unknown.as_str()));
+        let status = grpc_client(&grpc).export(sent).await.unwrap_err();
+        assert_eq!(status.code(), Code::Unauthenticated);
+
+        let accepted = req.with("authorization", &format!("Bearer {}", sender.secret));
+        assert_eq!(send(&router, accepted).await.status, StatusCode::OK);
+        assert_eq!(payloads(&wal).await.len(), 1);
+        assert_eq!(requests("forbidden"), 6);
+        assert_eq!(requests("unauthenticated"), 3);
+    });
+}
+
 #[test]
 fn grpc_exports_round_trip_with_partial_success() {
     with_node(

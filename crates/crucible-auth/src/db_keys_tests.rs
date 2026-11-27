@@ -162,10 +162,99 @@ fn keys_verify_by_secret_and_by_pair_with_their_scopes() {
                 .map(|p| p.api_key_id),
             Ok(rows[1].id)
         );
+        // A known key without the scope is told which scope it lacks, not that the server does not know it.
+        let no_read = ScopeGap {
+            needed: KeyScope::Read,
+            has: Scopes::of(&[KeyScope::Ingest]),
+        };
         assert_eq!(
-            crate::authenticate(&reads, &basic(&a.public_key, &a.secret)),
-            Err(crate::Refusal::UnknownSecret)
+            crate::authenticate(&reads, &basic(&a.public_key, &a.secret))
+                .map_err(|refusal| refusal.to_string()),
+            Err(no_read.to_string())
         );
+    });
+}
+
+/// What a request whose key lacks the verifier's scope is told (contracts 1.7 and 12.2): the scope it lacks,
+/// by secret and by pair, on the ingest verifier and the MCP server's; a pair whose public key is not the
+/// secret's still hears that first; and a revoked or expired key, an unknown key and a key the node cannot check
+/// keep their own refusals.
+#[test]
+fn a_known_key_without_the_scope_is_told_which_scope_it_lacks() {
+    crate::testing::sim(5, async |env| {
+        let rng = ChaChaRng::from_u64(5);
+        let lookup = LookupKey::new(LOOKUP);
+        let (sender, reader, revoked, expired, other) = (
+            mint(&rng, &lookup),
+            mint(&rng, &lookup),
+            mint(&rng, &lookup),
+            mint(&rng, &lookup),
+            mint(&rng, &lookup),
+        );
+        let stranger = mint(&rng, &lookup);
+        let keys = DbKeys::new(&env, lookup, OutageMode::FailClosed);
+        let mut rows = vec![
+            row(1, &sender, &[KeyScope::Ingest]),
+            row(2, &reader, &[KeyScope::Read, KeyScope::Sql]),
+            row(3, &revoked, &[KeyScope::Read]),
+            row(4, &expired, &[KeyScope::Read]),
+            row(5, &other, &[KeyScope::Ingest, KeyScope::Read]),
+        ];
+        rows[2].revoked_at = Some(Timestamp::from_micros(1));
+        rows[3].expires_at = Some(Timestamp::from_micros(1));
+        keys.load(&snapshot(&rows));
+        let keys = Arc::new(keys);
+        let reads = keys.with_scope(KeyScope::Read);
+        let bearer = |secret: &str| format!("Bearer {secret}");
+        let basic = |public: &str, secret: &str| {
+            use base64::Engine as _;
+            let pair = format!("{public}:{secret}");
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(pair)
+            )
+        };
+        let said = |verifier: &dyn KeyVerifier, authorization: &str| {
+            crate::authenticate(verifier, authorization).map_err(|refusal| refusal.to_string())
+        };
+        let no_read = ScopeGap {
+            needed: KeyScope::Read,
+            has: Scopes::of(&[KeyScope::Ingest]),
+        }
+        .to_string();
+        let no_ingest = ScopeGap {
+            needed: KeyScope::Ingest,
+            has: Scopes::of(&[KeyScope::Read, KeyScope::Sql]),
+        }
+        .to_string();
+        let refusal = |refusal: crate::Refusal| Err(refusal.to_string());
+
+        // The scope it lacks, by secret and by pair, on either verifier.
+        assert_eq!(said(&reads, &bearer(&sender.secret)), Err(no_read.clone()));
+        let sender_pair = basic(&sender.public_key, &sender.secret);
+        assert_eq!(said(&reads, &sender_pair), Err(no_read));
+        assert_eq!(said(&*keys, &bearer(&reader.secret)), Err(no_ingest.clone()));
+        let reader_pair = basic(&reader.public_key, &reader.secret);
+        assert_eq!(said(&*keys, &reader_pair), Err(no_ingest));
+        // A pair whose public key is another key's is a mismatch first, with or without the scope.
+        let mixed = basic(&other.public_key, &reader.secret);
+        assert_eq!(said(&*keys, &mixed), refusal(crate::Refusal::PairMismatch));
+        let mixed = basic(&other.public_key, &sender.secret);
+        assert_eq!(said(&reads, &mixed), refusal(crate::Refusal::PairMismatch));
+        // A revoked, an expired and an unknown key are not this server's keys, scope or not.
+        for secret in [&revoked.secret, &expired.secret, &stranger.secret] {
+            let unknown = refusal(crate::Refusal::UnknownSecret);
+            assert_eq!(said(&*keys, &bearer(secret)), unknown);
+            assert_eq!(said(&reads, &bearer(secret)), unknown);
+        }
+        // Keys with the scope pass.
+        assert!(crate::authenticate(&*keys, &bearer(&sender.secret)).is_ok());
+        assert!(crate::authenticate(&reads, &reader_pair).is_ok());
+        // Once the node cannot check keys, it says so, scope or not.
+        env.clock.sleep(OUTAGE_AFTER).await;
+        let unavailable = refusal(crate::Refusal::Unavailable);
+        assert_eq!(said(&reads, &bearer(&sender.secret)), unavailable);
+        assert_eq!(said(&*keys, &reader_pair), unavailable);
     });
 }
 

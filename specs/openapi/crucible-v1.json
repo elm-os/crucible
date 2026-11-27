@@ -16147,6 +16147,7 @@
           "forbidden",
           "csrf_invalid",
           "origin_invalid",
+          "key_scope_missing",
           "not_found",
           "method_not_allowed",
           "request_timeout",

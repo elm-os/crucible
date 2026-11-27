@@ -149,6 +149,75 @@ impl crucible_auth::KeyVerifier for Undecided {
     }
 }
 
+/// A key the control plane knows that lacks the `read` scope is refused with 403 `key_scope_missing` and what to
+/// do, by secret and by pair (contracts 1.7 and 11.3); a key it does not know keeps the 401, and a key with the
+/// scope passes on to the server.
+#[test]
+fn a_known_key_without_the_read_scope_is_403_with_the_scope_it_lacks() {
+    use crucible_auth::{DbKeys, LookupKey, OutageMode, ScopeGap, Scopes};
+    use crucible_control::{ApiKey, KeyScope, KeySnapshot};
+    use crucible_records::{ApiKeyId, Uuid};
+
+    use crate::world::project;
+
+    run(|env| async move {
+        let lookup = LookupKey::new([4; 32]);
+        let rng = crucible_env::ChaChaRng::from_u64(4);
+        let (sender, reader) = (
+            crucible_auth::mint(&rng, &lookup),
+            crucible_auth::mint(&rng, &lookup),
+        );
+        let row = |n: u8, minted: &crucible_auth::MintedKey, scopes: &[KeyScope]| ApiKey {
+            id: ApiKeyId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000, u128::from(n))),
+            project_id: project(1),
+            public_key: minted.public_key.clone(),
+            secret_salt: minted.salt,
+            secret_hash: minted.hash,
+            lookup_tag: minted.lookup_tag,
+            scopes: scopes.to_vec(),
+            import: false,
+            note: String::new(),
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+            version: 1,
+        };
+        let keys = DbKeys::new(&env, lookup, OutageMode::default());
+        keys.load(&KeySnapshot {
+            max_seq: 1,
+            keys: vec![
+                row(1, &sender, &[KeyScope::Ingest]),
+                row(2, &reader, &[KeyScope::Read]),
+            ],
+        });
+        let mcp = crucible_mcp_server::router_without_store(
+            &env,
+            std::sync::Arc::new(std::sync::Arc::new(keys).with_scope(KeyScope::Read)),
+        );
+        let says = ScopeGap {
+            needed: KeyScope::Read,
+            has: Scopes::of(&[KeyScope::Ingest]),
+        }
+        .to_string();
+        let sender_pair = basic(&sender.public_key, &sender.secret);
+        for authorization in [format!("Bearer {}", sender.secret), sender_pair] {
+            let headers = [("authorization", authorization)];
+            let reply = send(&mcp, Method::POST, &headers, Some(&initialize())).await;
+            reply.assert_problem(403, "key_scope_missing");
+            assert_eq!(reply.body["detail"], says.as_str());
+            assert_eq!(reply.header("www-authenticate"), None);
+        }
+        let headers = [("authorization", format!("Bearer {}", key(9)))];
+        let reply = send(&mcp, Method::POST, &headers, Some(&initialize())).await;
+        reply.assert_problem(401, "unauthenticated");
+        let detail = reply.body["detail"].as_str().unwrap();
+        assert!(detail.contains("does not accept the secret key"), "{detail}");
+        let headers = [("authorization", format!("Bearer {}", reader.secret))];
+        let reply = send(&mcp, Method::POST, &headers, Some(&initialize())).await;
+        reply.assert_problem(503, "telemetry_store_unavailable");
+    });
+}
+
 #[test]
 fn a_key_the_control_plane_cannot_check_now_is_503_with_retry_after() {
     run(|env| async move {

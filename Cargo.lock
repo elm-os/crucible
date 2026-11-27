@@ -1188,6 +1188,7 @@ dependencies = [
  "bytes",
  "crucible-admission",
  "crucible-auth",
+ "crucible-control",
  "crucible-env",
  "crucible-env-prod",
  "crucible-otlp",

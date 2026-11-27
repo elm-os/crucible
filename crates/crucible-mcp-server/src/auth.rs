@@ -26,8 +26,8 @@ pub(crate) struct AuthState {
 }
 
 /// Verifies the request's credential and records its principal, or answers 401 with what to fix. A key the server
-/// cannot check during a Postgres outage is 503 with `Retry-After` instead (contract 11.8). The refusal never
-/// echoes the credential.
+/// cannot check during a Postgres outage is 503 with `Retry-After` instead (contract 11.8), and a valid key
+/// without the `read` scope is 403 `key_scope_missing`. The refusal never echoes the credential.
 pub(crate) async fn authenticate(
     State(state): State<AuthState>,
     mut request: Request,
@@ -57,6 +57,11 @@ pub(crate) async fn authenticate(
                 HeaderValue::from(crucible_auth::RETRY_AFTER.as_secs()),
             );
             response
+        }
+        // A valid key without the `read` scope is 403 and hears which scope it lacks (contract 11.3).
+        Err(refusal @ Refusal::MissingScope(_)) => {
+            let id = crucible_api::request_id(request.extensions(), &state.env);
+            crucible_api::problem(id, ProblemCode::KeyScopeMissing, &refusal.to_string())
         }
         Err(refusal) => {
             let id = crucible_api::request_id(request.extensions(), &state.env);

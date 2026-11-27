@@ -55,6 +55,9 @@ problem_codes! {
     CsrfInvalid = 403 => "csrf_invalid",
     /// The `Origin` or `Sec-Fetch-Site` check failed.
     OriginInvalid = 403 => "origin_invalid",
+    /// A valid API key lacks the scope the request needs, on the MCP server and the compat media endpoint;
+    /// `detail` names the scope, the scopes the key has and how to make a key with it.
+    KeyScopeMissing = 403 => "key_scope_missing",
     /// Unknown route or entity, an entity the caller cannot see, or one that was deleted or expired.
     NotFound = 404 => "not_found",
     /// The route exists but not for this method.
@@ -206,7 +209,7 @@ mod tests {
 
     #[test]
     fn codes_match_the_contract_table() {
-        assert_eq!(ProblemCode::ALL.len(), 36);
+        assert_eq!(ProblemCode::ALL.len(), 37);
         for &code in ProblemCode::ALL {
             let wire = serde_json::to_value(code).unwrap();
             assert_eq!(wire.as_str(), Some(code.as_str()));
@@ -215,6 +218,7 @@ mod tests {
         }
         let status = |text| ProblemCode::parse(text).map(ProblemCode::status);
         assert_eq!(status("unauthenticated"), Some(401));
+        assert_eq!(status("key_scope_missing"), Some(403));
         assert_eq!(status("not_found"), Some(404));
         assert_eq!(status("validation_failed"), Some(422));
         assert_eq!(status("query_too_broad"), Some(422));

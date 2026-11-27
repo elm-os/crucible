@@ -11,6 +11,7 @@ use crucible_records::{ApiKeyId, ProjectId, ProjectScope};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+use crate::db_keys::ScopeGap;
 use crate::scope;
 
 /// The prefix of a secret key.
@@ -105,7 +106,8 @@ pub struct KeyPrincipal {
 /// Why a public and secret key pair is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PairError {
-    /// The secret key is malformed, unknown or wrong.
+    /// The secret key is malformed, unknown or wrong, or its key lacks the verifier's scope
+    /// ([`KeyVerifier::missing_scope`] tells the two apart).
     #[error("the secret key is not valid")]
     Secret,
     /// The secret key is valid, and the public key is not the public key of its pair.
@@ -115,7 +117,8 @@ pub enum PairError {
 
 /// Verifies the keys a request presents.
 pub trait KeyVerifier: fmt::Debug + Send + Sync {
-    /// The principal of `secret`, presented as a Bearer token, or `None` when it is malformed, unknown or wrong.
+    /// The principal of `secret`, presented as a Bearer token, or `None` when it is malformed, unknown or wrong,
+    /// or when its key lacks the verifier's scope.
     fn verify(&self, secret: &str) -> Option<KeyPrincipal>;
 
     /// The principal of a public and secret key pair, presented in Basic auth (contract 12.2): the key that
@@ -128,6 +131,15 @@ pub trait KeyVerifier: fmt::Debug + Send + Sync {
     /// to wait before trying again. `None` for a key that is simply invalid, and always for keys from
     /// configuration.
     fn retry_after(&self, secret: &str) -> Option<core::time::Duration> {
+        let _ = secret;
+        None
+    }
+
+    /// When `secret` was refused because its key is valid and lacks the scope this verifier needs (contract
+    /// 11.3): the scope and the scopes the key has, so that the refusal is 403 and says which scope to get.
+    /// `None` for a key that is simply invalid, and always for keys from configuration, which have every scope
+    /// that ingest and the MCP server need.
+    fn missing_scope(&self, secret: &str) -> Option<ScopeGap> {
         let _ = secret;
         None
     }

@@ -441,6 +441,8 @@ impl Inner {
                 retry_after_s: u32::try_from(crucible_auth::RETRY_AFTER.as_secs()).unwrap_or(5),
                 detail: "the server cannot check this key while its control plane is unreachable",
             },
+            // Contract 12.2: a valid key without the `ingest` scope is 403, and hears which scope it lacks.
+            Refusal::MissingScope(gap) => Reject::Forbidden(gap),
             other => Reject::Unauthenticated(other),
         })
     }

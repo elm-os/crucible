@@ -6,6 +6,7 @@ use base64::alphabet;
 use base64::engine::GeneralPurpose;
 use base64::engine::general_purpose::PAD_INDIFFERENT;
 
+use crate::db_keys::ScopeGap;
 use crate::key::{
     KEY_LEN, KeyPrincipal, KeyVerifier, PUBLIC_PREFIX, PairError, SECRET_PREFIX, well_formed,
 };
@@ -75,6 +76,9 @@ pub enum Refusal {
          in Settings"
     )]
     PairMismatch,
+    /// The key is valid and lacks the scope this route needs (contract 11.3). Answered with 403.
+    #[error("{0}")]
+    MissingScope(ScopeGap),
 }
 
 /// Verifies the value of an `Authorization` header (contract 12.2):
@@ -101,10 +105,13 @@ pub fn authenticate(keys: &dyn KeyVerifier, authorization: &str) -> Result<KeyPr
     }
 }
 
-/// The refusal of a secret that did not verify: [`Refusal::Unavailable`] when the verifier cannot decide now.
+/// The refusal of a secret that did not verify: [`Refusal::Unavailable`] when the verifier cannot decide now,
+/// [`Refusal::MissingScope`] when its key is valid and lacks the verifier's scope.
 fn undecided(keys: &dyn KeyVerifier, secret: &str) -> Refusal {
     if keys.retry_after(secret).is_some() {
         Refusal::Unavailable
+    } else if let Some(gap) = keys.missing_scope(secret) {
+        Refusal::MissingScope(gap)
     } else {
         Refusal::UnknownSecret
     }
@@ -270,6 +277,10 @@ mod tests {
             Refusal::MalformedSecret,
             Refusal::UnknownSecret,
             Refusal::PairMismatch,
+            Refusal::MissingScope(ScopeGap {
+                needed: crucible_control::KeyScope::Sql,
+                has: crate::Scopes::DEFAULT,
+            }),
         ]
         .map(|refusal| refusal.to_string());
         for message in &messages {

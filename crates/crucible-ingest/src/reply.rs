@@ -1,14 +1,15 @@
 //! OTLP responses. Over HTTP they are encoded as protobuf or JSON to match the request:
 //! `ExportTraceServiceResponse` with optional partial success on 200, and a `google.rpc.Status` with a
 //! developer-facing message on every refusal; 429 and 503 carry `Retry-After` (contract 4.8) and 401 carries
-//! the challenges of both key forms. Over gRPC the same refusal is a status with the code of contract 4.8, and
-//! `RESOURCE_EXHAUSTED` and `UNAVAILABLE` carry a `RetryInfo` in the status details.
+//! the challenges of both key forms. Over gRPC the same refusal is a status with the code of contract 4.8
+//! (`UNAUTHENTICATED` for 401 and `PERMISSION_DENIED` for 403), and `RESOURCE_EXHAUSTED` and `UNAVAILABLE` carry
+//! a `RetryInfo` in the status details.
 
 use axum::http::header::{CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use crucible_auth::Refusal;
+use crucible_auth::{Refusal, ScopeGap};
 use crucible_otlp::PartialSuccess;
 use tonic::{Code, Status};
 
@@ -25,6 +26,8 @@ const RETRY_INFO: &str = "type.googleapis.com/google.rpc.RetryInfo";
 pub(crate) enum Reject {
     /// No valid credential in `Authorization`, and why (401).
     Unauthenticated(Refusal),
+    /// A valid key without the `ingest` scope, and what it lacks (403).
+    Forbidden(ScopeGap),
     /// A media type or content coding other than the supported ones (415).
     UnsupportedMediaType(String),
     /// Over a cap: the body, the inflated body, the span count or the WAL frame (413).
@@ -52,8 +55,9 @@ pub(crate) enum Reject {
 impl Reject {
     /// The `outcome` label values of `crucible_ingest_requests_total` for refusals, indexed by
     /// [`Reject::outcome`].
-    pub(crate) const OUTCOMES: [&'static str; 7] = [
+    pub(crate) const OUTCOMES: [&'static str; 8] = [
         "unauthenticated",
+        "forbidden",
         "unsupported_media_type",
         "payload_too_large",
         "malformed",
@@ -66,18 +70,20 @@ impl Reject {
     pub(crate) const fn outcome(&self) -> usize {
         match self {
             Self::Unauthenticated(_) => 0,
-            Self::UnsupportedMediaType(_) => 1,
-            Self::TooLarge(_) => 2,
-            Self::Malformed(_) => 3,
-            Self::TooManyRequests { .. } => 4,
-            Self::Unavailable { .. } => 5,
-            Self::Internal(_) => 6,
+            Self::Forbidden(_) => 1,
+            Self::UnsupportedMediaType(_) => 2,
+            Self::TooLarge(_) => 3,
+            Self::Malformed(_) => 4,
+            Self::TooManyRequests { .. } => 5,
+            Self::Unavailable { .. } => 6,
+            Self::Internal(_) => 7,
         }
     }
 
     const fn status(&self) -> StatusCode {
         match self {
             Self::Unauthenticated(_) => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Malformed(_) => StatusCode::BAD_REQUEST,
@@ -97,12 +103,14 @@ impl Reject {
             Self::Internal(_) => Code::Internal,
             Self::Unavailable { .. } => Code::Unavailable,
             Self::Unauthenticated(_) => Code::Unauthenticated,
+            Self::Forbidden(_) => Code::PermissionDenied,
         }
     }
 
     fn message(&self) -> String {
         match self {
             Self::Unauthenticated(refusal) => refusal.to_string(),
+            Self::Forbidden(gap) => gap.to_string(),
             Self::UnsupportedMediaType(detail)
             | Self::TooLarge(detail)
             | Self::Malformed(detail) => detail.clone(),

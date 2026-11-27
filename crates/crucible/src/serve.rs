@@ -3016,6 +3016,195 @@ mod tests {
         assert_eq!(written, expected);
     }
 
+    /// A key the control plane knows that lacks the scope a surface needs is refused with 403 (gRPC
+    /// `PERMISSION_DENIED`) and a message that names the scope it lacks, the scopes it has and how to make a key
+    /// with it, through the real listeners: the REST API (`forbidden`), `/mcp` and the compat media endpoint
+    /// (`key_scope_missing`), OTLP over HTTP on both listeners in both encodings, a compat route with Basic and
+    /// Bearer, and OTLP over gRPC (contracts 1.7, 11.3 and 12.2). A key the server does not know keeps its 401 on
+    /// each of them, `UNAUTHENTICATED` over gRPC.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_known_key_without_the_scope_is_told_the_scope_it_lacks_on_every_surface() {
+        use crucible_auth::{ScopeGap, Scopes};
+        use crucible_compat::media::MEDIA_ROUTES;
+        use crucible_compat::routes::INGEST_ROUTES;
+        use crucible_control::KeyScope;
+
+        /// `google.rpc.Status`, the body of an OTLP/HTTP refusal in protobuf.
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct RpcStatus {
+            #[prost(int32, tag = "1")]
+            code: i32,
+            #[prost(string, tag = "2")]
+            message: String,
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let (identity, _) = test_identity(env).await;
+        let project = ProjectId::parse(PROJECT).unwrap();
+        // A key that only reads and one that only sends.
+        let create = |scope| identity.create_key(project, Some(vec![scope]), None, None, false);
+        let reader = create(KeyScope::Read).await.unwrap();
+        let sender = create(KeyScope::Ingest).await.unwrap();
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        let config = WalConfig {
+            segment_bytes: 1 << 20,
+            ..WalConfig::default()
+        };
+        let modules = crucible_api::Modules::default();
+        let (app, _) = open_app(
+            env,
+            no_keys(env),
+            cursors,
+            config,
+            Some(identity),
+            None,
+            modules,
+            None,
+            None,
+            test_ingest(),
+        )
+        .await
+        .unwrap();
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addrs = servers.addrs;
+        let no_ingest = ScopeGap {
+            needed: KeyScope::Ingest,
+            has: Scopes::of(&[KeyScope::Read]),
+        }
+        .to_string();
+        let no_read = ScopeGap {
+            needed: KeyScope::Read,
+            has: Scopes::of(&[KeyScope::Ingest]),
+        }
+        .to_string();
+        let (reader_bearer, reader_pair) = (
+            format!("Bearer {}", reader.secret),
+            basic(&reader.key.public_key, &reader.secret),
+        );
+        let sender_bearer = format!("Bearer {}", sender.secret);
+        let unknown_secret = format!("csk_{}", "5".repeat(43));
+        let unknown = format!("Bearer {unknown_secret}");
+        let unknown_pair = basic(&format!("cpk_{}", "5".repeat(43)), &unknown_secret);
+        let problem = |body: &[u8]| -> (String, String) {
+            let problem: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let text = |name: &str| problem[name].as_str().unwrap_or_default().to_owned();
+            (text("code"), text("detail"))
+        };
+
+        // The REST API, `/mcp` and the compat media endpoint answer problem documents.
+        let bounds = format!("/api/v1/projects/{PROJECT}/data-bounds");
+        let media = MEDIA_ROUTES[0].collection;
+        let media_one = format!("{media}/{}", "A".repeat(22));
+        let json_type = ("content-type", "application/json");
+        let mcp_accept = ("accept", "application/json, text/event-stream");
+        // (listener, method, path, code, key, what the key is told, what an unknown key is told).
+        let (rest_unknown, unknown_says) = ("a valid secret key is required", "does not accept the secret key");
+        let problems = [
+            (addrs.api, "GET", bounds.as_str(), "forbidden", &sender_bearer, &no_read, rest_unknown),
+            (addrs.api, "POST", "/mcp", "key_scope_missing", &sender_bearer, &no_read, unknown_says),
+            (addrs.ingest, "POST", media, "key_scope_missing", &reader_bearer, &no_ingest, unknown_says),
+            (addrs.api, "POST", media, "key_scope_missing", &reader_pair, &no_ingest, unknown_says),
+            (addrs.ingest, "GET", media_one.as_str(), "key_scope_missing", &sender_bearer, &no_read, unknown_says),
+        ];
+        for (addr, method, path, code, authorization, says, unknown_says) in problems {
+            let body: &[u8] = if method == "POST" {
+                MCP_INITIALIZE.as_bytes()
+            } else {
+                b""
+            };
+            let send = async |authorization: &str| {
+                let headers = [("authorization", authorization), json_type, mcp_accept];
+                exchange(env, addr, method, path, &headers, body).await
+            };
+            let (status, _, reply) = send(authorization).await;
+            assert_eq!(status, "HTTP/1.1 403 Forbidden", "{method} {path}");
+            assert_eq!(problem(&reply), (code.to_owned(), says.clone()), "{method} {path}");
+            let (status, _, reply) = send(&unknown).await;
+            assert_eq!(status, "HTTP/1.1 401 Unauthorized", "{method} {path}");
+            let (code, detail) = problem(&reply);
+            assert_eq!(code, "unauthenticated", "{method} {path}");
+            assert!(detail.contains(unknown_says), "{method} {path}: {detail}");
+        }
+
+        // OTLP over HTTP answers `google.rpc.Status` bodies, in the request's encoding, on both listeners and on
+        // a compat route with either form of the key.
+        let start_nanos = u64::try_from(env.clock.wall_now().micros()).unwrap() * 1_000;
+        let json = span_json(start_nanos).into_bytes();
+        let protobuf = crucible_otlp::transcode_json(&json).unwrap();
+        let compat = INGEST_ROUTES[0].path;
+        let sends = [
+            (addrs.api, "/v1/traces", &reader_bearer, true),
+            (addrs.ingest, "/v1/traces", &reader_bearer, false),
+            (addrs.ingest, compat, &reader_pair, true),
+            (addrs.api, compat, &reader_bearer, false),
+        ];
+        for (addr, path, authorization, as_json) in sends {
+            let (content_type, body) = if as_json {
+                ("application/json", json.as_slice())
+            } else {
+                ("application/x-protobuf", protobuf.as_slice())
+            };
+            for (authorization, status, code, says) in [
+                (authorization.as_str(), "403 Forbidden", 7, no_ingest.as_str()),
+                (unknown_pair.as_str(), "401 Unauthorized", 16, ""),
+            ] {
+                let headers = [
+                    ("authorization", authorization),
+                    ("content-type", content_type),
+                ];
+                let (line, headers, reply) =
+                    exchange(env, addr, "POST", path, &headers, body).await;
+                assert_eq!(line, format!("HTTP/1.1 {status}"), "{path} {authorization}");
+                let (seen_code, message) = if as_json {
+                    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+                    let message = reply["message"].as_str().unwrap_or_default().to_owned();
+                    (reply["code"].as_i64().unwrap_or_default(), message)
+                } else {
+                    let status = RpcStatus::decode(reply.as_slice()).unwrap();
+                    (i64::from(status.code), status.message)
+                };
+                assert_eq!(seen_code, code, "{path} {authorization}");
+                if code == 7 {
+                    assert_eq!(message, says, "{path}");
+                    assert_eq!(header(&headers, "www-authenticate"), None);
+                } else {
+                    assert!(message.contains("does not accept the secret key"), "{message}");
+                    assert_eq!(header(&headers, "www-authenticate"), Some(CHALLENGES));
+                }
+            }
+        }
+
+        // OTLP over gRPC answers `PERMISSION_DENIED`, by secret and by pair.
+        let channel = grpc_channel(addrs.grpc).await;
+        for authorization in [&reader_bearer, &reader_pair] {
+            let status = grpc_export(&channel, authorization, &protobuf)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                (status.code(), status.message()),
+                (tonic::Code::PermissionDenied, no_ingest.as_str())
+            );
+        }
+        let status = grpc_export(&channel, &unknown, &protobuf)
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        // The key with the scope is accepted.
+        assert!(grpc_export(&channel, &sender_bearer, &protobuf).await.is_ok());
+        assert_eq!(
+            prod.recorder
+                .counter_value(&registry::INGEST_REQUESTS, &["forbidden"]),
+            6
+        );
+        shut_down(&prod, servers).await;
+        drop(channel);
+    }
+
     /// While the telemetry store is not up, gRPC ingest answers `UNAVAILABLE` with the reason and a
     /// `RetryInfo`, as HTTP ingest answers 503 with `Retry-After`.
     #[tokio::test(flavor = "multi_thread")]

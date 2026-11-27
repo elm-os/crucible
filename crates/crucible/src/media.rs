@@ -176,8 +176,8 @@ fn json(status: StatusCode, body: Vec<u8>) -> Response {
     (status, [(CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// The key of a request, or the answer that refuses it: 401 with what to fix, or 503 while the control plane
-/// cannot check the key.
+/// The key of a request, or the answer that refuses it: 401 with what to fix, 403 `key_scope_missing` for a
+/// valid key without the route's scope, or 503 while the control plane cannot check the key.
 fn principal(
     keys: &dyn KeyVerifier,
     request: &Request,
@@ -204,6 +204,7 @@ fn principal(
                 .insert(RETRY_AFTER, HeaderValue::from_static("5"));
             response
         }
+        Refusal::MissingScope(_) => crucible_api::problem(rid, ProblemCode::KeyScopeMissing, &detail),
         _ => crucible_api::problem(rid, ProblemCode::Unauthenticated, &detail),
     }))
 }

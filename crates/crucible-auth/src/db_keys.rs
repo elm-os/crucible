@@ -582,21 +582,28 @@ impl DbKeys {
         }
     }
 
+    /// The pair comes first: a public key that is not the secret's is a mismatch whatever the key's scopes, and
+    /// only a whole pair whose key lacks `scope` is refused for the scope ([`DbKeys::gap`] says which).
     fn verify_pair_scoped(
         &self,
         public: &str,
         secret: &str,
         scope: KeyScope,
     ) -> Result<KeyPrincipal, PairError> {
-        let principal = self.verify_scoped(secret, scope).ok_or(PairError::Secret)?;
+        let KeyVerdict::Valid(grant) = self.check_secret(secret) else {
+            return Err(PairError::Secret);
+        };
         let ours = self
             .current()
-            .and_then(|snapshot| snapshot.by_id.get(&principal.api_key_id).cloned())
+            .and_then(|snapshot| snapshot.by_id.get(&grant.principal.api_key_id).cloned())
             .ok_or(PairError::Secret)?;
-        if bool::from(public.as_bytes().ct_eq(ours.public_key.as_bytes())) {
-            Ok(principal)
+        if !bool::from(public.as_bytes().ct_eq(ours.public_key.as_bytes())) {
+            return Err(PairError::Mismatch);
+        }
+        if grant.scopes.has(scope) {
+            Ok(grant.principal)
         } else {
-            Err(PairError::Mismatch)
+            Err(PairError::Secret)
         }
     }
 
@@ -604,6 +611,18 @@ impl DbKeys {
         match self.check_secret(secret) {
             KeyVerdict::Unavailable { retry_after } => Some(retry_after),
             KeyVerdict::Valid(_) | KeyVerdict::Invalid => None,
+        }
+    }
+
+    /// What a valid key lacks when it lacks `scope`; nothing for a key that is invalid, revoked or expired, or
+    /// that the node cannot check now.
+    fn gap(&self, secret: &str, scope: KeyScope) -> Option<ScopeGap> {
+        match self.check_secret(secret) {
+            KeyVerdict::Valid(grant) if !grant.scopes.has(scope) => Some(ScopeGap {
+                needed: scope,
+                has: grant.scopes,
+            }),
+            KeyVerdict::Valid(_) | KeyVerdict::Invalid | KeyVerdict::Unavailable { .. } => None,
         }
     }
 }
@@ -621,6 +640,10 @@ impl KeyVerifier for DbKeys {
 
     fn retry_after(&self, secret: &str) -> Option<Duration> {
         self.undecided(secret)
+    }
+
+    fn missing_scope(&self, secret: &str) -> Option<ScopeGap> {
+        self.gap(secret, KeyScope::Ingest)
     }
 }
 
@@ -642,6 +665,10 @@ impl KeyVerifier for ScopedKeys {
 
     fn retry_after(&self, secret: &str) -> Option<Duration> {
         self.keys.undecided(secret)
+    }
+
+    fn missing_scope(&self, secret: &str) -> Option<ScopeGap> {
+        self.keys.gap(secret, self.scope)
     }
 }
 
