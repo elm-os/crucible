@@ -9,13 +9,41 @@ import {
   AccordionTrigger,
 } from "@ui-sdk/react/accordion";
 import { Button } from "@ui-sdk/react/button";
+import { Fragment } from "react";
 import type { SqlRelation } from "@/api/generated/SqlRelation";
 import type { SqlSchema } from "@/api/generated/SqlSchema";
 import { EmptyState } from "@/components/empty-state";
 import { ChevronRightIcon } from "@/components/icons";
 import { Section } from "@/components/section";
+import { enumValues, shortType } from "./cells";
 
 const SKELETON_ROWS = ["a", "b", "c", "d"] as const;
+
+// The unit or meaning of the cost, duration and token columns, which their names leave out.
+const COLUMN_NOTES: Record<string, string> = {
+  total_cost_nusd: "Cost in nano-USD, billionths of a dollar: divide by 1e9 for US dollars.",
+  cost_values: "The cost of each usage_keys entry, in nano-USD.",
+  cost_provided_values: "The costs the client sent, in nano-USD, one per cost_provided_keys entry.",
+  duration_us: "Duration in microseconds: divide by 1e6 for seconds.",
+  input_tokens: "Tokens the model read, from the reported usage.",
+  output_tokens: "Tokens the model wrote, from the reported usage.",
+  total_tokens: "All tokens, from the reported usage.",
+};
+
+// A long type wraps after an opening parenthesis, between its parts, rather than inside a name.
+function TypeName({ type }: { type: string }) {
+  let at = 0;
+  return type.split(/(?<=\()/).map((part) => {
+    const start = at;
+    at += part.length;
+    return (
+      <Fragment key={start}>
+        {start > 0 ? <wbr /> : null}
+        {part}
+      </Fragment>
+    );
+  });
+}
 
 export function SchemaBrowser({
   query,
@@ -81,14 +109,33 @@ export function SchemaBrowser({
                       </tr>
                     </thead>
                     <tbody>
-                      {relation.columns.map((column) => (
-                        <tr key={column.name} className="border-t border-ash-border">
-                          <td className="py-0.5 pe-3 font-mono break-all">{column.name}</td>
-                          <td className="py-0.5 font-mono break-all text-ink-soft">
-                            {column.type}
-                          </td>
-                        </tr>
-                      ))}
+                      {relation.columns.map((column) => {
+                        const values = enumValues(column.type);
+                        const note = COLUMN_NOTES[column.name];
+                        return (
+                          <Fragment key={column.name}>
+                            <tr className="border-t border-ash-border">
+                              <td className="py-0.5 pe-3 align-top font-mono whitespace-nowrap">
+                                {column.name}
+                              </td>
+                              <td className="py-0.5 align-top font-mono wrap-anywhere text-ink-soft">
+                                <TypeName type={shortType(column.type)} />
+                              </td>
+                            </tr>
+                            {values.length > 0 || note ? (
+                              <tr>
+                                <td colSpan={2} className="pb-1 text-ink-soft">
+                                  {values.length > 0 ? (
+                                    <span className="font-mono">{values.join(", ")}</span>
+                                  ) : (
+                                    note
+                                  )}
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                   <Button onClick={() => onInsert(relation)}>

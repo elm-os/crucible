@@ -18,6 +18,7 @@ import { type FormEvent, useState } from "react";
 import { createDashboard, duplicateDashboard, listDashboards } from "@/api/client";
 import { asUiError } from "@/api/errors";
 import type { DashboardSummary } from "@/api/generated/DashboardSummary";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { FormAlert, failureCopy } from "@/components/form-alert";
 import { Section } from "@/components/section";
@@ -189,17 +190,19 @@ function NewDashboardForm({ project }: { project: string }) {
   };
   const error = create.isError ? asUiError(create.error) : null;
   return (
-    <form onSubmit={submit} className="flex flex-col gap-4">
+    <form onSubmit={submit} className="flex min-h-0 flex-col gap-4">
       <div className="flex flex-col gap-1">
         <DialogTitle>New dashboard</DialogTitle>
         <DialogDescription>Name it; you add widgets in the editor next.</DialogDescription>
       </div>
-      <Field name="name">
-        <FieldLabel>Name</FieldLabel>
-        <Input required pattern=".*\S.*" maxLength={MAX_NAME} autoComplete="off" />
-        <FieldError match="valueMissing">Enter a name, like Agent health.</FieldError>
-        <FieldError match="patternMismatch">Enter a name, like Agent health.</FieldError>
-      </Field>
+      <DialogBody>
+        <Field name="name">
+          <FieldLabel>Name</FieldLabel>
+          <Input required pattern=".*\S.*" maxLength={MAX_NAME} autoComplete="off" />
+          <FieldError match="valueMissing">Enter a name, like Agent health.</FieldError>
+          <FieldError match="patternMismatch">Enter a name, like Agent health.</FieldError>
+        </Field>
+      </DialogBody>
       {error ? (
         <FormAlert
           copy={failureCopy(error, "The dashboard couldn't be created.")}

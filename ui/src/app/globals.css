@@ -120,6 +120,26 @@
   --ui-font-mono: var(--font-mono);
 }
 
+/* Password fields: the show and hide toggle is an eye icon that fills the end of the field's box, level with
+   the input, so typed text always ends before it. */
+[data-slot="password-input"] {
+  padding-inline-end: 0;
+}
+
+[data-slot="password-input-toggle"] {
+  align-self: stretch;
+  width: calc(var(--ui-spacing) * 8);
+  height: auto;
+  border-radius: 0;
+  border-start-end-radius: calc(var(--ui-radius) - 1px);
+  border-end-end-radius: calc(var(--ui-radius) - 1px);
+}
+
+[data-slot="password-input-toggle"]:focus-visible {
+  outline: 2px solid var(--ui-ring-border);
+  outline-offset: -2px;
+}
+
 body {
   background-color: var(--color-parchment-white);
   color: var(--color-midnight-ink);

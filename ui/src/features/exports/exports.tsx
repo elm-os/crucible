@@ -25,6 +25,7 @@ import { asUiError } from "@/api/errors";
 import type { Export } from "@/api/generated/Export";
 import type { ExportFormat } from "@/api/generated/ExportFormat";
 import type { SessionProject } from "@/api/generated/SessionProject";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy } from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
@@ -299,49 +300,59 @@ function CreateExportDialog({ project }: { project: SessionProject }) {
           </DialogDescription>
         </div>
         <form
-          className="flex flex-col gap-4"
+          className="flex min-h-0 flex-col gap-4"
           onSubmit={submit}
           onInput={() => {
             if (failure) create.reset();
           }}
         >
-          <div className="flex flex-col gap-2">
-            <SegmentedControl
-              aria-label="Format"
-              value={format}
-              onValueChange={(next) => {
-                if (next !== null) setFormat(next as ExportFormat);
-              }}
-            >
-              <SegmentedControlIndicator />
-              {FORMATS.map((option) => (
-                <SegmentedControlItem key={option.value} value={option.value} className="text-data">
-                  {option.label}
-                </SegmentedControlItem>
-              ))}
-            </SegmentedControl>
-            <p className="text-label text-ink-soft">
-              {FORMATS.find((option) => option.value === format)?.about}
-            </p>
-          </div>
-          <Field name="user_id">
-            <FieldLabel>User</FieldLabel>
-            <Input autoComplete="off" />
-            <FieldDescription>Optional. Only spans of this user id.</FieldDescription>
-          </Field>
-          <Field name="session_id">
-            <FieldLabel>Session</FieldLabel>
-            <Input autoComplete="off" />
-            <FieldDescription>Optional. Only spans of this session id.</FieldDescription>
-          </Field>
-          <div className="flex items-center gap-1.5 text-data">
-            <Checkbox id={gzipId} checked={gzip} onCheckedChange={(next) => setGzip(next === true)}>
-              <CheckboxIndicator>
-                <TickIcon aria-hidden="true" />
-              </CheckboxIndicator>
-            </Checkbox>
-            <label htmlFor={gzipId}>Compress the file with gzip</label>
-          </div>
+          <DialogBody>
+            <div className="flex flex-col gap-2">
+              <SegmentedControl
+                aria-label="Format"
+                value={format}
+                onValueChange={(next) => {
+                  if (next !== null) setFormat(next as ExportFormat);
+                }}
+              >
+                <SegmentedControlIndicator />
+                {FORMATS.map((option) => (
+                  <SegmentedControlItem
+                    key={option.value}
+                    value={option.value}
+                    className="text-data"
+                  >
+                    {option.label}
+                  </SegmentedControlItem>
+                ))}
+              </SegmentedControl>
+              <p className="text-label text-ink-soft">
+                {FORMATS.find((option) => option.value === format)?.about}
+              </p>
+            </div>
+            <Field name="user_id">
+              <FieldLabel>User</FieldLabel>
+              <Input autoComplete="off" />
+              <FieldDescription>Optional. Only spans of this user id.</FieldDescription>
+            </Field>
+            <Field name="session_id">
+              <FieldLabel>Session</FieldLabel>
+              <Input autoComplete="off" />
+              <FieldDescription>Optional. Only spans of this session id.</FieldDescription>
+            </Field>
+            <div className="flex items-center gap-1.5 text-data">
+              <Checkbox
+                id={gzipId}
+                checked={gzip}
+                onCheckedChange={(next) => setGzip(next === true)}
+              >
+                <CheckboxIndicator>
+                  <TickIcon aria-hidden="true" />
+                </CheckboxIndicator>
+              </Checkbox>
+              <label htmlFor={gzipId}>Compress the file with gzip</label>
+            </div>
+          </DialogBody>
           {failure ? (
             <FormAlert
               copy={failureCopy(

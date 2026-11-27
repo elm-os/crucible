@@ -250,7 +250,7 @@ function TagsEditor({
           ))}
         </ul>
       )}
-      <form onSubmit={submit} className="flex flex-wrap items-end gap-2" noValidate>
+      <form onSubmit={submit} className="flex flex-wrap items-start gap-2" noValidate>
         <Field name="tag" invalid={invalid !== null ? true : undefined}>
           <FieldLabel className="text-label">New tag</FieldLabel>
           <Input
@@ -266,7 +266,8 @@ function TagsEditor({
           <FieldDescription className="text-label text-ink-soft">Up to 256 bytes.</FieldDescription>
           {invalid ? <FieldError match>{invalid}</FieldError> : null}
         </Field>
-        <Button type="submit" disabled={pending !== undefined}>
+        {/* mt-6 is the label's 18px line and the field's 6px gap, so the button sits level with the input. */}
+        <Button type="submit" disabled={pending !== undefined} className="mt-6">
           {pending?.op === "add" ? "Adding tag" : "Add tag"}
         </Button>
       </form>
@@ -368,7 +369,7 @@ function Scores({
       )}
       <form
         onSubmit={submit}
-        className="grid gap-2 sm:grid-cols-[1fr_1fr_2fr_auto] sm:items-end"
+        className="grid gap-2 sm:grid-cols-[1fr_1fr_2fr_auto] sm:items-start"
         noValidate
       >
         <Field name="score-name" invalid={invalid.name ? true : undefined}>
@@ -414,7 +415,8 @@ function Scores({
             </FieldDescription>
           ) : null}
         </Field>
-        <Button type="submit" disabled={write.isPending}>
+        {/* Beside the fields, level with their inputs, as Add tag is. */}
+        <Button type="submit" disabled={write.isPending} className="sm:mt-6">
           {write.isPending ? "Adding score" : "Add score"}
         </Button>
       </form>

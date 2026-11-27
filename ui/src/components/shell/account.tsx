@@ -1,10 +1,17 @@
 "use client";
 
-import { Button } from "@ui-sdk/react/button";
+import {
+  Menu,
+  MenuContent,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuTrigger,
+} from "@ui-sdk/react/menu";
 import { useState } from "react";
 import { logout } from "@/api/client";
 import { asUiError } from "@/api/errors";
-import { AlertIcon } from "@/components/icons";
+import { AlertIcon, ChevronDownIcon } from "@/components/icons";
 import { useAuth } from "@/lib/auth";
 import { loadPage } from "@/lib/navigate";
 import { ConnectDialog } from "./connect-dialog";
@@ -14,11 +21,13 @@ export function ConnectControl() {
   return useAuth().mode === "keys" ? <ConnectDialog /> : null;
 }
 
-export function AccountControls() {
+export function AccountControls({ className }: { className?: string }) {
   const auth = useAuth();
   const [failed, setFailed] = useState(false);
   if (auth.mode !== "session") return null;
+  const { user } = auth.session;
 
+  // The returned promise keeps the item pending until the server answers.
   const signOut = async () => {
     setFailed(false);
     try {
@@ -32,11 +41,21 @@ export function AccountControls() {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span className="max-w-48 truncate text-data">{auth.session.user.name}</span>
-      <Button onClick={signOut} className="text-data">
-        Sign out
-      </Button>
+    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 ${className ?? ""}`}>
+      <Menu pendingAnnouncement="Signing out">
+        <MenuTrigger className="text-data">
+          <span className="max-w-48 truncate">{user.name}</span>
+          <ChevronDownIcon className="text-ink-soft" />
+        </MenuTrigger>
+        <MenuContent align="end">
+          <MenuGroup>
+            <MenuGroupLabel className="text-label">Signed in as {user.email}</MenuGroupLabel>
+            <MenuItem className="text-data" onSelect={signOut}>
+              Sign out
+            </MenuItem>
+          </MenuGroup>
+        </MenuContent>
+      </Menu>
       {failed ? (
         <p role="alert" className="flex items-center gap-1.5 text-label">
           <AlertIcon className="shrink-0" />
