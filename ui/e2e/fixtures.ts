@@ -115,7 +115,7 @@ function micros(iso: string): number {
 
 // The summary the server sends for these spans when none of them repeats its children's usage: the head
 // span's fields and the totals of every span.
-export function traceSummary(spans: Span[], spanCount = spans.length): TraceSummary | null {
+function traceSummary(spans: Span[], spanCount = spans.length): TraceSummary | null {
   const head = spans.find((s) => s.parent_span_id === null) ?? spans[0];
   if (!head) return null;
   const sum = (field: (s: Span) => number) => spans.reduce((total, s) => total + field(s), 0);
