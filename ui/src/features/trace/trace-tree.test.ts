@@ -10,7 +10,6 @@ import {
   moreRowParent,
   moreRowValue,
   type TraceNode,
-  traceTotals,
   waterfallItems,
 } from "./trace-tree";
 
@@ -46,6 +45,8 @@ function span(
     total_tokens: 0,
     child_count: null,
     io_shape: null,
+    input_truncated: null,
+    output_truncated: null,
     saturated: false,
     ...fields,
   };
@@ -265,26 +266,6 @@ describe("the waterfall items", () => {
     expect(JSON.stringify(items)).not.toContain('"d"');
     expect(JSON.stringify(items)).not.toContain("/more");
   });
-});
-
-test("totals add every loaded span, and count error-level spans", () => {
-  const tree = buildTraceTree([
-    span("a", null, 0, { name: "agent run", duration_us: 5_000, total_cost_usd: 0.25 }),
-    span("b", "a", 1_000, { total_tokens: 1_200, total_cost_usd: 0.5, level: "error" }),
-    span("c", "a", 6_000, { total_tokens: 300, duration_us: 2_000 }),
-  ]);
-  expect(traceTotals(tree)).toEqual({
-    name: "agent run",
-    start: at(0),
-    durationUs: 8_000,
-    costUsd: 0.75,
-    tokens: 1_500,
-    errors: 1,
-    root: tree.nodes.get("a")?.span,
-  });
-  expect(traceTotals(buildTraceTree([span("a", null, 0, { name: "" })])).name).toBe(
-    "Unnamed trace",
-  );
 });
 
 test("the agent graph links each agent, tool and model to the nearest one above it", () => {

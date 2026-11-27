@@ -26,6 +26,8 @@ import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { Section, SectionFrame, useLoadingPhase } from "@/components/section";
 import { MetaNotice, TraceStatusLabel } from "@/components/status";
+import { userHref } from "@/features/sessions/session-detail";
+import { sessionHref } from "@/features/sessions/sessions-section";
 import { formatCost, formatCount, formatDuration, formatTime } from "@/lib/format";
 import { parseSpanId, parseTraceId } from "@/lib/ids";
 import { useProject } from "@/lib/project";
@@ -47,8 +49,6 @@ import {
   ancestorsOf,
   buildTraceTree,
   initiallyExpanded,
-  type TraceTree,
-  traceTotals,
   waterfallItems,
 } from "./trace-tree";
 
@@ -176,7 +176,7 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
         title="Trace"
         description={<span className="font-mono break-all">{trace}</span>}
       />
-      <TraceSummary query={query} tree={tree} />
+      <TraceSummary project={project} query={query} />
       {detail && detail.spans.length > 0 ? (
         <SegmentedControl
           aria-label="View"
@@ -287,11 +287,11 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
 }
 
 function TraceSummary({
+  project,
   query,
-  tree,
 }: {
+  project: string;
   query: UseQueryResult<TraceDetailBody>;
-  tree: TraceTree | null;
 }) {
   const phase = useLoadingPhase(query.isPending);
   if (query.isPending) {
@@ -307,26 +307,55 @@ function TraceSummary({
     );
   }
   const detail = query.data;
+  const summary = detail?.summary;
   // Without a trace, the spans section shows the error or the empty state for both.
-  if (!detail || !tree || detail.spans.length === 0) return null;
-  const totals = traceTotals(tree);
+  if (!detail || !summary || detail.spans.length === 0) return null;
+  // The list's rule: the trace name when one was set, else the head span's name.
+  const title = summary.trace_name || summary.name || "Unnamed trace";
+  const headName = summary.trace_name && summary.name !== summary.trace_name ? summary.name : "";
   return (
     <div className="mb-6 flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <p className="text-subheading font-medium break-all">{totals.name}</p>
-        <TraceStatusLabel errors={totals.errors} status={totals.root?.status_code ?? "unset"} />
+      <div className="flex flex-col gap-0.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <p className="text-subheading font-medium break-all">{title}</p>
+          <TraceStatusLabel errors={summary.error_count} status={summary.status_code} />
+        </div>
+        {headName ? (
+          <p data-head-span className="text-label break-all">
+            <span className="text-ink-soft">
+              {summary.head_kind === "root" ? "Root span" : "First span"}
+            </span>{" "}
+            {headName}
+          </p>
+        ) : null}
       </div>
       <dl className="flex flex-wrap gap-x-6 gap-y-1 text-data">
-        {totals.start ? <Fact label="Started">{formatTime(totals.start)}</Fact> : null}
-        <Fact label="Duration">{formatDuration(totals.durationUs)}</Fact>
-        <Fact label="Cost">{formatCost(totals.costUsd)}</Fact>
-        <Fact label="Tokens">{formatCount(totals.tokens)}</Fact>
-        <Fact label="Spans">{formatCount(detail.span_count)}</Fact>
+        <Fact label="Started">{formatTime(summary.start_time)}</Fact>
+        <Fact label="Duration">{formatDuration(summary.duration_us)}</Fact>
+        <Fact label="Cost">{formatCost(summary.total_cost_usd)}</Fact>
+        <Fact label="Tokens">{formatCount(summary.total_tokens)}</Fact>
+        <Fact label="Spans">{formatCount(summary.span_count)}</Fact>
+        {summary.user_id ? (
+          <Fact label="User">
+            <Link href={userHref(project, summary.user_id)} className="font-mono break-all">
+              {summary.user_id}
+            </Link>
+          </Fact>
+        ) : null}
+        {summary.session_id ? (
+          <Fact label="Session">
+            <Link href={sessionHref(project, summary.session_id)} className="font-mono break-all">
+              {summary.session_id}
+            </Link>
+          </Fact>
+        ) : null}
+        {summary.environment ? <Fact label="Environment">{summary.environment}</Fact> : null}
+        {summary.release ? <Fact label="Release">{summary.release}</Fact> : null}
       </dl>
       {detail.paged ? (
         <p className="text-label text-ink-soft">
-          This trace is large. Duration, cost and tokens cover the {formatCount(tree.nodes.size)}{" "}
-          spans loaded so far; expanding a span loads its children.
+          This trace is large, so the timeline loads its spans as you expand them. Duration, cost
+          and tokens cover the whole trace.
         </p>
       ) : null}
       <MetaNotice meta={detail.meta} noun="spans" />

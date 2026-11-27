@@ -2,6 +2,7 @@ import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
 import type { ReactNode } from "react";
 import type { Level } from "@/api/generated/Level";
 import type { PayloadField } from "@/api/generated/PayloadField";
+import type { Span } from "@/api/generated/Span";
 import { EmptyState } from "@/components/empty-state";
 import { useLoadingPhase } from "@/components/section";
 import { StatusLabel } from "@/components/status";
@@ -21,13 +22,20 @@ const LEVEL_LABEL: Record<Level, string> = {
   error: "Error",
 };
 
-// The payload tabs: the field each reads and the noun its copy uses.
-const PAYLOAD_TABS: { field: PayloadField; label: string; noun: string }[] = [
-  { field: "input", label: "Input", noun: "input" },
-  { field: "output", label: "Output", noun: "output" },
-  { field: "attributes", label: "Attributes", noun: "attributes" },
-  { field: "events", label: "Events", noun: "events" },
+// The payload tabs: the field each reads, and the noun its copy uses and whether that noun is plural.
+const PAYLOAD_TABS: { field: PayloadField; label: string; noun: string; plural: boolean }[] = [
+  { field: "input", label: "Input", noun: "input", plural: false },
+  { field: "output", label: "Output", noun: "output", plural: false },
+  { field: "attributes", label: "Attributes", noun: "attributes", plural: true },
+  { field: "events", label: "Events", noun: "events", plural: true },
 ];
+
+// Whether the span reported the field cut at the size limit; only input and output carry the flag.
+function truncatedOf(span: Span, field: PayloadField): boolean | null {
+  if (field === "input") return span.input_truncated;
+  if (field === "output") return span.output_truncated;
+  return null;
+}
 
 export function SpanPanelBody({
   project,
@@ -121,6 +129,8 @@ function SpanDetails({
               span={payloadSpan}
               field={t.field}
               noun={t.noun}
+              plural={t.plural}
+              truncated={truncatedOf(span, t.field)}
               ioShape={span.io_shape}
             />
           </TabsPanel>

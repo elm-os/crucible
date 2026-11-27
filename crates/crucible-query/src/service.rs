@@ -11,10 +11,10 @@ use crucible_env::{Clock, Histogram, Metrics, QueryError, Stores};
 use crucible_plan::{
     Hidden, MAX_LIST, PlanError, QueryPlan, RetentionClamp, Row, trace_page_stats,
 };
-use crucible_recent::{Consistency, ReadState, RecentIndex, RecentSpan};
+use crucible_recent::{Consistency, ReadState, RecentIndex, RecentSpan, SpanSummary};
 use crucible_records::{
-    Level, NO_HEAD_START, NanoUsd, Pick, ProjectId, TableId, TimeWindow, Timestamp, TraceId,
-    WalEpoch,
+    Level, NO_HEAD_START, NanoUsd, Pick, ProjectId, StatusCode, TableId, TimeWindow, Timestamp,
+    TraceId, WalEpoch,
 };
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
@@ -420,7 +420,7 @@ impl Stats {
     }
 
     /// A row of `trace_page_stats`.
-    fn decode(row: &Row) -> Result<(TraceId, Self), QueryServiceError> {
+    pub(crate) fn decode(row: &Row) -> Result<(TraceId, Self), QueryServiceError> {
         let f = Fields(row.values());
         let pick = |index| f.bytes(index).map(|bytes| Pick::from_stored(bytes.into()));
         let stats = Self {
@@ -460,31 +460,47 @@ impl Stats {
 
     /// Adds one recent entry. The bounds, the root flag and the picks merge idempotently, so every entry
     /// counts. The sums count only entries above the checkpoint watermark: an entry at or below it is confirmed
-    /// in the store, whose sums already hold it. Token and cost sums leave out a usage aggregate, as the store's
-    /// do (the sums rule of contract 3.1); the counts take every span.
-    fn add_recent(&mut self, span: &RecentSpan, state: ReadState) {
+    /// in the store, whose sums already hold it.
+    pub(crate) fn add_recent(&mut self, span: &RecentSpan, state: ReadState) {
         let s = &span.summary;
-        self.min_start = self.min_start.min(s.start_time);
-        self.max_end = self.max_end.max(s.end_time);
-        self.has_root |= s.is_root;
+        self.merge_span(s);
         if span.head.is_some() {
             self.min_head_start = self.min_head_start.min(s.start_time);
         }
+        if span.lsn > state.watermark {
+            self.count_span(s);
+        }
+    }
+
+    /// Adds one span of a trace that was read whole, which inline trace detail sums exactly (contract 8.9):
+    /// every span counts once.
+    pub(crate) fn add_span(&mut self, s: &SpanSummary) {
+        self.merge_span(s);
+        self.count_span(s);
+    }
+
+    /// The bounds, the root flag and the picks, which merge idempotently.
+    fn merge_span(&mut self, s: &SpanSummary) {
+        self.min_start = self.min_start.min(s.start_time);
+        self.max_end = self.max_end.max(s.end_time);
+        self.has_root |= s.is_root;
         let pick = |value: &str| Pick::new(s.is_root, s.end_time, s.span_id, value);
         self.trace_name.merge(&pick(&s.trace_name));
         self.user_id.merge(&pick(&s.user_id));
         self.session_id.merge(&pick(&s.session_id));
-        if span.lsn > state.watermark {
-            self.span_count = self.span_count.saturating_add(1);
-            self.error_count = self
-                .error_count
-                .saturating_add(u64::from(s.level == Level::Error));
-            if !s.usage_aggregate {
-                self.total_cost_nusd = self.total_cost_nusd.saturating_add(s.total_cost_nusd);
-                self.input_tokens = self.input_tokens.saturating_add(s.input_tokens);
-                self.output_tokens = self.output_tokens.saturating_add(s.output_tokens);
-                self.total_tokens = self.total_tokens.saturating_add(s.total_tokens);
-            }
+    }
+
+    /// Counts one span as the store's sums do: an error when its status or its level is `error` (contract 3.11),
+    /// and its tokens and cost unless it is a usage aggregate (the sums rule of contract 3.1).
+    fn count_span(&mut self, s: &SpanSummary) {
+        self.span_count = self.span_count.saturating_add(1);
+        let error = s.status_code == StatusCode::Error || s.level == Level::Error;
+        self.error_count = self.error_count.saturating_add(u64::from(error));
+        if !s.usage_aggregate {
+            self.total_cost_nusd = self.total_cost_nusd.saturating_add(s.total_cost_nusd);
+            self.input_tokens = self.input_tokens.saturating_add(s.input_tokens);
+            self.output_tokens = self.output_tokens.saturating_add(s.output_tokens);
+            self.total_tokens = self.total_tokens.saturating_add(s.total_tokens);
         }
     }
 
@@ -522,9 +538,9 @@ pub struct TraceSummary {
     /// sums run ahead by the spans that are in the store while the watermark has not passed them yet (the
     /// watermark is a low watermark: one unresolved earlier batch holds it back).
     pub span_count: u64,
-    /// Spans of level `error`.
+    /// Spans whose status or level is `error`.
     pub error_count: u64,
-    /// The total cost.
+    /// The total cost. Token and cost sums leave out a usage aggregate (the sums rule of contract 3.1).
     pub total_cost_nusd: NanoUsd,
     /// Input tokens.
     pub input_tokens: u64,

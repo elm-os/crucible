@@ -118,6 +118,29 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   In 0.1.3 they were logged at debug, which the server never showed.
 - `RUST_LOG` filters the server's log, for example `RUST_LOG=info,crucible_jobs=debug`; unset, the log holds info
   and above. The Compose files pass it from the environment or `.env`.
+- `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
+  status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
+  its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's
+  usage is counted once. It covers the whole trace, also when the response is paged, and is null when the response
+  holds no span.
+- The spans of a trace, the children of a span and search hits carry `input_truncated` and `output_truncated`:
+  whether the span's input or output was cut at the size limit, null for a span that has not reached ClickHouse.
+- A trace list row's `error_count` counts a span with an error status and an explicit level other than `error` as
+  soon as the span is received. In 0.1.3 such a span counted only once ClickHouse stored it.
+- The trace page's header shows the same cost, tokens, duration and error count as the trace list: an agent span
+  that reports its run's total usage is no longer added on top of its model calls, and a large trace's header covers
+  the whole trace. In 0.1.3 the header added up the spans it had loaded.
+- The trace page is titled with the trace name when one is set, as the trace list names the trace, with the root
+  span's name below it, and its header shows the trace's user and session, each linked to its page, its environment
+  and its release. In 0.1.3 the page showed only the root span's name.
+- The span panel's Attributes and Events tabs say "No attributes were recorded.", "No events were recorded.",
+  "This span's attributes aren't stored." and "This span's events aren't stored.", in place of "was recorded" and
+  "isn't stored".
+- The span panel's Input and Output tabs say "The input was cut at the size limit, so it shows as text." only for a
+  field the span reports as cut, and label other text "Text". In 0.1.3 every text value carried a notice that it
+  might be JSON cut at the size limit.
+- The trace page's timeline fits its card beside the span panel: its columns follow the timeline's own width instead
+  of the window's. In 0.1.3 the Duration column was cut off in a window 1024 px wide.
 
 ## [0.1.3] - 2026-11-26
 

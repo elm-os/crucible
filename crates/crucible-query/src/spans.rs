@@ -4,9 +4,10 @@
 
 use std::collections::BTreeMap;
 
-use crucible_plan::{Row, TraceBounds, child_counts, trace_time_bounds};
+use crucible_plan::{Row, TraceBounds, Value, child_counts, trace_time_bounds};
 use crucible_recent::{ReadState, RecentSpan, SpanSummary, WalLocator};
-use crucible_records::{SpanId, TableId, Timestamp, TraceId};
+use crucible_records::{SpanId, TableId, Timestamp, TraceId, Truncation};
+use crucible_schema::{Column, SpanCoreCol};
 
 use crate::context::QueryServiceError;
 use crate::decode::{self, Fields};
@@ -39,6 +40,42 @@ pub struct TraceSpan {
 impl TraceSpan {
     pub(crate) fn key(&self) -> (Timestamp, SpanId) {
         (self.summary.start_time, self.summary.span_id)
+    }
+
+    /// The span's release. The recent index does not keep it, so a span that only the index holds has none.
+    pub fn release(&self) -> Option<&str> {
+        match self.core_value(SpanCoreCol::Release)? {
+            Value::String(release) => Some(release),
+            _ => None,
+        }
+    }
+
+    /// Whether the span's input was cut at the size cap, which also names it in the payload's
+    /// `truncated_fields` (contract 3.1). The recent index does not keep it, so a span that only the index holds
+    /// has none.
+    pub fn input_truncated(&self) -> Option<bool> {
+        self.cut(SpanCoreCol::InputTruncation)
+    }
+
+    /// Whether the span's output was cut at the size cap, as [`TraceSpan::input_truncated`] says of the input.
+    pub fn output_truncated(&self) -> Option<bool> {
+        self.cut(SpanCoreCol::OutputTruncation)
+    }
+
+    fn cut(&self, column: SpanCoreCol) -> Option<bool> {
+        match self.core_value(column)? {
+            Value::Enum(value) => Some(*value == Truncation::CapExceeded.value()),
+            _ => None,
+        }
+    }
+
+    /// A column of the span's `span_core` row, for a span the store serves.
+    fn core_value(&self, column: SpanCoreCol) -> Option<&Value> {
+        let SpanSource::Store(row) = &self.source else {
+            return None;
+        };
+        let at = SpanCoreCol::ALL.iter().position(|c| *c == column)?;
+        row.values().get(at)
     }
 }
 

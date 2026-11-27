@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Span } from "@/api/generated/Span";
 import type { SpanPage } from "@/api/generated/SpanPage";
 import type { TraceDetail as TraceDetailBody } from "@/api/generated/TraceDetail";
+import type { TraceSummary } from "@/api/generated/TraceSummary";
 import { createQueryClient } from "@/components/providers";
 import { TraceDetail } from "./trace-detail";
 
@@ -57,10 +58,19 @@ function span(fields: Partial<Span>): Span {
     total_tokens: 0,
     child_count: null,
     io_shape: null,
+    input_truncated: null,
+    output_truncated: null,
     saturated: false,
     ...fields,
   };
 }
+
+const usage = (input: number, output: number, cost: number): Partial<Span> => ({
+  input_tokens: input,
+  output_tokens: output,
+  total_tokens: input + output,
+  total_cost_usd: cost,
+});
 
 const SPANS = [
   span({ total_cost_usd: 0.0042 }),
@@ -89,11 +99,37 @@ const SPANS = [
   }),
 ];
 
+// What the server says of SPANS as a whole.
+function summary(fields: Partial<TraceSummary> = {}): TraceSummary {
+  return {
+    name: "agent run",
+    trace_name: "",
+    head_kind: "root",
+    start_time: "2026-11-17T14:00:00.000000Z",
+    duration_us: 1_250_000,
+    status_code: "ok",
+    level: "default",
+    span_count: SPANS.length,
+    error_count: 1,
+    total_cost_usd: 0.0042,
+    input_tokens: 1_200,
+    output_tokens: 300,
+    total_tokens: 1_500,
+    user_id: "",
+    session_id: "",
+    environment: "default",
+    release: "",
+    saturated: false,
+    ...fields,
+  };
+}
+
 function detail(fields: Partial<TraceDetailBody> = {}): TraceDetailBody {
   return {
     trace_id: TRACE,
     span_count: SPANS.length,
     paged: false,
+    summary: summary(),
     spans: SPANS,
     facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },
@@ -106,6 +142,7 @@ const lagging = () =>
   detail({
     spans: [],
     span_count: 0,
+    summary: null,
     meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
   });
 
@@ -163,6 +200,74 @@ describe("the trace page", () => {
     expect(screen.getByText("1,500")).toBeTruthy();
   });
 
+  test("the header's cost and tokens are the server's, which counts an agent span that repeats its calls once", async () => {
+    // An invoke_agent root that reports the run's total usage, and the two chat calls that make it up: the
+    // span rows add up to twice the run.
+    const chat = (spanId: string, fields: Partial<Span>) =>
+      span({
+        span_id: spanId,
+        parent_span_id: "00f067aa0ba902b7",
+        name: "chat gpt-4o-mini",
+        observation_type: "generation",
+        ...fields,
+      });
+    const spans = [
+      span({ name: "invoke_agent support", ...usage(3_300, 505, 0.000798) }),
+      chat("00f067aa0ba902b8", usage(1_800, 280, 0.000438)),
+      chat("00f067aa0ba902b9", usage(1_500, 225, 0.00036)),
+    ];
+    const run = summary({
+      name: "invoke_agent support",
+      error_count: 0,
+      total_cost_usd: 0.000798,
+      input_tokens: 3_300,
+      output_tokens: 505,
+      total_tokens: 3_805,
+    });
+    fetchMock.mockResolvedValue(json(detail({ spans, summary: run })));
+    renderPage();
+    expect(await screen.findByText("$0.0008")).toBeTruthy();
+    expect(screen.getByText("3,805")).toBeTruthy();
+    expect(screen.queryByText("$0.0016")).toBeNull();
+    expect(screen.queryByText("7,610")).toBeNull();
+  });
+
+  test("the header is titled with the trace name, names the root span, and shows who and where", async () => {
+    const named = summary({
+      name: "run_agent",
+      trace_name: "research assistant",
+      user_id: "user-42",
+      session_id: "sess-migrate-1",
+      environment: "staging",
+      release: "2.7.0",
+    });
+    fetchMock.mockResolvedValue(json(detail({ summary: named })));
+    renderPage();
+    const title = await screen.findByText("research assistant");
+    expect(title.tagName).toBe("P");
+    expect(document.querySelector("[data-head-span]")?.textContent).toBe("Root span run_agent");
+    const facts = within(screen.getAllByRole("definition")[0]?.closest("dl") as HTMLElement);
+    expect(facts.getByRole("link", { name: "user-42" }).getAttribute("href")).toMatch(
+      /^\/user\/?\?project=p-1&user=user-42$/,
+    );
+    expect(facts.getByRole("link", { name: "sess-migrate-1" }).getAttribute("href")).toMatch(
+      /^\/session\/?\?project=p-1&session=sess-migrate-1$/,
+    );
+    expect(facts.getByText("staging")).toBeTruthy();
+    expect(facts.getByText("2.7.0")).toBeTruthy();
+  });
+
+  test("without a trace name the header is titled with the root span's name alone", async () => {
+    fetchMock.mockResolvedValue(json(detail()));
+    renderPage();
+    await screen.findByText("1 error");
+    const header = screen.getByText("1 error").closest("div")?.parentElement as HTMLElement;
+    expect(within(header).getByText("agent run")).toBeTruthy();
+    expect(document.querySelector("[data-head-span]")).toBeNull();
+    expect(screen.queryByText("User")).toBeNull();
+    expect(screen.queryByText("Release")).toBeNull();
+  });
+
   test("choosing a span writes it to the URL and fills the span panel", async () => {
     fetchMock.mockResolvedValue(json(detail()));
     renderPage();
@@ -199,7 +304,7 @@ describe("the trace page", () => {
     expect(await within(panel).findByText("This span references no media.")).toBeTruthy();
   });
 
-  test("a paged trace says its totals cover the loaded spans, and expanding fetches children", async () => {
+  test("a paged trace says its totals cover the whole trace, and expanding fetches children", async () => {
     const parent = span({ child_count: 2 });
     const child = span({
       span_id: "00f067aa0ba902c1",
@@ -222,14 +327,23 @@ describe("the trace page", () => {
     fetchMock.mockImplementation(async (input) =>
       String(input).includes("/spans?")
         ? json(page)
-        : json(detail({ paged: true, span_count: 12_000, spans: [parent, child] })),
+        : json(
+            detail({
+              paged: true,
+              span_count: 12_000,
+              summary: summary({ span_count: 12_000, total_tokens: 96_000 }),
+              spans: [parent, child],
+            }),
+          ),
     );
     renderPage();
     expect(
       await screen.findByText(
-        "This trace is large. Duration, cost and tokens cover the 2 spans loaded so far; expanding a span loads its children.",
+        "This trace is large, so the timeline loads its spans as you expand them. Duration, cost and tokens cover the whole trace.",
       ),
     ).toBeTruthy();
+    expect(screen.getByText("96,000")).toBeTruthy();
+    expect(screen.getByText("12,000")).toBeTruthy();
     const row = screen.getByRole("row", { name: /child one/ });
     await act(async () => {
       row.focus();

@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { IoShape } from "@/api/generated/IoShape";
+import type { PayloadField } from "@/api/generated/PayloadField";
 import { createQueryClient } from "@/components/providers";
 import { AUTO_LOAD_BYTES, PayloadViewer, PREVIEW_BYTES } from "./payload-viewer";
 
@@ -20,12 +21,23 @@ const SPAN = {
   startTime: "2026-11-17T14:00:00.020000Z",
 };
 
-function renderViewer(ioShape: IoShape | null = null) {
+function renderViewer(
+  ioShape: IoShape | null = null,
+  tab: { field?: PayloadField; noun?: string; plural?: boolean; truncated?: boolean | null } = {},
+) {
   const client = createQueryClient();
   client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retry: false } });
   return render(
     <QueryClientProvider client={client}>
-      <PayloadViewer project="p1" span={SPAN} field="input" noun="input" ioShape={ioShape} />
+      <PayloadViewer
+        project="p1"
+        span={SPAN}
+        field={tab.field ?? "input"}
+        noun={tab.noun ?? "input"}
+        plural={tab.plural}
+        truncated={tab.truncated}
+        ioShape={ioShape}
+      />
     </QueryClientProvider>,
   );
 }
@@ -84,10 +96,23 @@ describe("the payload viewer", () => {
     expect(await screen.findByText("No input was recorded.")).toBeTruthy();
   });
 
+  test("empty: a plural field's copy agrees with it", async () => {
+    serve("");
+    const attributes = { field: "attributes", noun: "attributes", plural: true } as const;
+    const { unmount } = renderViewer(null, attributes);
+    expect(await screen.findByText("No attributes were recorded.")).toBeTruthy();
+    unmount();
+    renderViewer(null, { field: "events", noun: "events", plural: true });
+    expect(await screen.findByText("No events were recorded.")).toBeTruthy();
+  });
+
   test("empty: a payload that is not stored says why it may be gone", async () => {
-    fetchMock.mockResolvedValue(problem(404, "not_found"));
-    renderViewer();
+    fetchMock.mockImplementation(async () => problem(404, "not_found"));
+    const { unmount } = renderViewer();
     expect(await screen.findByText("This span's input isn't stored.")).toBeTruthy();
+    unmount();
+    renderViewer(null, { field: "events", noun: "events", plural: true });
+    expect(await screen.findByText("This span's events aren't stored.")).toBeTruthy();
   });
 
   test("error: a failed read offers a retry that reads again", async () => {
@@ -133,12 +158,30 @@ describe("the payload viewer", () => {
   test("success: up to 256 KiB the rest loads by itself; text shows as text", async () => {
     const body = "word ".repeat(1_000);
     serve(body);
-    renderViewer();
-    expect(await screen.findByText(/is text, or JSON that was cut/)).toBeTruthy();
+    renderViewer(null, { truncated: false });
+    expect(await screen.findByText("Text")).toBeTruthy();
+    expect(screen.queryByText(/cut at the size limit/)).toBeNull();
     expect(requestedRanges()).toEqual([
       `bytes=0-${PREVIEW_BYTES - 1}`,
       `bytes=${PREVIEW_BYTES}-${body.length - 1}`,
     ]);
+  });
+
+  test("success: only a field the span says was cut carries the truncation notice", async () => {
+    serve('{"messages": [{"role": "user", "content": "invoice INV-');
+    renderViewer(null, { truncated: true });
+    expect(
+      await screen.findByText("The input was cut at the size limit, so it shows as text."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Text")).toBeNull();
+  });
+
+  test("success: short text the span did not cut, or whose cut is not known, is labelled text", async () => {
+    serve("invoice INV-7");
+    renderViewer(null, { truncated: null });
+    expect(await screen.findByText("Text")).toBeTruthy();
+    expect(screen.getByText("invoice INV-7")).toBeTruthy();
+    expect(screen.queryByText(/cut at the size limit/)).toBeNull();
   });
 
   test("a larger field shows its preview and loads by ranges only when asked", async () => {
@@ -166,6 +209,6 @@ describe("the payload viewer", () => {
     expect(screen.getByText(/^y+…$/)).toBeTruthy();
     failing = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry full input" }));
-    await waitFor(() => expect(screen.getByText(/is text, or JSON that was cut/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Text")).toBeTruthy());
   });
 });

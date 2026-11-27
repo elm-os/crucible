@@ -576,7 +576,8 @@ children of one span in start order.
 `GET .../sessions/{session_id}` and `GET .../users/{user_id}` return one session or user over a window.
 
 The trace and span lists take these filters as query parameters. Repeating a parameter matches any of its values;
-different parameters must all hold; each takes at most 100 values.
+different parameters must all hold; each takes at most 100 values. The trace list takes at most 256 values across
+all its filters; more answers 422 `validation_failed` with `too_many_values`.
 
 | Filter | Matches |
 |---|---|
@@ -870,7 +871,8 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   would read now, each rule's history, and webhook, Slack and email channels with a test send; see
   [alerts](../guides/alerts.md).
 - **Exports**: `POST exports` starts a job that writes a project's spans of a window as `crucible-jsonl` or
-  `otlp-json`, optionally gzip-compressed; poll `GET exports/{export_id}` until `state` is `ready`, then download it
+  `otlp-json`, optionally gzip-compressed; poll `GET exports/{export_id}`, which also gives `attempts`, `waited_secs`
+  and `last_error` while it waits, until `state` is `ready`, then download it
   from `download_path`. With object storage the download answers `303` with a link to the file on the object store,
   valid for 5 minutes, which any server hands out. Files are kept 7 days, and a project may start 5 exports an
   hour.

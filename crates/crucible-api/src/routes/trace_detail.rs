@@ -5,12 +5,14 @@ use axum::http::Uri;
 use axum::routing::get;
 use axum::{Json, Router};
 use crucible_api_types as wire;
-use crucible_api_types::{Problem, Saturation, TraceDetail, TraceDetailParams};
+use crucible_api_types::{
+    HeadKind, Problem, Saturation, TraceDetail, TraceDetailParams, usd_from_nanos,
+};
 use crucible_query as query;
 use utoipa::OpenApi;
 
 use crate::access::{ApiState, Project};
-use crate::convert::{meta, span, trace_facts};
+use crate::convert::{meta, micros_between, span, trace_facts};
 use crate::params::Params;
 use crate::problem::ApiError;
 
@@ -76,11 +78,42 @@ fn trace_detail(detail: &query::TraceDetail) -> wire::TraceDetail {
         trace_id: detail.trace_id.to_string(),
         span_count: s.u64(detail.span_count),
         paged: detail.paged,
+        summary: trace_summary(detail),
         spans: detail.spans.iter().map(span).collect(),
         facts: trace_facts(&detail.facts),
         meta: meta(&detail.meta),
         saturated: s.saturated(),
     }
+}
+
+/// The header of a trace: the head span's own fields and the trace's aggregates and picks.
+fn trace_summary(detail: &query::TraceDetail) -> Option<wire::TraceSummary> {
+    let (head, summary) = (detail.head()?, detail.summary.as_ref()?);
+    let mut s = Saturation::default();
+    Some(wire::TraceSummary {
+        name: head.summary.name.to_string(),
+        trace_name: summary.trace_name.to_string(),
+        head_kind: if head.summary.is_root {
+            HeadKind::Root
+        } else {
+            HeadKind::Provisional
+        },
+        start_time: summary.min_start.to_string(),
+        duration_us: s.u64(micros_between(summary.min_start, summary.max_end)),
+        status_code: head.summary.status_code.into(),
+        level: head.summary.level.into(),
+        span_count: s.u64(summary.span_count),
+        error_count: s.u64(summary.error_count),
+        total_cost_usd: usd_from_nanos(summary.total_cost_nusd.nanos()),
+        input_tokens: s.u64(summary.input_tokens),
+        output_tokens: s.u64(summary.output_tokens),
+        total_tokens: s.u64(summary.total_tokens),
+        user_id: summary.user_id.to_string(),
+        session_id: summary.session_id.to_string(),
+        environment: head.summary.environment.to_string(),
+        release: head.release().unwrap_or_default().to_owned(),
+        saturated: s.saturated(),
+    })
 }
 
 #[cfg(test)]
@@ -137,6 +170,20 @@ mod tests {
             span_count: u64::MAX,
             paged: true,
             spans: vec![span(u64::MAX, 10, 20), span(3, 20, 10)],
+            summary: Some(query::TraceSummary {
+                min_start: Timestamp::from_micros(10),
+                max_end: Timestamp::from_micros(20),
+                has_root: true,
+                span_count: u64::MAX,
+                error_count: 2,
+                total_cost_nusd: NanoUsd::MAX,
+                input_tokens: u64::MAX,
+                output_tokens: 3,
+                total_tokens: u64::MAX,
+                trace_name: Arc::from("support-ticket"),
+                user_id: Arc::from("user-42"),
+                session_id: Arc::from("sess-1"),
+            }),
             facts: query::TraceFacts::default(),
             meta: query::Meta {
                 as_of: Timestamp::EPOCH,
@@ -157,9 +204,32 @@ mod tests {
         // An end before the start is a zero duration, not a wrapped one.
         assert_eq!(small.duration_us.get(), 0);
         assert_eq!(big.total_cost_usd, usd_from_nanos(i64::MAX));
+        // The summary saturates in its own object, and names the head span, the first root.
+        let summary = wire.summary.as_ref().unwrap();
+        assert!(summary.saturated);
+        assert_eq!(summary.span_count.get(), MAX_SAFE_INTEGER);
+        assert_eq!(summary.input_tokens.get(), MAX_SAFE_INTEGER);
+        assert_eq!(
+            (summary.output_tokens.get(), summary.error_count.get()),
+            (3, 2)
+        );
+        assert_eq!(summary.duration_us.get(), 10);
+        assert_eq!(summary.start_time, "1970-01-01T00:00:00.000010Z");
+        assert_eq!(summary.head_kind, HeadKind::Root);
+        assert_eq!(summary.trace_name, "support-ticket");
+        // A head that only the recent index holds has no release.
+        assert_eq!(summary.release, "");
         let json = serde_json::to_value(&wire).unwrap();
         assert_eq!(json["span_count"], MAX_SAFE_INTEGER);
         assert_eq!(json["saturated"], true);
         assert_eq!(json["spans"][0]["parent_span_id"], serde_json::Value::Null);
+        assert_eq!(json["spans"][0]["input_truncated"], serde_json::Value::Null);
+        assert_eq!(json["summary"]["total_tokens"], MAX_SAFE_INTEGER);
+
+        let empty = query::TraceDetail {
+            spans: Vec::new(),
+            ..detail
+        };
+        assert_eq!(trace_detail(&empty).summary, None);
     }
 }

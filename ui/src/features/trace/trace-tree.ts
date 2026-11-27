@@ -215,40 +215,6 @@ export function ancestorsOf(tree: TraceTree, id: string): string[] {
   return chain;
 }
 
-interface TraceTotals {
-  name: string;
-  start: string | null;
-  durationUs: number;
-  costUsd: number;
-  tokens: number;
-  errors: number;
-  root: Span | null;
-}
-
-export function traceTotals(tree: TraceTree): TraceTotals {
-  let costUsd = 0;
-  let tokens = 0;
-  let errors = 0;
-  let first: TraceNode | null = null;
-  for (const node of tree.nodes.values()) {
-    const { span } = node;
-    costUsd += span.total_cost_usd;
-    tokens += span.total_tokens;
-    if (span.level === "error") errors += 1;
-    if (first === null || byStart(node, first) < 0) first = node;
-  }
-  const root = tree.roots.find((node) => node.span.parent_span_id === null) ?? tree.roots[0];
-  return {
-    name: root?.span.name || "Unnamed trace",
-    start: first?.span.start_time ?? null,
-    durationUs: tree.endUs - tree.startUs,
-    costUsd,
-    tokens,
-    errors,
-    root: root?.span ?? null,
-  };
-}
-
 export type GraphKind = "agent" | "tool" | "generation";
 
 export interface GraphNode {

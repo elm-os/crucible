@@ -3,6 +3,7 @@ import type { Meta } from "./Meta";
 import type { SafeU64 } from "./SafeU64";
 import type { Span } from "./Span";
 import type { TraceFacts } from "./TraceFacts";
+import type { TraceSummary } from "./TraceSummary";
 
 /**
  * One trace. Up to 5,000 spans it holds every span; above that it holds the root spans and
@@ -22,6 +23,11 @@ span_count: SafeU64,
  * with `child_count`.
  */
 paged: boolean, 
+/**
+ * The trace's name, totals and identity, for the whole trace even when `paged` is true; null when `spans`
+ * is empty.
+ */
+summary: TraceSummary | null, 
 /**
  * The spans in start order. Empty only when `meta` says the response is partial or lagging.
  */

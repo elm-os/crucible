@@ -113,7 +113,7 @@ pub struct TraceListItem {
     pub level: Level,
     /// Spans in the trace.
     pub span_count: SafeU64,
-    /// Spans of level `error`.
+    /// Spans whose status or level is `error`.
     pub error_count: SafeU64,
     /// The trace's total cost in USD.
     pub total_cost_usd: f64,

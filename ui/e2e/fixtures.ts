@@ -16,6 +16,7 @@ import type { SqlSchema } from "../src/api/generated/SqlSchema";
 import type { TraceDetail } from "../src/api/generated/TraceDetail";
 import type { TraceListItem } from "../src/api/generated/TraceListItem";
 import type { TraceListPage } from "../src/api/generated/TraceListPage";
+import type { TraceSummary } from "../src/api/generated/TraceSummary";
 import type { UserItem } from "../src/api/generated/UserItem";
 import type { UserSessionItem } from "../src/api/generated/UserSessionItem";
 
@@ -55,6 +56,8 @@ export function span(
     total_tokens: 0,
     child_count: null,
     io_shape: null,
+    input_truncated: null,
+    output_truncated: null,
     saturated: false,
     ...fields,
   };
@@ -107,12 +110,51 @@ export const AGENT_SPANS: Span[] = [
   }),
 ];
 
+function micros(iso: string): number {
+  const [seconds = "", fraction = "0"] = iso.slice(0, -1).split(".");
+  return Date.parse(`${seconds}Z`) * 1_000 + Number(fraction.padEnd(6, "0"));
+}
+
+// The summary the server sends for these spans when none of them repeats its children's usage: the head
+// span's fields and the totals of every span.
+function traceSummary(spans: Span[], spanCount = spans.length): TraceSummary | null {
+  const head = spans.find((s) => s.parent_span_id === null) ?? spans[0];
+  if (!head) return null;
+  const sum = (field: (s: Span) => number) => spans.reduce((total, s) => total + field(s), 0);
+  const start = Math.min(...spans.map((s) => micros(s.start_time)));
+  const end = Math.max(...spans.map((s) => micros(s.end_time)));
+  return {
+    name: head.name,
+    trace_name: "",
+    head_kind: head.parent_span_id === null ? "root" : "provisional",
+    start_time: spans.reduce(
+      (first, s) => (s.start_time < first ? s.start_time : first),
+      head.start_time,
+    ),
+    duration_us: end - start,
+    status_code: head.status_code,
+    level: head.level,
+    span_count: spanCount,
+    error_count: spans.filter((s) => s.status_code === "error" || s.level === "error").length,
+    total_cost_usd: sum((s) => s.total_cost_usd),
+    input_tokens: sum((s) => s.input_tokens),
+    output_tokens: sum((s) => s.output_tokens),
+    total_tokens: sum((s) => s.total_tokens),
+    user_id: "",
+    session_id: "",
+    environment: "production",
+    release: "",
+    saturated: false,
+  };
+}
+
 export function traceDetail(fields: Partial<TraceDetail> = {}): TraceDetail {
   const spans = fields.spans ?? AGENT_SPANS;
   return {
     trace_id: TRACE,
     span_count: spans.length,
     paged: false,
+    summary: traceSummary(spans, fields.span_count),
     spans,
     facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: AS_OF, partial: false, consistency: "strong" },

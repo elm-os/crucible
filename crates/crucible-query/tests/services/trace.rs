@@ -8,15 +8,20 @@ use std::time::Duration;
 
 use crucible_env::metrics::registry;
 use crucible_env::{MemoryRecorder, QueryError};
-use crucible_plan::{TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT};
+use crucible_plan::{Filter, TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT, Value};
 use crucible_query::{
     ChildCursor, Consistency, PartialReason, QueryServiceError, SpanChildrenQuery, SpanSource,
-    TraceDetail, TraceSpan,
+    TraceDetail, TraceListQuery, TraceSpan, TraceSummary,
 };
 use crucible_recent::{Frame, QuarantineReach, QuarantinedPair};
-use crucible_records::{Lsn, PartitionId, SpanId, TableId};
+use crucible_records::{
+    Level, Lsn, NanoUsd, ObservationType, PartitionId, SpanId, StatusCode, TableId, Truncation,
+};
 
-use crate::world::{GRACE, NOW, World, ctx, project, run, span, span_id, trace};
+use crate::list::window;
+use crate::world::{
+    GRACE, NOW, World, ctx, project, run, span, span_core_row, span_id, trace, trace_stats_rows,
+};
 
 fn ids(spans: &[TraceSpan]) -> Vec<SpanId> {
     spans.iter().map(|s| s.summary.span_id).collect()
@@ -490,4 +495,224 @@ fn a_trace_above_the_inline_limit_is_paged_from_its_roots() {
     .unwrap();
     assert!(page.has_more && page.data.len() == 2_000 && page.next_cursor.is_some());
     assert_eq!(page.data[0].summary.span_id, span_id(limit + 1));
+}
+
+/// The trace list's row of a trace: its merged aggregates and picks.
+fn listed(world: &World, trace_n: u64) -> TraceSummary {
+    let query = TraceListQuery {
+        window: window(),
+        filter: Filter::all(),
+        limit: Some(10),
+        cursor: None,
+    };
+    let page = run(world.service.trace_list(&ctx(1), query)).unwrap();
+    page.data
+        .into_iter()
+        .find(|item| item.head.trace_id == trace(trace_n))
+        .expect("the trace is listed")
+        .summary
+}
+
+/// The counts and sums of a summary: spans, errors, cost, input, output and total tokens.
+fn sums(summary: &TraceSummary) -> (u64, u64, i64, u64, u64, u64) {
+    (
+        summary.span_count,
+        summary.error_count,
+        summary.total_cost_nusd.nanos(),
+        summary.input_tokens,
+        summary.output_tokens,
+        summary.total_tokens,
+    )
+}
+
+/// An agent root that reports its run's whole usage, as the GenAI conventions allow, and the two model calls
+/// that make it up. The summary leaves the root out of the token and cost sums (the sums rule of contract 3.1),
+/// so it equals the trace list's row whether the trace is read from the index, from both places or from the
+/// store.
+#[test]
+fn the_summary_counts_a_usage_aggregate_once_as_the_list_does() {
+    let mut world = World::new(100);
+    let mut root = span(1, 10, 0, NOW);
+    root.summary.observation_type = ObservationType::Agent;
+    root.summary.name = "invoke_agent support".into();
+    root.summary.trace_name = "support-ticket".into();
+    root.summary.user_id = "user-42".into();
+    root.summary.session_id = "sess-migrate-1".into();
+    root.summary.environment = "staging".into();
+    // What the two calls report together: each reports a cost of 7 and 1, 2 and 3 tokens.
+    root.summary.usage_aggregate = true;
+    root.summary.total_cost_nusd = NanoUsd::from_nanos(14);
+    root.summary.input_tokens = 2;
+    root.summary.output_tokens = 4;
+    root.summary.total_tokens = 6;
+    let chat = |id: u64, offset: i64| {
+        let mut entry = span(1, id, 10, NOW.saturating_add_micros(offset));
+        entry.summary.observation_type = ObservationType::Generation;
+        entry
+    };
+    // A failed call with an explicit level: its error status makes it an error (contract 3.11).
+    let mut failed = chat(12, 20);
+    failed.summary.status_code = StatusCode::Error;
+    failed.summary.level = Level::Warning;
+    let lsn = world.ack(vec![root, chat(11, 10), failed]);
+
+    let check = |world: &World, source: &str| {
+        let found = detail(world, 1).unwrap();
+        let summary = found
+            .summary
+            .clone()
+            .expect("a trace with spans has a summary");
+        assert_eq!(sums(&summary), (3, 1, 14, 2, 4, 6), "{source}");
+        let row = listed(world, 1);
+        assert_eq!(sums(&row), sums(&summary), "{source}");
+        let picks = |s: &TraceSummary| {
+            (
+                s.trace_name.to_string(),
+                s.user_id.to_string(),
+                s.session_id.to_string(),
+                s.min_start,
+                s.max_end,
+            )
+        };
+        assert_eq!(picks(&summary), picks(&row), "{source}");
+        assert_eq!(
+            (
+                &*summary.trace_name,
+                &*summary.user_id,
+                &*summary.session_id
+            ),
+            ("support-ticket", "user-42", "sess-migrate-1"),
+            "{source}"
+        );
+        assert_eq!(
+            (summary.min_start, summary.max_end),
+            (NOW, NOW.saturating_add_micros(1_020)),
+            "{source}"
+        );
+        let head = found.head().expect("the root is the head");
+        assert_eq!(head.summary.span_id, span_id(10), "{source}");
+        assert_eq!(&*head.summary.name, "invoke_agent support", "{source}");
+        assert_eq!(&*head.summary.environment, "staging", "{source}");
+    };
+    check(&world, "the index");
+    world.ship(lsn);
+    world.checkpoint(lsn);
+    check(&world, "the store and the index");
+    world.settle();
+    assert_eq!(world.index.stats().entries, 0);
+    check(&world, "the store");
+}
+
+/// Without a root among the spans, the head is the earliest span; an empty answer has no summary.
+#[test]
+fn a_trace_without_its_root_is_headed_by_its_earliest_span() {
+    let mut world = World::new(100);
+    world.ack(vec![
+        span(1, 12, 10, NOW.saturating_add_micros(5)),
+        span(1, 11, 10, NOW),
+    ]);
+    let found = detail(&world, 1).unwrap();
+    assert_eq!(found.head().map(|s| s.summary.span_id), Some(span_id(11)));
+    assert_eq!(found.summary.map(|s| s.span_count), Some(2));
+
+    world.ack_only(vec![span(2, 20, 0, NOW)]);
+    let context = ctx(1);
+    let mut read = pin!(world.service.trace_by_id(&context, trace(2)));
+    assert!(poll(read.as_mut()).is_pending());
+    world.clock.advance(Duration::from_millis(250));
+    let Poll::Ready(Ok(empty)) = poll(read.as_mut()) else {
+        panic!("the barrier has expired");
+    };
+    assert!(empty.spans.is_empty() && empty.head().is_none() && empty.summary.is_none());
+}
+
+/// The index keeps no release and no truncation flags, so they come from the head's `span_core` row once the
+/// store serves it, as the list's head does.
+#[test]
+fn columns_the_index_does_not_keep_come_from_the_stored_row() {
+    let mut world = World::new(100);
+    let (root, child) = (span(1, 10, 0, NOW), span(1, 11, 10, NOW));
+    let lsn = world.ack(vec![root.clone(), child.clone()]);
+    let found = detail(&world, 1).unwrap();
+    let head = found.head().unwrap();
+    assert_eq!(
+        (
+            head.release(),
+            head.input_truncated(),
+            head.output_truncated()
+        ),
+        (None, None, None)
+    );
+
+    // The shipper lands the frame: the root has a release and an input cut at the size cap.
+    let at = |name: &str| {
+        crucible_schema::table(TableId::SpanCore)
+            .columns
+            .iter()
+            .position(|column| column.name == name)
+            .unwrap()
+    };
+    let mut row = span_core_row(&root, lsn, NOW);
+    row[at("release")] = Value::String("2.7.0".to_owned());
+    row[at("input_truncation")] = Value::Enum(Truncation::CapExceeded.value());
+    world.store.insert(TableId::SpanCore, row);
+    world
+        .store
+        .insert(TableId::SpanCore, span_core_row(&child, lsn, NOW));
+    for row in trace_stats_rows(&[root, child], lsn) {
+        world.store.insert(TableId::TraceStats, row);
+    }
+    world.checkpoint(lsn);
+    world.clock.advance(GRACE);
+    world.writer.maintain();
+    let found = detail(&world, 1).unwrap();
+    assert!(found.spans.iter().all(from_store));
+    let (head, other) = (found.head().unwrap(), &found.spans[1]);
+    assert_eq!(
+        (
+            head.release(),
+            head.input_truncated(),
+            head.output_truncated()
+        ),
+        (Some("2.7.0"), Some(true), Some(false))
+    );
+    assert_eq!(
+        (other.release(), other.input_truncated()),
+        (Some(""), Some(false))
+    );
+}
+
+/// Above the inline limit the response holds the roots and their children only, so the summary takes the
+/// trace's merged `trace_stats` and the unconfirmed index entries, as the list's row does, and still leaves a
+/// usage aggregate out.
+#[test]
+fn a_paged_trace_is_summed_as_the_list_sums_it() {
+    let limit = u64::from(TRACE_INLINE_SPAN_LIMIT);
+    let mut world = World::new(10_000);
+    let mut root = span(1, 1, 0, NOW);
+    root.summary.usage_aggregate = true;
+    root.summary.total_cost_nusd = NanoUsd::from_nanos(1_000_000);
+    let mut spans = vec![root];
+    spans.extend((2..=limit + 1).map(|n| span(1, n, 1, NOW.saturating_add_micros(n as i64))));
+    world.ack(spans);
+    world.settle();
+    let found = detail(&world, 1).unwrap();
+    assert!(found.paged && whole(&found));
+    let summary = found.summary.expect("a paged trace has a summary");
+    // Every child reports a cost of 7 and 1, 2 and 3 tokens; the root's own cost is left out.
+    let n = limit as i64;
+    assert_eq!(
+        sums(&summary),
+        (limit + 1, 0, 7 * n, limit, 2 * limit, 3 * limit)
+    );
+    assert_eq!(sums(&listed(&world, 1)), sums(&summary));
+    assert_eq!(summary.span_count, found.span_count);
+
+    // A child that only the index holds joins both.
+    world.ack(vec![span(1, limit + 2, 1, NOW.saturating_add_micros(1))]);
+    let found = detail(&world, 1).unwrap();
+    let summary = found.summary.unwrap();
+    assert_eq!(sums(&summary).2, 7 * (n + 1));
+    assert_eq!(sums(&listed(&world, 1)), sums(&summary));
+    assert_eq!(summary.span_count, found.span_count);
 }

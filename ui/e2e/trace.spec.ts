@@ -315,7 +315,9 @@ test.describe("trace detail: child spans of a paged trace", () => {
     api.on(TRACE_PATH, json(paged));
     const release = api.hold(CHILDREN_PATH, json(spanPage(fetches)));
     await page.goto(traceUrl());
-    await expect(page.getByText("This trace is large.")).toBeVisible();
+    await expect(
+      page.getByText("This trace is large, so the timeline loads its spans as you expand them."),
+    ).toBeVisible();
     const row = page.getByRole("row", { name: /worker one/ });
     await row.focus();
     await page.keyboard.press("ArrowRight");
