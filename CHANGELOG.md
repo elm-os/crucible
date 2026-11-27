@@ -45,6 +45,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The Rust SDK logs one `tracing` warning when an export first fails, with the traces URL and the exporter's error,
   which names the HTTP status; later failures count in `stats().failed`. In 0.1.3 the Go and Rust SDKs said nothing
   when exports on the background interval failed.
+- The Rust SDK's manifest declares `rust-version = "1.95"`, the minimum its README names, so cargo older than 1.95
+  refuses the crate up front and names the version it needs. In 0.1.3 the build failed partway, with "use of
+  unstable library feature `atomic_try_update`".
 - The Set up card on Home marks each step from the project's state: Create an API key is done once the project has
   an active key, Send your first trace once spans arrive, Instrument an MCP server once MCP operations arrive on
   either side, and Invite your team once the organization has a second member. A step the viewer's role can't do,
@@ -54,6 +57,17 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and the guides to sending traces and to instrumenting an MCP server.
 - The Home Set up card comes first on a project that has received no data, and it is hidden once every step is done
   or is one the viewer can't do.
+- The web UI's charts are drawn at the size they are shown, so axis labels stay at the label size on a wide chart
+  and on a phone. A day or a week is drawn in hours and a month in days; bars have rounded ends, are at most 24 px
+  wide, and are added together into whole clock intervals (15 minutes, 30 minutes, an hour) when they would be too
+  thin; an empty bucket of a count is zero; and lines break where there is no data instead of drawing across it.
+- Hovering or focusing a chart shows each series' value for that bucket in a tooltip beside the pointer, and the arrow
+  keys, Home and End step through the buckets; the slider under each chart is gone. The duration axis reads in round
+  units ("20 s", "1 min").
+- An MCP tool's latency percentiles are drawn as one range per bucket, from p50 to p99 with p90 marked, which stays
+  readable when a bucket holds a few calls.
+- MCP time series use at most 200 buckets: a day in quarter hours and a week in hours. A day was 288 five-minute
+  buckets.
 - `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
   status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
   its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's

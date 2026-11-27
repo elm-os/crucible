@@ -92,4 +92,5 @@ threshold on `input`, which already includes the cache reads and writes.
 5. When a new model has names worth pinning, add them with the row they must match to
    `crates/crucible-normalize/tests/fixtures/model_names.json` and update the corpus count in `tests/prices.rs`.
 6. A change to the data file changes the price table version, not `NORMALIZER_VERSION`.
-7. Update the model names, the version and the date in `docs/guides/priced-models.md`.
+7. Rewrite the model tables of `docs/guides/priced-models.md` with `python3 -I tools/docs/priced-models.py` (CI
+   fails while they differ from the data file), and update the version, the date and the row count in its text.

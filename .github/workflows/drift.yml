@@ -2,7 +2,8 @@ name: drift
 
 # The OpenAPI document and the UI's TypeScript types are generated from the Rust handlers and DTOs and
 # committed. This job regenerates both and fails when the result differs from what is committed, and when a
-# generated type uses `bigint` (contract 1.3).
+# generated type uses `bigint` (contract 1.3). It also fails when the model tables of docs/guides/priced-models.md
+# differ from what tools/docs/priced-models.py writes from the bundled price table.
 
 on:
   push:
@@ -27,6 +28,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The generator expands the price table's patterns with Python's own regex parser, whose output may change
+      # between Python versions, so the version is pinned.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: The priced-models tables match the price table
+        run: python3 -I tools/docs/priced-models.py --check
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

@@ -22,7 +22,8 @@ export interface ChartSeries {
   points: ChartPoint[];
 }
 
-export type ChartForm = "line" | "bar" | "area";
+/** Lines, bars, lines over a wash, or ranges: one mark per bucket from its lowest to its highest series. */
+export type ChartForm = "line" | "bar" | "area" | "range";
 
 // Two of the four series colors are neutral, so every series also has its own dash and marker.
 export const MAX_SERIES = 4;
@@ -90,8 +91,8 @@ export function chartModel(
   const first = times[0] ?? 0;
   const last = times.at(-1) ?? first;
   const width = times.length > 1 ? (last - first) / (times.length - 1) : 60_000;
-  // Bars sit inside their bucket, so the axis runs to the end of the last one.
-  const end = form === "bar" ? last + width : Math.max(last, first + 1);
+  // Bars and ranges sit inside their bucket, so the axis runs to the end of the last one.
+  const end = form === "bar" || form === "range" ? last + width : Math.max(last, first + 1);
   const x = scaleUtc()
     .domain([new Date(first), new Date(end)])
     .range([layout.left, layout.width - layout.right]);
@@ -152,4 +153,141 @@ export function markerIndexes(length: number, count = 12): number[] {
   if (length <= count) return Array.from({ length }, (_, i) => i);
   const every = (length - 1) / (count - 1);
   return Array.from({ length: count }, (_, i) => Math.round(i * every));
+}
+
+/** The smallest gap between neighbouring buckets: the bucket width when some buckets are missing. */
+export function minStep(times: readonly number[]): number | null {
+  let step: number | null = null;
+  for (let i = 1; i < times.length; i += 1) {
+    const gap = (times[i] ?? 0) - (times[i - 1] ?? 0);
+    if (gap > 0 && (step === null || gap < step)) step = gap;
+  }
+  return step;
+}
+
+/**
+ * Every bucket from the first to the last, `step` apart. A bucket the server left out becomes null, so a
+ * line breaks across the gap instead of drawing a stroke over time that had no data, or zero for counts.
+ * Series whose buckets don't sit on one grid are returned as they are.
+ */
+export function regularize(
+  series: readonly ChartSeries[],
+  options: { step?: number | null; zero?: boolean } = {},
+): ChartSeries[] {
+  const times = bucketTimes(series);
+  const step = options.step ?? minStep(times);
+  const first = times[0];
+  const last = times.at(-1);
+  if (step === null || step <= 0 || first === undefined || last === undefined) return [...series];
+  if (times.some((t) => (t - first) % step !== 0)) return [...series];
+  const count = Math.floor((last - first) / step) + 1;
+  if (count > 2_000) return [...series];
+  return series.map((s) => {
+    const byTime = new Map(s.points.map((p) => [p.t, p.v]));
+    const points = Array.from({ length: count }, (_, i) => {
+      const t = first + i * step;
+      const v = byTime.get(t) ?? null;
+      return { t, v: v === null && options.zero ? 0 : v };
+    });
+    return { ...s, points };
+  });
+}
+
+const NICE_WIDTHS = [
+  60_000,
+  5 * 60_000,
+  10 * 60_000,
+  15 * 60_000,
+  30 * 60_000,
+  3_600_000,
+  2 * 3_600_000,
+  3 * 3_600_000,
+  6 * 3_600_000,
+  12 * 3_600_000,
+  86_400_000,
+  2 * 86_400_000,
+  7 * 86_400_000,
+];
+
+/**
+ * How many neighbouring buckets to add together so each bar is at least `minWidth` pixels wide. With the bucket
+ * width known, the merged width is a whole clock interval (15 min, 30 min, 1 h, ...), so bars start on the hour.
+ */
+export function mergeFactor(
+  buckets: number,
+  plotWidth: number,
+  step: number | null = null,
+  minWidth = 16,
+): number {
+  if (buckets <= 1 || plotWidth <= 0) return 1;
+  const raw = Math.max(1, Math.ceil((buckets * minWidth) / plotWidth));
+  if (raw <= 1 || step === null || step <= 0) return raw;
+  const nice = NICE_WIDTHS.find((width) => width >= raw * step && width % step === 0);
+  return nice === undefined ? raw : nice / step;
+}
+
+/**
+ * Adds neighbouring buckets together, `factor` at a time: only for counts and sums, whose buckets add up. With
+ * the bucket width known, groups line up with the clock (a 30-minute bar covers :00 to :30).
+ */
+export function mergeBuckets(
+  series: readonly ChartSeries[],
+  factor: number,
+  step: number | null = null,
+): ChartSeries[] {
+  if (factor <= 1) return [...series];
+  const times = bucketTimes(series);
+  const width = step !== null && step > 0 ? step * factor : null;
+  const groupOf = (t: number, i: number) =>
+    width === null ? Math.floor(i / factor) : Math.floor(t / width);
+  const groups = new Map<number, number[]>();
+  times.forEach((t, i) => {
+    const key = groupOf(t, i);
+    const group = groups.get(key);
+    if (group) group.push(t);
+    else groups.set(key, [t]);
+  });
+  return series.map((s) => {
+    const byTime = new Map(s.points.map((p) => [p.t, p.v]));
+    const points: ChartPoint[] = [...groups.entries()].map(([key, group]) => {
+      const values = group.flatMap((t) => {
+        const v = byTime.get(t);
+        return v === null || v === undefined ? [] : [v];
+      });
+      const t = width === null ? (group[0] ?? 0) : key * width;
+      return { t, v: values.length === 0 ? null : values.reduce((a, b) => a + b, 0) };
+    });
+    return { ...s, points };
+  });
+}
+
+/** A bar from the baseline up to `top`, its data end rounded and its base square. */
+export function barPath(
+  x: number,
+  top: number,
+  width: number,
+  baseline: number,
+  radius = 4,
+): string {
+  const height = baseline - top;
+  if (height <= 0 || width <= 0) return "";
+  const r = Math.min(radius, width / 2, height);
+  return [
+    `M${x},${baseline}`,
+    `V${top + r}`,
+    `Q${x},${top} ${x + r},${top}`,
+    `H${x + width - r}`,
+    `Q${x + width},${top} ${x + width},${top + r}`,
+    `V${baseline}`,
+    "Z",
+  ].join("");
+}
+
+const HOUR = 3_600_000;
+const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const dayOfMonth = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+
+/** How a time-axis tick reads: the clock time within about a day and a half, else the date. */
+export function timeTickFormat(span: number): (t: number) => string {
+  return span <= 36 * HOUR ? (t) => clock.format(t) : (t) => dayOfMonth.format(t);
 }
