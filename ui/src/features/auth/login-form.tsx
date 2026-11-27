@@ -245,7 +245,7 @@ function PasswordSignIn({ next }: { next: string }) {
         <FieldLabel>Password</FieldLabel>
         <PasswordInput required>
           <PasswordInputControl />
-          <PasswordInputToggle aria-label="Show password">Show</PasswordInputToggle>
+          <PasswordInputToggle aria-label="Show password" />
         </PasswordInput>
         <FieldError match="valueMissing">Enter your password.</FieldError>
       </Field>

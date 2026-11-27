@@ -35,6 +35,7 @@ import type { ChannelCreate } from "@/api/generated/ChannelCreate";
 import type { ChannelKind } from "@/api/generated/ChannelKind";
 import type { ChannelList } from "@/api/generated/ChannelList";
 import type { SessionProject } from "@/api/generated/SessionProject";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
 import { AlertIcon, CheckIcon } from "@/components/icons";
@@ -406,87 +407,89 @@ function CreateChannelDialog({ project }: { project: SessionProject }) {
               </DialogDescription>
             </div>
             <form
-              className="flex flex-col gap-4"
+              className="flex min-h-0 flex-col gap-4"
               onSubmit={submit}
               onInput={() => {
                 if (failure) create.reset();
               }}
             >
-              <Field name="name" invalid={fieldFailed(failure, "name") || undefined}>
-                <FieldLabel>Name</FieldLabel>
-                <Input required maxLength={80} autoComplete="off" />
-                <FieldError match="valueMissing">Enter a name, like On call.</FieldError>
-                <FieldError match={fieldFailed(failure, "name")}>
-                  Use 1 to 80 characters.
-                </FieldError>
-              </Field>
-              <Field>
-                <FieldLabel>Kind</FieldLabel>
-                <Select
-                  items={KINDS}
-                  value={kind}
-                  onValueChange={(next) => {
-                    if (next === "webhook" || next === "slack" || next === "email") {
-                      setKind(next);
-                      create.reset();
-                    }
-                  }}
-                >
-                  <SelectTrigger className="text-data">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {KINDS.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              {kind === "email" ? (
-                <Field name="to" invalid={fieldFailed(failure, "to") || noMail || undefined}>
-                  <FieldLabel>Recipients</FieldLabel>
-                  <Input required autoComplete="off" spellCheck={false} />
-                  <FieldDescription>
-                    Up to 20 addresses, separated by commas or spaces.
-                  </FieldDescription>
-                  <FieldError match="valueMissing">Enter at least one email address.</FieldError>
-                  <FieldError match={fieldFailed(failure, "to")}>
-                    Enter 1 to 20 email addresses, like team@example.com.
-                  </FieldError>
-                  <FieldError match={noMail === true}>
-                    This server has no mail server yet. Ask an operator to set smtp.host and
-                    smtp.from, then create the channel.
+              <DialogBody>
+                <Field name="name" invalid={fieldFailed(failure, "name") || undefined}>
+                  <FieldLabel>Name</FieldLabel>
+                  <Input required maxLength={80} autoComplete="off" />
+                  <FieldError match="valueMissing">Enter a name, like On call.</FieldError>
+                  <FieldError match={fieldFailed(failure, "name")}>
+                    Use 1 to 80 characters.
                   </FieldError>
                 </Field>
-              ) : (
-                <Field name="url" invalid={urlError !== undefined || undefined}>
-                  <FieldLabel>{kind === "slack" ? "Slack webhook URL" : "URL"}</FieldLabel>
-                  <Input
-                    type="url"
-                    required
-                    maxLength={2048}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="font-mono"
-                  />
-                  <FieldDescription>
-                    {kind === "slack"
-                      ? "An incoming-webhook URL that starts with https://hooks.slack.com/. It is stored sealed and never shown again."
-                      : "Crucible posts JSON here and signs it with a secret you get next. Addresses on your own network work."}
-                  </FieldDescription>
-                  <FieldError match="valueMissing">Enter the URL to call.</FieldError>
-                  <FieldError match="typeMismatch">
-                    Enter a full URL, like https://example.com/hooks/crucible.
-                  </FieldError>
-                  <FieldError match={urlError !== undefined}>
-                    {kind === "slack" && failure?.code !== "ssrf_blocked"
-                      ? "Use a Slack incoming-webhook URL that starts with https://hooks.slack.com/. For any other receiver choose Webhook."
-                      : urlRefusal(failure?.code === "ssrf_blocked" ? urlError?.code : undefined)}
-                  </FieldError>
+                <Field>
+                  <FieldLabel>Kind</FieldLabel>
+                  <Select
+                    items={KINDS}
+                    value={kind}
+                    onValueChange={(next) => {
+                      if (next === "webhook" || next === "slack" || next === "email") {
+                        setKind(next);
+                        create.reset();
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {KINDS.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </Field>
-              )}
+                {kind === "email" ? (
+                  <Field name="to" invalid={fieldFailed(failure, "to") || noMail || undefined}>
+                    <FieldLabel>Recipients</FieldLabel>
+                    <Input required autoComplete="off" spellCheck={false} />
+                    <FieldDescription>
+                      Up to 20 addresses, separated by commas or spaces.
+                    </FieldDescription>
+                    <FieldError match="valueMissing">Enter at least one email address.</FieldError>
+                    <FieldError match={fieldFailed(failure, "to")}>
+                      Enter 1 to 20 email addresses, like team@example.com.
+                    </FieldError>
+                    <FieldError match={noMail === true}>
+                      This server has no mail server yet. Ask an operator to set smtp.host and
+                      smtp.from, then create the channel.
+                    </FieldError>
+                  </Field>
+                ) : (
+                  <Field name="url" invalid={urlError !== undefined || undefined}>
+                    <FieldLabel>{kind === "slack" ? "Slack webhook URL" : "URL"}</FieldLabel>
+                    <Input
+                      type="url"
+                      required
+                      maxLength={2048}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="font-mono"
+                    />
+                    <FieldDescription>
+                      {kind === "slack"
+                        ? "An incoming-webhook URL that starts with https://hooks.slack.com/. It is stored sealed and never shown again."
+                        : "Crucible posts JSON here and signs it with a secret you get next. Addresses on your own network work."}
+                    </FieldDescription>
+                    <FieldError match="valueMissing">Enter the URL to call.</FieldError>
+                    <FieldError match="typeMismatch">
+                      Enter a full URL, like https://example.com/hooks/crucible.
+                    </FieldError>
+                    <FieldError match={urlError !== undefined}>
+                      {kind === "slack" && failure?.code !== "ssrf_blocked"
+                        ? "Use a Slack incoming-webhook URL that starts with https://hooks.slack.com/. For any other receiver choose Webhook."
+                        : urlRefusal(failure?.code === "ssrf_blocked" ? urlError?.code : undefined)}
+                    </FieldError>
+                  </Field>
+                )}
+              </DialogBody>
               {failure ? (
                 <FormAlert
                   copy={failureCopy(failure, "Couldn't create the channel.", SAVE_COPY)}

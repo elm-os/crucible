@@ -18,6 +18,7 @@ import { type FormEvent, useState } from "react";
 import { createProject, getSession } from "@/api/client";
 import { asUiError } from "@/api/errors";
 import type { Project } from "@/api/generated/Project";
+import { DialogBody } from "@/components/dialog-body";
 import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
 import { scopedHref } from "@/components/shell/nav";
 import { setAuth, useAuth } from "@/lib/auth";
@@ -105,54 +106,56 @@ function NewProjectForm({ onCreated }: { onCreated: (project: Project) => void }
         </DialogDescription>
       </div>
       <form
-        className="flex flex-col gap-4"
+        className="flex min-h-0 flex-col gap-4"
         onSubmit={submit}
         onInput={() => {
           if (failure) create.reset();
         }}
       >
-        <Field name="name" invalid={fieldFailed(failure, "name") || undefined}>
-          <FieldLabel>Name</FieldLabel>
-          <Input
-            required
-            maxLength={200}
-            autoComplete="off"
-            value={name}
-            onValueChange={(next) => {
-              setName(next);
-              if (!slugEdited) setSlug(slugFromName(next));
-            }}
-          />
-          <FieldError match="valueMissing">Enter a name for the project.</FieldError>
-          <FieldError match={fieldFailed(failure, "name")}>Use 1 to 200 characters.</FieldError>
-        </Field>
-        <Field name="slug" invalid={slugTaken || fieldFailed(failure, "slug") || undefined}>
-          <FieldLabel>Slug</FieldLabel>
-          <Input
-            required
-            pattern={SLUG_PATTERN}
-            maxLength={64}
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono"
-            value={slug}
-            onValueChange={(next) => {
-              setSlug(next.toLowerCase().replace(/\s/g, "-"));
-              setSlugEdited(next !== "");
-            }}
-          />
-          <FieldDescription>
-            Lowercase letters, digits and hyphens, unique in the organization.
-          </FieldDescription>
-          <FieldError match="valueMissing">Enter a slug, like payments-api.</FieldError>
-          <FieldError match="patternMismatch">
-            Use only lowercase letters, digits and hyphens, like payments-api.
-          </FieldError>
-          <FieldError match={slugTaken}>Choose a slug no other project uses.</FieldError>
-          <FieldError match={fieldFailed(failure, "slug")}>
-            Use 1 to 64 lowercase letters, digits and hyphens.
-          </FieldError>
-        </Field>
+        <DialogBody>
+          <Field name="name" invalid={fieldFailed(failure, "name") || undefined}>
+            <FieldLabel>Name</FieldLabel>
+            <Input
+              required
+              maxLength={200}
+              autoComplete="off"
+              value={name}
+              onValueChange={(next) => {
+                setName(next);
+                if (!slugEdited) setSlug(slugFromName(next));
+              }}
+            />
+            <FieldError match="valueMissing">Enter a name for the project.</FieldError>
+            <FieldError match={fieldFailed(failure, "name")}>Use 1 to 200 characters.</FieldError>
+          </Field>
+          <Field name="slug" invalid={slugTaken || fieldFailed(failure, "slug") || undefined}>
+            <FieldLabel>Slug</FieldLabel>
+            <Input
+              required
+              pattern={SLUG_PATTERN}
+              maxLength={64}
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono"
+              value={slug}
+              onValueChange={(next) => {
+                setSlug(next.toLowerCase().replace(/\s/g, "-"));
+                setSlugEdited(next !== "");
+              }}
+            />
+            <FieldDescription>
+              Lowercase letters, digits and hyphens, unique in the organization.
+            </FieldDescription>
+            <FieldError match="valueMissing">Enter a slug, like payments-api.</FieldError>
+            <FieldError match="patternMismatch">
+              Use only lowercase letters, digits and hyphens, like payments-api.
+            </FieldError>
+            <FieldError match={slugTaken}>Choose a slug no other project uses.</FieldError>
+            <FieldError match={fieldFailed(failure, "slug")}>
+              Use 1 to 64 lowercase letters, digits and hyphens.
+            </FieldError>
+          </Field>
+        </DialogBody>
         {failure ? (
           <FormAlert
             copy={failureCopy(failure, "Couldn't create the project.", PROJECT_COPY)}

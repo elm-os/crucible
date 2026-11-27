@@ -38,6 +38,7 @@ import type { InvitationList } from "@/api/generated/InvitationList";
 import type { OrgMember } from "@/api/generated/OrgMember";
 import type { OrgMemberList } from "@/api/generated/OrgMemberList";
 import type { OrgRole } from "@/api/generated/OrgRole";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy } from "@/components/form-alert";
 import { Section, SectionFrame } from "@/components/section";
@@ -439,35 +440,37 @@ function InviteDialog() {
               </DialogDescription>
             </div>
             <form
-              className="flex flex-col gap-4"
+              className="flex min-h-0 flex-col gap-4"
               onSubmit={submit}
               onInput={() => {
                 if (failure) invite.reset();
               }}
             >
-              <Field name="email">
-                <FieldLabel>Email</FieldLabel>
-                <Input type="email" required autoComplete="off" spellCheck={false} />
-                <FieldError match="valueMissing">Enter their email address.</FieldError>
-                <FieldError match="typeMismatch">
-                  Enter an email address like ada@example.com.
-                </FieldError>
-              </Field>
-              <Field>
-                <FieldLabel>Role</FieldLabel>
-                <Select name="org_role" items={ROLE_ITEMS} defaultValue="member" required>
-                  <SelectTrigger className="text-data">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ROLE_ITEMS.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+              <DialogBody>
+                <Field name="email">
+                  <FieldLabel>Email</FieldLabel>
+                  <Input type="email" required autoComplete="off" spellCheck={false} />
+                  <FieldError match="valueMissing">Enter their email address.</FieldError>
+                  <FieldError match="typeMismatch">
+                    Enter an email address like ada@example.com.
+                  </FieldError>
+                </Field>
+                <Field>
+                  <FieldLabel>Role</FieldLabel>
+                  <Select name="org_role" items={ROLE_ITEMS} defaultValue="member" required>
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ROLE_ITEMS.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </DialogBody>
               {failure ? (
                 <FormAlert
                   copy={failureCopy(failure, "Couldn't create the invitation.", INVITE_COPY)}

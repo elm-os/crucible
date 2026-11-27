@@ -25,6 +25,7 @@ import { type FormEvent, useState } from "react";
 import { asUiError, type UiError } from "@/api/errors";
 import type { SavedQuery } from "@/api/generated/SavedQuery";
 import type { SavedQueryList } from "@/api/generated/SavedQueryList";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { CheckIcon } from "@/components/icons";
 import { Section } from "@/components/section";
@@ -227,26 +228,28 @@ export function RunSavedDialog({
           </DialogDescription>
         </div>
         {target ? (
-          <form key={target.id} className="mt-4 flex flex-col gap-4" onSubmit={submit}>
-            {target.parameters.map((parameter) => (
-              <Field key={parameter.name} name={`parameter.${parameter.name}`}>
-                <FieldLabel>{parameter.name}</FieldLabel>
-                <Input
-                  required={parameter.default === undefined}
-                  defaultValue={parameter.default ?? ""}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-                <FieldDescription>
-                  Type {parameter.type}
-                  {parameter.default === undefined
-                    ? ". Required."
-                    : ". Leave empty to use the default."}
-                </FieldDescription>
-                <FieldError match="valueMissing">Enter a value for {parameter.name}.</FieldError>
-              </Field>
-            ))}
+          <form key={target.id} className="mt-4 flex min-h-0 flex-col gap-4" onSubmit={submit}>
+            <DialogBody>
+              {target.parameters.map((parameter) => (
+                <Field key={parameter.name} name={`parameter.${parameter.name}`}>
+                  <FieldLabel>{parameter.name}</FieldLabel>
+                  <Input
+                    required={parameter.default === undefined}
+                    defaultValue={parameter.default ?? ""}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="font-mono"
+                  />
+                  <FieldDescription>
+                    Type {parameter.type}
+                    {parameter.default === undefined
+                      ? ". Required."
+                      : ". Leave empty to use the default."}
+                  </FieldDescription>
+                  <FieldError match="valueMissing">Enter a value for {parameter.name}.</FieldError>
+                </Field>
+              ))}
+            </DialogBody>
             <div className="flex flex-wrap justify-end gap-2">
               <DialogClose>Cancel</DialogClose>
               <Button type="submit" data-variant="solid">

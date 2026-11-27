@@ -8,15 +8,18 @@ import { useEffect, useRef, useState } from "react";
 import { listNewTraces, listTraces } from "@/api/client";
 import { asUiError } from "@/api/errors";
 import type { TraceListItem } from "@/api/generated/TraceListItem";
+import type { TraceListPage } from "@/api/generated/TraceListPage";
 import type { ListFilters, TimeWindow } from "@/api/types";
 import { EmptyState } from "@/components/empty-state";
 import { FilterBar, type FilterConflict } from "@/components/filter-bar";
+import { LoadMore } from "@/components/load-more";
 import { Section } from "@/components/section";
 import { isWhole, MetaNotice, TraceStatusLabel } from "@/components/status";
 import { FILTER_FIELDS, filterKey, hasFilters, useListFilters } from "@/lib/filters";
 import { formatCost, formatDuration, formatTime } from "@/lib/format";
+import { metaOf, rowsOf, usePagedList } from "@/lib/paged-list";
 import { useProject } from "@/lib/project";
-import { RANGE_PHRASE, type Range, rangeWindow, useTimeRange } from "@/lib/time-range";
+import { RANGE_PHRASE, type Range, useTimeRange } from "@/lib/time-range";
 
 const COLUMNS = ["Started", "Name", "Duration", "Spans", "Cost", "Status"] as const;
 const SKELETON_ROWS = Array.from({ length: 12 }, (_, row) => `skeleton-row-${row}`);
@@ -36,13 +39,13 @@ export function TracesSection() {
   const [range, setRange] = useTimeRange(project);
   const [filters, setFilters] = useListFilters();
   const filtered = hasFilters(filters);
-  const query = useQuery({
-    queryKey: [project, "traces", filterKey(filters), range],
-    queryFn: async ({ signal }) => {
-      const window = rangeWindow(range, Date.now());
-      return { page: await listTraces(project, window, filters, signal), window };
-    },
-  });
+  const { query, restart } = usePagedList<TraceListItem, TraceListPage>(
+    [project, "traces", filterKey(filters), range],
+    range,
+    (window, cursor, signal) => listTraces(project, window, filters, signal, cursor ?? undefined),
+  );
+  // Live tail counts from the first page: the newest traces and the window they were read in.
+  const first = query.data?.pages[0];
   return (
     <>
       <FilterBar
@@ -53,13 +56,13 @@ export function TracesSection() {
         noun="traces"
       />
       {/* Outside the section, so it also counts traces arriving into an empty list. */}
-      {query.data?.page.head_cursor ? (
+      {first?.page.head_cursor ? (
         <NewTraces
-          key={query.data.page.head_cursor}
+          key={first.page.head_cursor}
           project={project}
           filters={filters}
-          window={query.data.window}
-          head={query.data.page.head_cursor}
+          window={first.window}
+          head={first.page.head_cursor}
           onShow={() => query.refetch()}
         />
       ) : null}
@@ -68,7 +71,10 @@ export function TracesSection() {
         query={query}
         skeleton={<TracesSkeleton />}
         // An empty page means "no traces" only when it is whole; otherwise traces may exist unseen.
-        isEmpty={({ page }) => page.data.length === 0 && isWhole(page.meta)}
+        isEmpty={(data) => {
+          const page = data.pages[0]?.page;
+          return page !== undefined && page.data.length === 0 && isWhole(page.meta);
+        }}
         empty={
           filtered ? (
             <EmptyState
@@ -83,9 +89,11 @@ export function TracesSection() {
           )
         }
       >
-        {({ page }) => (
-          <>
-            {page.data.length === 0 ? (
+        {(data) => {
+          const rows = rowsOf<TraceListItem, TraceListPage>(data);
+          const meta = metaOf(data);
+          if (rows.length === 0) {
+            return (
               <EmptyState
                 kind="incomplete"
                 title="No traces to show yet."
@@ -93,20 +101,23 @@ export function TracesSection() {
               >
                 Traces may still be arriving, or part of the data couldn&apos;t be read.
               </EmptyState>
-            ) : (
-              <>
-                <MetaNotice meta={page.meta} noun="traces" />
-                <TracesTable rows={page.data} project={project} />
-                {page.has_more ? (
-                  <p className="mt-3 text-label text-ink-soft">
-                    Showing the newest {page.data.length} traces. Paging will arrive with the data
-                    grid.
-                  </p>
-                ) : null}
-              </>
-            )}
-          </>
-        )}
+            );
+          }
+          return (
+            <>
+              {meta ? <MetaNotice meta={meta} noun="traces" /> : null}
+              <TracesTable rows={rows} project={project} />
+              <LoadMore
+                noun="traces"
+                hasMore={query.hasNextPage}
+                loading={query.isFetchingNextPage}
+                error={query.isFetchNextPageError ? query.error : null}
+                onLoad={() => query.fetchNextPage()}
+                onRestart={restart}
+              />
+            </>
+          );
+        }}
       </Section>
     </>
   );
