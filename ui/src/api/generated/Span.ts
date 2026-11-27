@@ -74,6 +74,15 @@ child_count: SafeU64 | null,
  */
 io_shape: IoShape | null, 
 /**
+ * Whether the span's input was cut at the size limit, which leaves it as opaque text (a cut JSON value no
+ * longer parses); null for a span that has not reached ClickHouse.
+ */
+input_truncated: boolean | null, 
+/**
+ * Whether the span's output was cut at the size limit, as `input_truncated` says of the input.
+ */
+output_truncated: boolean | null, 
+/**
  * Whether a count above saturated at 2^53 - 1.
  */
 saturated: boolean, };

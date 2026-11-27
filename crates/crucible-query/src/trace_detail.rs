@@ -4,15 +4,15 @@
 use std::collections::BTreeSet;
 
 use crucible_plan::{
-    TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT, TraceBounds, spans_of_parents, trace_roots,
-    trace_spans,
+    TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT, TraceBounds, spans_of_parents,
+    trace_page_stats, trace_roots, trace_spans,
 };
 use crucible_recent::RecentSpan;
 use crucible_records::{SpanId, TableId, TraceId};
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::facts::{FactTarget, TraceFacts, ingest_tags, resolve_rows, trace_extent, trace_window};
-use crate::service::{QueryService, Read};
+use crate::service::{QueryService, Read, Stats, TraceSummary, all_time};
 use crate::spans::{SPAN_TABLES, TraceSpan, ids, merge, recent, stored};
 
 /// The tables trace by id depends on, for the quarantine rule: its spans, its stats and its facts.
@@ -39,16 +39,33 @@ pub struct TraceDetail {
     pub paged: bool,
     /// The spans in `(start_time, span_id)` order, without duplicates.
     pub spans: Vec<TraceSpan>,
+    /// The trace's aggregates and picks, as the trace list resolves them; `None` when `spans` is empty. Its
+    /// `span_count` is the one above. When every span was read, which is always the case below
+    /// `TRACE_INLINE_SPAN_LIMIT`, its sums are exact over the merged spans; otherwise they are the store's sums
+    /// plus the recent entries above the checkpoint watermark, as the list's are (contract 8.9).
+    pub summary: Option<TraceSummary>,
     /// The trace's facts and its effective tags (contract 3.8).
     pub facts: TraceFacts,
     /// The response metadata.
     pub meta: Meta,
 }
 
+impl TraceDetail {
+    /// The span that heads the trace, as far as the returned spans show it: the earliest root span, else the
+    /// earliest span; `None` when `spans` is empty.
+    pub fn head(&self) -> Option<&TraceSpan> {
+        self.spans
+            .iter()
+            .find(|span| span.summary.is_root)
+            .or_else(|| self.spans.first())
+    }
+}
+
 impl QueryService {
     /// Trace by id (contract 8.7): the recent index behind the read barrier, the time bounds from
     /// `trace_stats`, then, together, the spans from `span_core` inside them, merged and de-duplicated by
-    /// `span_id`, and the trace's facts.
+    /// `span_id`, and the trace's facts. A trace above the inline limit reads its merged `trace_stats` in the
+    /// same wave instead of its spans, for the summary.
     ///
     /// The index is read when the barrier resolves, never after a store read has returned, so an entry cannot
     /// be evicted between the two: a span this node acknowledged is in the response, or the response says why
@@ -100,23 +117,42 @@ impl QueryService {
             ),
             _ => Ok(None),
         };
+        // A trace too large to read whole is summed from its merged `trace_stats`, as the list sums it.
+        let stats_plan = if stored_count > inline_limit {
+            trace_page_stats(scope, all_time()?, &read.clamp, caller, &[trace_id])
+        } else {
+            Ok(None)
+        };
         let fact_window = trace_extent(bounds, &entries)
             .map(|(start, end)| trace_window(start, end))
             .transpose()?;
-        let mut plans = vec![span_plan];
+        let mut plans = vec![span_plan, stats_plan];
         if let Some(window) = fact_window {
             plans.extend(read.fact_plans(&FactTarget::Trace(trace_id), window));
         }
         let mut answers = read.rows_together(plans).await?.into_iter();
         let span_rows = answers.next().unwrap_or_default();
+        let stats_rows = answers.next().unwrap_or_default();
         let facts = fact_window
             .map(|_| resolve_rows(answers.collect()))
             .transpose()?;
+        let mut stats = Stats::default();
         let mut inline = None;
         if stored_count <= inline_limit {
             let spans = merge(stored(span_rows)?, entries.iter().map(recent));
+            // Every span is here, even when there are too many to return, so the summary is exact.
+            for span in &spans {
+                stats.add_span(&span.summary);
+            }
             if spans.len() as u64 <= inline_limit {
                 inline = Some(spans);
+            }
+        } else {
+            if let Some(row) = stats_rows.first() {
+                stats = Stats::decode(row)?.1;
+            }
+            for span in &entries {
+                stats.add_recent(span, state);
             }
         }
         let (spans, span_count, paged) = match inline {
@@ -145,11 +181,16 @@ impl QueryService {
         if spans.is_empty() && meta.is_whole() {
             return Err(QueryServiceError::NotFound);
         }
+        let summary = (!spans.is_empty()).then(|| TraceSummary {
+            span_count,
+            ..stats.resolve()
+        });
         Ok(TraceDetail {
             trace_id,
             span_count,
             paged,
             spans,
+            summary,
             facts,
             meta,
         })

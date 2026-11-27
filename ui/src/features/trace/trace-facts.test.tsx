@@ -53,6 +53,7 @@ function detail(traceFacts: TraceFacts): TraceDetail {
     trace_id: TRACE,
     span_count: 1,
     paged: false,
+    summary: null,
     spans: [
       {
         span_id: "a000000000000001",
@@ -71,6 +72,8 @@ function detail(traceFacts: TraceFacts): TraceDetail {
         total_tokens: 0,
         child_count: null,
         io_shape: "raw",
+        input_truncated: false,
+        output_truncated: false,
         saturated: false,
       },
     ],

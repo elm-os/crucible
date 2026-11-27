@@ -25,8 +25,10 @@ import { moreRowParent, type TraceTree } from "./trace-tree";
 // cell of a row by the row's value, so a row has one cell of its own: the duration.
 const ROW_HEIGHT = 32;
 const OVERSCAN = 8;
+// The wide columns need 27rem with the row's padding, and take effect when the timeline itself is that wide: beside
+// the span panel it is narrower than the window suggests.
 const COLUMNS =
-  "grid grid-cols-[minmax(9rem,3fr)_minmax(5rem,2fr)_4rem] gap-3 sm:grid-cols-[minmax(12rem,3fr)_minmax(8rem,2fr)_4.5rem]";
+  "grid grid-cols-[minmax(9rem,3fr)_minmax(5rem,2fr)_4rem] gap-3 @min-[27rem]:grid-cols-[minmax(12rem,3fr)_minmax(8rem,2fr)_4.5rem]";
 const ROW = `${COLUMNS} absolute inset-x-0 h-8 items-center border-b border-ash-border px-2`;
 
 export const TYPE_LABEL: Record<ObservationType, string> = {
@@ -120,7 +122,7 @@ export function SpanWaterfall({
     <div
       ref={scroller}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      className="-mx-2 max-h-[min(70dvh,40rem)] overflow-auto"
+      className="@container -mx-2 max-h-[min(70dvh,40rem)] overflow-auto"
     >
       <Waterfall
         aria-label="Spans"
