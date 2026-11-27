@@ -253,7 +253,9 @@ pub fn classify_read(code: u32, message: String) -> QueryError {
         tracing::warn!(
             code,
             message,
-            "ClickHouse refused a read before it started: the request carries more fields than the server's              http_max_fields allows. The read fails as query_too_broad and is not tried again. Set http_max_fields              to at least 1000, its default, in the default profile of ClickHouse and restart ClickHouse"
+            "ClickHouse refused a read before it started: the request carries more fields than the server's \
+             http_max_fields allows. The read fails as query_too_broad and is not tried again. Set http_max_fields \
+             to at least 1000, its default, in the default profile of ClickHouse and restart ClickHouse"
         );
         return QueryError::TooBroad;
     }
@@ -347,7 +349,8 @@ mod tests {
     #[test]
     fn too_many_form_fields_is_too_broad() {
         // The answer of ClickHouse 26.3 to a read with 1,001 bound values.
-        let refused = "Poco::Exception. Code: 1000, e.code() = 0, HTML Form Exception: Too many form fields                        (version 26.3.66.4 (official build))";
+        let refused = "Poco::Exception. Code: 1000, e.code() = 0, HTML Form Exception: Too many form fields \
+                       (version 26.3.66.4 (official build))";
         assert_eq!(parse_code(refused), Some(POCO_EXCEPTION));
         assert_eq!(
             Failure::Server {
