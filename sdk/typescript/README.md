@@ -165,9 +165,9 @@ exchanges that `createMcpHandler` answers before any server instance exists, suc
 revision, a wrong content type or `subscriptions/listen`. If a transport cannot be tapped, the server runs
 uninstrumented.
 
-Each request and notification becomes one SERVER span with the keys of contract 9.1 and
+Each request and notification becomes one SERVER span with Crucible's MCP keys and
 `crucible.mcp.capture_source = sdk`: method and target, JSON-RPC id, era, protocol version, transport, client and
-server name and version, progress count, the error evidence of contract 9.2, the hashed legacy session id, the
+server name and version, progress count, the error evidence, the hashed legacy session id, the
 multi-round state hashes, the request size and user agent on HTTP, and content block counts. A server span is the
 child of the trace context in `params._meta`; baggage is never read. Crucible records each such span as an MCP
 operation, which takes the MCP keys: they show on the MCP **Operation** page and in the SQL workspace's
