@@ -30,8 +30,8 @@ The bug report template asks for each of these.
 2. **How Crucible is deployed.** Docker Compose or the binary, the ClickHouse and Postgres versions, and the
    operating system.
 3. **What happened.** What you did, what you expected and what happened instead, with the exact error or refusal
-   text and the steps that reproduce it. If the web UI showed a **Reference** with the error, include it: a request
-   that failed on the server is logged with the same id.
+   text and the steps that reproduce it. If the web UI gave you a code with the error ("If this keeps happening, give
+   your administrator this code"), include it: the server logs the failed request with the same id.
 4. **The logs, with secrets removed.** The answer of `/readyz` (`curl -s http://127.0.0.1:8080/readyz`) and the
    log lines around the problem: `docker compose logs crucible` with Docker Compose, or the server's standard error
    with the binary. Before you post anything, remove secret keys (`csk_` and 43 characters), passwords, the master
