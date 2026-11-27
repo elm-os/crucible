@@ -14,9 +14,7 @@ use crucible_env::{
     QueryError, RowStream, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
     TelemetryStore, TlsRoots,
 };
-use crucible_plan::{
-    BatchProbe, CLASS_FIXED_SETTINGS, ClassLimits, DeletePlan, OutputSchema, QueryPlan, RowBlock,
-};
+use crucible_plan::{BatchProbe, DeletePlan, OutputSchema, QueryPlan, RowBlock};
 use crucible_records::{
     BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, Uuid, WalEpoch,
 };
@@ -110,41 +108,17 @@ pub const TEXT_SEARCH_FUNCTIONS: [&str; 2] = ["hasAllTokens", "hasAnyTokens"];
 
 /// The settings of a lightweight delete: it returns once the rows are masked on every replica, so they are hidden
 /// from reads at once, and it never takes the lightweight-update path (contract 6).
-const DELETE_SETTINGS: [(&str, &str); 2] = [
+pub const DELETE_SETTINGS: [(&str, &str); 2] = [
     ("lightweight_deletes_sync", "2"),
     ("lightweight_delete_mode", "alter_update"),
 ];
 
 /// On a cluster, a replicated change waits for every active replica and not for one that is down, which runs it
 /// when it returns: the server answers [`UNFINISHED`] at once instead of after two minutes.
-const INACTIVE_REPLICAS: (&str, &str) = ("replication_wait_for_inactive_replica_timeout", "0");
+pub const INACTIVE_REPLICAS: (&str, &str) = ("replication_wait_for_inactive_replica_timeout", "0");
 
 /// `UNFINISHED`: a replicated change that a replica that is down has not run yet. The change is queued for it.
 const UNFINISHED: u32 = 341;
-
-/// The settings every read carries: the limits of its class and the fixed settings (contracts 8.4 and 8.5).
-fn class_settings(limits: ClassLimits) -> Vec<(&'static str, String)> {
-    let mut settings = vec![
-        (
-            "max_execution_time",
-            limits.max_execution_time_secs.to_string(),
-        ),
-        ("max_memory_usage", limits.max_memory_usage.to_string()),
-        ("max_threads", limits.max_threads.to_string()),
-    ];
-    if let Some(rows) = limits.max_rows_to_read {
-        settings.push(("max_rows_to_read", rows.to_string()));
-    }
-    if let Some(bytes) = limits.max_bytes_to_read {
-        settings.push(("max_bytes_to_read", bytes.to_string()));
-    }
-    settings.extend(
-        CLASS_FIXED_SETTINGS
-            .iter()
-            .map(|(name, value)| (*name, (*value).to_owned())),
-    );
-    settings
-}
 
 /// The user and password of one identity.
 #[derive(Clone, PartialEq, Eq)]
@@ -738,8 +712,24 @@ impl ClickHouseStore {
         self.clients().idle
     }
 
-    /// A query as `identity` with an explicit query id, its bound values and its settings.
+    /// A query as `identity` with an explicit query id, its bound values and its settings. A statement whose
+    /// request would carry more than [`render::FIELD_BUDGET`] fields is not sent: the server would refuse it
+    /// before it starts.
     fn query(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        settings: &[(&str, String)],
+    ) -> Result<(Uuid, clickhouse::query::Query), Failure> {
+        let fields = statement.fields(settings);
+        if fields > render::FIELD_BUDGET {
+            return Err(Failure::OverBudget { fields });
+        }
+        Ok(self.query_past_budget(identity, statement, settings))
+    }
+
+    /// [`ClickHouseStore::query`] whatever the statement's size.
+    pub(crate) fn query_past_budget(
         &self,
         identity: ServiceIdentity,
         statement: &Statement,
@@ -769,7 +759,7 @@ impl ClickHouseStore {
         settings: &[(&str, String)],
         deadline: Duration,
     ) -> Result<(), Failure> {
-        let (_, query) = self.query(identity, statement, settings);
+        let (_, query) = self.query(identity, statement, settings)?;
         match self.inner.env.timeout(deadline, query.execute()).await {
             Ok(result) => result.map_err(Failure::from_client),
             Err(_elapsed) => Err(Failure::Timeout),
@@ -785,7 +775,7 @@ impl ClickHouseStore {
     ) -> Result<String, Failure> {
         let deadline = Duration::from_secs(secs + DEADLINE_SLACK_SECS);
         let settings = [("max_execution_time", secs.to_string())];
-        let (_, query) = self.query(identity, statement, &settings);
+        let (_, query) = self.query(identity, statement, &settings)?;
         let read = |query: clickhouse::query::Query| async move {
             let mut cursor = query.fetch_bytes("TabSeparated")?;
             cursor.collect().await
@@ -851,7 +841,9 @@ impl ClickHouseStore {
         deadline: Duration,
         kill_on_drop: bool,
     ) -> Result<(Uuid, Reading), QueryError> {
-        let (query_id, query) = self.query(identity, statement, settings);
+        let (query_id, query) = self
+            .query(identity, statement, settings)
+            .map_err(Failure::into_query)?;
         let mut reading = self
             .reading(query, query_id, format, deadline, kill_on_drop)
             .map_err(Failure::into_query)?;
@@ -1575,7 +1567,19 @@ impl TelemetryStore for ClickHouseStore {
         }
         .map_err(|error| QueryError::Internal(error.to_string()))?;
         let limits = plan.limits();
-        let settings = class_settings(limits);
+        let settings = render::class_settings(limits);
+        let fields = statement.fields(&settings);
+        if fields > render::FIELD_BUDGET {
+            tracing::warn!(
+                plan = %render::describe(&plan),
+                fields,
+                budget = render::FIELD_BUDGET,
+                "a read was not sent and fails as query_too_broad: its request would carry more fields than the \
+                 store's budget, which keeps every request under ClickHouse's default http_max_fields of 1,000; \
+                 a narrower filter makes the read smaller"
+            );
+            return Err(QueryError::TooBroad);
+        }
         let (query_id, reading) = self.read(
             plan.identity(),
             &statement,
@@ -1614,6 +1618,15 @@ impl TelemetryStore for ClickHouseStore {
         let replicated = self.replicated().await?.is_some();
         if replicated {
             settings.push((INACTIVE_REPLICAS.0, INACTIVE_REPLICAS.1.to_owned()));
+        }
+        let fields = statement.fields(&settings);
+        if fields > render::FIELD_BUDGET {
+            return Err(StoreError::Internal(format!(
+                "the delete in partition {} of {} was not sent: {}",
+                plan.partition(),
+                plan.table().name(),
+                crate::codes::over_budget(fields)
+            )));
         }
         match self.change(&statement, &settings).await {
             Ok(()) => {}
@@ -1924,7 +1937,11 @@ mod tests {
     fn detection_checks_every_setting_the_store_sends() {
         let mut sent: Vec<&str> = Vec::new();
         for class in QueryClass::ALL {
-            sent.extend(class_settings(class.limits()).iter().map(|(name, _)| *name));
+            sent.extend(
+                render::class_settings(class.limits())
+                    .iter()
+                    .map(|(name, _)| *name),
+            );
         }
         sent.extend(DELETE_SETTINGS.map(|(name, _)| name));
         // The reads of every replica in a cluster and its replicated changes.
@@ -1984,7 +2001,8 @@ mod tests {
     fn every_read_leaves_column_statistics_unused() {
         for class in QueryClass::ALL {
             assert!(
-                class_settings(class.limits()).contains(&("use_statistics", "0".to_owned())),
+                render::class_settings(class.limits())
+                    .contains(&("use_statistics", "0".to_owned())),
                 "{class:?} reads use column statistics"
             );
         }

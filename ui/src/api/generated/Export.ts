@@ -82,6 +82,21 @@ expires_at?: string,
  */
 error_code?: string, 
 /**
+ * The attempts the export job has made at writing the file; 0 before the first. A failed attempt is tried
+ * again after a pause, up to 12 attempts.
+ */
+attempts: number, 
+/**
+ * How long the export has waited for its file, in whole seconds since it was created, while it is queued or
+ * running.
+ */
+waited_secs?: SafeU64, 
+/**
+ * What went wrong in the latest failed attempt of a queued or running export, which a later attempt tries
+ * again, or why a failed export ended: what happened and what to do.
+ */
+last_error?: string, 
+/**
  * The path of the download, under the same origin, once it is ready.
  */
 download_path?: string, 

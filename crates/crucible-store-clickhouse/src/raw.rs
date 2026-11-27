@@ -102,6 +102,21 @@ impl ClickHouseStore {
         )?;
         Ok(RawRead { query_id, reading })
     }
+
+    /// [`ClickHouseStore::raw_read`] of a statement of any size: the store's field budget does not stop it, so the
+    /// server's own refusal of a request with more fields than its `http_max_fields` comes back.
+    pub fn raw_read_past_budget(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        deadline: Duration,
+    ) -> Result<RawRead, QueryError> {
+        let (query_id, query) = self.query_past_budget(identity, statement, &[]);
+        let reading = self
+            .reading(query, query_id, "RowBinary", deadline, false)
+            .map_err(Failure::into_query)?;
+        Ok(RawRead { query_id, reading })
+    }
 }
 
 /// What a statement sent as an arbitrary user came back with.

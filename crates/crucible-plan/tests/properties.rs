@@ -704,7 +704,8 @@ fn padding_edges() {
         (4, 4),
         (5, 8),
         (1000, 1024),
-        (MAX_LIST, 16_384),
+        (MAX_LIST, 512),
+        (MAX_LIST + 1, 1024),
     ] {
         assert_eq!(padded_in_len(len), padded);
     }

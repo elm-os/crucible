@@ -13,6 +13,7 @@ use crucible_chfmt::{ArrayColumn, Block, Compression, MAX_BLOCK_ROWS, StringColu
 use crucible_env::{InsertError, InsertSettings, QueryError, RetryReason, TelemetryStore};
 use crucible_records::{PartitionId, TableId};
 use crucible_schema::ServiceIdentity;
+use crucible_store_clickhouse::render::{Param, Statement};
 use crucible_store_clickhouse::{ClickHouseStore, StoreConfig};
 
 use crate::blocks::Rows;
@@ -310,7 +311,40 @@ async fn read_codes(ctx: &Ctx) -> Result<Vec<String>> {
         }
         seen.push(format!("{name} {}", got.problem_code()));
     }
+    let got = too_many_fields(ctx).await?;
+    if got != QueryError::TooBroad {
+        bail!("too many fields: expected TooBroad, got {got:?}");
+    }
+    seen.push(format!("too many fields {}", got.problem_code()));
     Ok(seen)
+}
+
+/// A read whose request carries more bound values than the server's `http_max_fields` (1,000 by default), sent
+/// past the store's field budget: the server refuses it before it starts (`Poco::Exception`, code 1000), and the
+/// adapter maps the refusal to `query_too_broad`.
+async fn too_many_fields(ctx: &Ctx) -> Result<QueryError> {
+    let values = 1_024;
+    let list: Vec<String> = (0..values).map(|n| format!("{{p{n}:UInt16}}")).collect();
+    let statement = Statement {
+        sql: format!("SELECT length([{}])", list.join(", ")),
+        params: (0..values)
+            .map(|n| Param {
+                ty: "UInt16".to_owned(),
+                value: n.to_string(),
+            })
+            .collect(),
+        settings: Vec::new(),
+    };
+    let reading = ctx
+        .store
+        .raw_read_past_budget(ServiceIdentity::ReadUi, &statement, Duration::from_secs(20))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    match reading.drain().await {
+        Err(error) => Ok(error),
+        Ok(bytes) => {
+            bail!("a read of {values} bound values returned {bytes} bytes instead of failing")
+        }
+    }
 }
 
 pub(crate) async fn c12(ctx: &Ctx) -> Result<String> {

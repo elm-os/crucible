@@ -7,12 +7,16 @@
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
+use crucible_env::{QueryError, TelemetryStore as _};
+use crucible_plan::test_support::query_plan;
 use crucible_plan::{
-    ExportKey, ExportSelection, FactTable, RetentionClamp, Row, Value, export_facts,
-    export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
+    EXPORT_LOOKUP_SPANS, ExportKey, ExportSelection, FactTable, Literal, MAX_LIST, Node,
+    PointLookup, QueryClass, RetentionClamp, Row, Value, export_facts, export_mcp_content,
+    export_mcp_ops, export_payloads, export_spans, export_ties,
 };
 use crucible_records::{McpSide, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
-use crucible_schema::{Column, RetentionSettings, SpanCoreCol};
+use crucible_schema::{Column, RetentionSettings, SpanCoreCol, SpanPayloadCol};
+use crucible_store_clickhouse::render;
 
 use crate::blocks::Rows;
 use crate::differential::{insert, rows, stamped};
@@ -282,4 +286,280 @@ pub(crate) async fn plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         )?;
     }
     Ok(reads)
+}
+
+/// The spans of the large fixture: more than one page of the export job's 1,000 rows.
+const LARGE: usize = 1_500;
+/// The rows of one page of the export job.
+const PAGE: u32 = 1_000;
+
+/// The large fixture's span `n`: its own trace, a second apart.
+fn large_span(n: usize) -> (TraceId, SpanId, Timestamp) {
+    let mut trace = [0x5e; 16];
+    trace[8..].copy_from_slice(&(n as u64).to_be_bytes());
+    let mut span = [0x5f; 8];
+    span[4..].copy_from_slice(&(n as u32).to_be_bytes());
+    let start = at(3 * HOUR + i64::try_from(n).unwrap_or(0) * SECOND);
+    (TraceId::from_bytes(trace), SpanId::from_bytes(span), start)
+}
+
+/// An export of more than 1,000 spans as the export job reads it (contract 12.8): a full page of 1,000 core rows,
+/// then the payload lookups of the page's spans, then the facts of its traces, page after page until a short page.
+/// Every read goes through the real server and the store model.
+pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
+    let (project, epoch) = (ctx.project(), ctx.epoch());
+    let scope = scope(project).map_err(|e| anyhow!("{e}"))?;
+    let keyed = |table: TableId| {
+        Rows::new(table, LARGE)
+            .all("project_id", uuid(project.uuid()))
+            .each("start_minute", |n| {
+                Value::Time(large_span(n).2.floor_minute())
+            })
+            .each("trace_hash", |n| {
+                Value::UInt(u64::from(large_span(n).0.trace_hash()))
+            })
+            .each("start_time", |n| Value::Time(large_span(n).2))
+            .each("span_id", |n| {
+                Value::Bytes(large_span(n).1.to_bytes().to_vec())
+            })
+            .each("trace_id", |n| {
+                Value::Bytes(large_span(n).0.to_bytes().to_vec())
+            })
+            .all("received_at", Value::Time(at(SECOND)))
+    };
+    let start = large_span(0).2;
+    let core = keyed(TableId::SpanCore)
+        .each("end_time", |n| {
+            Value::Time(large_span(n).2.saturating_add_micros(5))
+        })
+        .each("name", |n| Value::String(format!("span {n}")));
+    insert(
+        ctx,
+        stamped(core, epoch, 1),
+        ctx.token(epoch, 1, TableId::SpanCore, start)?,
+    )
+    .await
+    .context("large export fixture rows of span_core")?;
+    let payload =
+        keyed(TableId::SpanPayload).each("input", |n| Value::String(format!("{{\"n\":{n}}}")));
+    insert(
+        ctx,
+        stamped(payload, epoch, 2),
+        ctx.token(epoch, 2, TableId::SpanPayload, start)?,
+    )
+    .await
+    .context("large export fixture rows of span_payload")?;
+
+    let window = TimeWindow::new(at(3 * HOUR), at(4 * HOUR)).map_err(|e| anyhow!("{e}"))?;
+    let as_of = at(AS_OF * SECOND);
+    let all = ExportSelection::default();
+    let (mut after, mut exported, mut pages) = (None, 0usize, 0usize);
+    loop {
+        let page = rows(
+            ctx,
+            live(export_spans(
+                scope,
+                window,
+                &clamp(),
+                all,
+                as_of,
+                after,
+                PAGE,
+            )?)?,
+        )
+        .await
+        .with_context(|| format!("page {pages} of the large export"))?;
+        pages += 1;
+        let keys = page
+            .iter()
+            .map(|row| {
+                let core = Cols(row);
+                Ok((
+                    core.time(SpanCoreCol::StartTime)?,
+                    core.trace(SpanCoreCol::TraceId)?,
+                    core.span(SpanCoreCol::SpanId)?,
+                ))
+            })
+            .collect::<Result<Vec<(Timestamp, TraceId, SpanId)>>>()?;
+        if keys.is_empty() {
+            break;
+        }
+        // The payload rows of the page's spans, as the export job looks them up: more than
+        // EXPORT_LOOKUP_SPANS in all, at most that many per statement.
+        let mut payloads = 0;
+        for chunk in keys.chunks(EXPORT_LOOKUP_SPANS) {
+            payloads += rows(ctx, live(export_payloads(scope, &clamp(), chunk)?)?)
+                .await
+                .with_context(|| format!("the payloads of {} spans of page {pages}", chunk.len()))?
+                .len();
+        }
+        same("the payload rows of a page", &payloads, &keys.len())?;
+        // The facts of the page's traces.
+        let traces: Vec<TraceId> = keys.iter().map(|(_, trace, _)| *trace).collect();
+        for chunk in traces.chunks(MAX_LIST) {
+            rows(
+                ctx,
+                live(export_facts(
+                    scope,
+                    window,
+                    &clamp(),
+                    FactTable::Tags,
+                    chunk,
+                )?)?,
+            )
+            .await
+            .with_context(|| format!("the facts of {} traces of page {pages}", chunk.len()))?;
+        }
+        exported += keys.len();
+        let last = page.last().map(|row| Cols(row).key()).transpose()?;
+        if page.len() < PAGE as usize {
+            break;
+        }
+        after = last;
+    }
+    same("the spans of the large export", &exported, &LARGE)?;
+
+    // A selection of more traces than one plan holds, scanned one chunk of MAX_LIST traces per plan and merged in
+    // key order, as the export job reads it.
+    let named: Vec<TraceId> = (0..MAX_LIST + 88).map(|n| large_span(n).0).collect();
+    let mut merged = Vec::new();
+    for chunk in named.chunks(MAX_LIST) {
+        let selection = ExportSelection {
+            trace_ids: chunk,
+            user_id: None,
+            session_id: None,
+        };
+        let page = rows(
+            ctx,
+            live(export_spans(
+                scope,
+                window,
+                &clamp(),
+                selection,
+                as_of,
+                None,
+                PAGE,
+            )?)?,
+        )
+        .await
+        .with_context(|| format!("the spans of {} named traces", chunk.len()))?;
+        for row in &page {
+            merged.push(Cols(row).key()?);
+        }
+    }
+    merged.sort_unstable();
+    let expected: Vec<ExportKey> = (0..named.len())
+        .map(|n| {
+            let (trace, span, start) = large_span(n);
+            (start.floor_minute(), trace.trace_hash(), start, span)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    same("the spans of the named traces", &merged, &expected)?;
+    let too_many = ExportSelection {
+        trace_ids: &named,
+        user_id: None,
+        session_id: None,
+    };
+    expect(
+        export_spans(scope, window, &clamp(), too_many, as_of, None, PAGE).is_err(),
+        || format!("one plan took {} traces, above {MAX_LIST}", named.len()),
+    )?;
+
+    // A statement above the field budget is refused before it is sent, as too broad; the server would refuse
+    // it before the query starts.
+    let keys: Vec<Vec<Literal>> = (0..2 * EXPORT_LOOKUP_SPANS)
+        .map(|n| {
+            let (trace, span, start) = large_span(n);
+            vec![
+                start.floor_minute().into(),
+                Literal::from(trace.trace_hash()),
+                Literal::from(span),
+                Literal::from(trace),
+            ]
+        })
+        .collect();
+    let lookup = PointLookup::new(
+        TableId::SpanPayload,
+        [
+            SpanPayloadCol::StartMinute,
+            SpanPayloadCol::TraceHash,
+            SpanPayloadCol::SpanId,
+            SpanPayloadCol::TraceId,
+        ],
+        keys,
+        [SpanPayloadCol::SpanId],
+    )?;
+    let over = query_plan(scope, window, QueryClass::Export, Node::PointLookup(lookup));
+    let fields = render::read_fields(&over)?;
+    let refused = ctx.store.execute(over).await.err();
+    same(
+        &format!("a lookup of {fields} fields"),
+        &refused,
+        &Some(QueryError::TooBroad),
+    )?;
+    Ok(format!(
+        "{exported} spans in {pages} pages of at most {PAGE}, with payload lookups of at most \
+         {EXPORT_LOOKUP_SPANS} spans; {} named traces in plans of at most {MAX_LIST}; a lookup of {fields} \
+         fields refused before it was sent",
+        named.len()
+    ))
+}
+
+/// The columns of a `span_core` row that the large export reads back.
+struct Cols<'a>(&'a Row);
+
+impl Cols<'_> {
+    fn value(&self, column: SpanCoreCol) -> Result<&Value> {
+        let at = SpanCoreCol::ALL
+            .iter()
+            .position(|c| *c == column)
+            .ok_or_else(|| anyhow!("span_core has no {column:?}"))?;
+        self.0
+            .values()
+            .get(at)
+            .ok_or_else(|| anyhow!("a span_core row without {column:?}"))
+    }
+
+    fn time(&self, column: SpanCoreCol) -> Result<Timestamp> {
+        match self.value(column)? {
+            Value::Time(t) => Ok(*t),
+            other => Err(anyhow!("{column:?} is not a time: {other:?}")),
+        }
+    }
+
+    fn bytes<const N: usize>(&self, column: SpanCoreCol) -> Result<[u8; N]> {
+        match self.value(column)? {
+            Value::Bytes(bytes) => bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow!("{column:?} has {} bytes", bytes.len())),
+            other => Err(anyhow!("{column:?} is not bytes: {other:?}")),
+        }
+    }
+
+    fn trace(&self, column: SpanCoreCol) -> Result<TraceId> {
+        Ok(TraceId::from_bytes(self.bytes(column)?))
+    }
+
+    fn span(&self, column: SpanCoreCol) -> Result<SpanId> {
+        Ok(SpanId::from_bytes(self.bytes(column)?))
+    }
+
+    /// The row's position in the key order of `span_core`.
+    fn key(&self) -> Result<ExportKey> {
+        let hash = match self.value(SpanCoreCol::TraceHash)? {
+            Value::UInt(hash) => {
+                u32::try_from(*hash).map_err(|_| anyhow!("a trace hash above u32"))?
+            }
+            other => return Err(anyhow!("trace_hash is not a number: {other:?}")),
+        };
+        Ok((
+            self.time(SpanCoreCol::StartMinute)?,
+            hash,
+            self.time(SpanCoreCol::StartTime)?,
+            self.span(SpanCoreCol::SpanId)?,
+        ))
+    }
 }

@@ -8,7 +8,7 @@ use crucible_schema::{Column, SpanCoreCol, SpanPayloadCol, TraceHeadsCol, TraceS
 use crate::build::RetentionClamp;
 use crate::class::{Caller, QueryClass};
 use crate::error::PlanError;
-use crate::filter::{Filter, FilterTarget};
+use crate::filter::{Filter, FilterTarget, TRACE_LIST_MAX_VALUES};
 use crate::literal::Literal;
 use crate::node::{
     Aggregate, ArrivalBounds, DEFAULT_MAX_IDS, Direction, Measure, Node, Order, Scan, SemiJoin,
@@ -86,7 +86,8 @@ fn heads(request: TraceListRequest) -> Result<Scan, PlanError> {
 /// metadata conditions. One table must evaluate all of them, so metadata cannot be combined with
 /// `observation_type` (or with any field but `user_id` and `session_id` under `or` or `not`); such a filter is
 /// refused. The semi-join is refused as too broad when more than [`DEFAULT_MAX_IDS`] traces of the window match
-/// the span conditions. The outputs are those of [`trace_list`].
+/// the span conditions, and a filter of more than [`TRACE_LIST_MAX_VALUES`] values is refused. The outputs are
+/// those of [`trace_list`].
 pub fn filtered_trace_list(
     scope: ProjectScope,
     window: TimeWindow,
@@ -95,6 +96,9 @@ pub fn filtered_trace_list(
     request: TraceListRequest,
     filter: &Filter,
 ) -> Result<Option<QueryPlan>, PlanError> {
+    if filter.values() > TRACE_LIST_MAX_VALUES {
+        return Err(PlanError::ListLength("filter"));
+    }
     let (on_heads, on_spans) = filter.split(FilterTarget::TraceHeads);
     let pred = match (
         on_heads.pred(FilterTarget::TraceHeads)?,

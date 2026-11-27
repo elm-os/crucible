@@ -98,6 +98,22 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   the sign-in page, sign-in providers follow the password form under "Or continue with", and a line says how a new
   person gets an invitation. Crucible shows the brand mark it shares with rightmodeler beside its name on these pages
   and in the sidebar, and uses it as the browser tab icon.
+- Exports of 129 spans or more complete, over REST and MCP, in both formats. In 0.1.3 their payload lookups named a
+  whole page of spans in one request, which ClickHouse refused under its default `http_max_fields` of 1,000, so they
+  stayed `queued` and failed with `attempts_exhausted` after about 2.4 hours.
+- Every statement Crucible sends stays within ClickHouse's default `http_max_fields`: a read above 950 fields is
+  refused before it is sent with `query_too_broad`, and lists longer than 512 values are read 512 at a time.
+- An export of up to 10,000 `trace_ids` reads them 512 at a time. In 0.1.3 more than 512 ids failed the page read.
+- The trace list filter takes at most 256 values across its members; above that it answers 422
+  `validation_failed` with `too_many_values`.
+- ClickHouse's refusal of a request with too many fields (`Poco::Exception`, code 1000) is `query_too_broad` and is
+  not retried: an export that meets it, or another guardrail refusal, fails at once with its error code.
+- `get_export`, over REST and MCP, reports `attempts`, `waited_secs` while the export is queued or running, and
+  `last_error`: what went wrong in the latest failed attempt, or why a failed export ended, and what to do.
+- Failed attempts of exports, alert evaluations and notification deliveries are logged at warn with their reason.
+  In 0.1.3 they were logged at debug, which the server never showed.
+- `RUST_LOG` filters the server's log, for example `RUST_LOG=info,crucible_jobs=debug`; unset, the log holds info
+  and above. The Compose files pass it from the environment or `.env`.
 - `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
   status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
   its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's

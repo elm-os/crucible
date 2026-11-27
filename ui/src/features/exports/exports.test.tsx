@@ -65,6 +65,7 @@ const item = (fields: Partial<Export>): Export => ({
   checksum: "ab".repeat(32),
   expires_at: "2026-11-24T09:01:00.000000Z",
   download_path: `/api/v1/projects/${PROJECT_A}/exports/0193a1b2-7c3d-7e4f-8a5b-000000000001/download`,
+  attempts: 1,
   saturated: false,
   ...fields,
 });

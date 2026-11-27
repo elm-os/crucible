@@ -1,5 +1,5 @@
-//! The export-job repository over Postgres (migration V5): the rows of `export_jobs`, which is also the queue the
-//! export job claims (contract 11.7).
+//! The export-job repository over Postgres (migrations V5 and V12): the rows of `export_jobs`, which is also the
+//! queue the export job claims (contract 11.7).
 
 use async_trait::async_trait;
 use crucible_control::{
@@ -11,7 +11,7 @@ use crate::sql::{Cols, P, int};
 use crate::store::{Handle, every, first};
 
 const EXPORT: &str = "id, project_id, format, selector, payload, dedup_key, created_by, created_at, as_of, \
-     status, attempts, lease_until, spans, bytes, skipped, file, checksum, expires_at, error";
+     status, attempts, lease_until, spans, bytes, skipped, file, checksum, expires_at, error, last_error";
 
 /// The conditions under which an attempt may still record its outcome.
 const UNDER_CLAIM: &str = "id = $1 AND attempts = $2 AND status = 'pending' AND file IS NULL \
@@ -40,6 +40,7 @@ fn export(c: &mut Cols<'_>) -> Result<ExportJob, TxError> {
         checksum: c.opt_text()?,
         expires_at: c.opt_ts()?,
         error: c.opt_text()?,
+        last_error: c.opt_text()?,
     })
 }
 
@@ -49,9 +50,9 @@ impl ExportJobRepo for Handle {
         self.write(
             "INSERT INTO export_jobs (id, project_id, format, selector, created_by, created_at, as_of, \
              dedup_key, payload, attempts, next_attempt_at, status, lease_until, spans, bytes, skipped, file, \
-             checksum, expires_at, error) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $6, 'pending', NULL, 0, 0, 0, NULL, NULL, NULL, NULL) \
-             RETURNING 1",
+             checksum, expires_at, error, last_error) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $6, 'pending', NULL, 0, 0, 0, NULL, NULL, NULL, NULL, \
+             NULL) RETURNING 1",
             &[
                 P::Uuid(export.id.uuid()),
                 P::Uuid(export.project_id.uuid()),
@@ -173,11 +174,28 @@ impl ExportJobRepo for Handle {
         Ok(changed == 1)
     }
 
-    async fn fail(&self, claim: &Claim, error: &str) -> Result<bool, TxError> {
+    async fn fail(&self, claim: &Claim, error: &str, message: &str) -> Result<bool, TxError> {
         let changed = self
             .write(
-                &format!("UPDATE export_jobs SET error = $3 WHERE {UNDER_CLAIM} RETURNING 1"),
-                &[P::Uuid(claim.id), P::Int4(claim.attempt), P::Text(error)],
+                &format!(
+                    "UPDATE export_jobs SET error = $3, last_error = $4 WHERE {UNDER_CLAIM} RETURNING 1"
+                ),
+                &[
+                    P::Uuid(claim.id),
+                    P::Int4(claim.attempt),
+                    P::Text(error),
+                    P::Text(message),
+                ],
+            )
+            .await?;
+        Ok(changed == 1)
+    }
+
+    async fn attempt_failed(&self, claim: &Claim, message: &str) -> Result<bool, TxError> {
+        let changed = self
+            .write(
+                &format!("UPDATE export_jobs SET last_error = $3 WHERE {UNDER_CLAIM} RETURNING 1"),
+                &[P::Uuid(claim.id), P::Int4(claim.attempt), P::Text(message)],
             )
             .await?;
         Ok(changed == 1)

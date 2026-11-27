@@ -9,8 +9,12 @@
 //!   them are still on their way to the store the run waits, up to [`SHIPPING_WAIT`], before it gives the row
 //!   back for a later attempt.
 //! - **Fails once for good.** A guardrail refusal of the store (`query_timeout`, `query_memory_exceeded`,
-//!   `query_too_broad`) or a run that outlasts its claim is recorded as the export's error, so the same doomed
-//!   run does not repeat; the error code says to narrow the window.
+//!   `query_too_broad`, which also covers a request that ClickHouse refuses for carrying more fields than its
+//!   `http_max_fields`) or a run that outlasts its claim is recorded as the export's error with a message that
+//!   says what to change, so the same doomed run does not repeat.
+//! - **Says why it waits.** Any other failure records its message as the row's `last_error` and leaves the row
+//!   for a later attempt, after the claimed queue's backoff; the queue logs the failure, with the full reason,
+//!   at warn.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -186,12 +190,71 @@ fn guardrail(error: &WriteError) -> Option<&'static str> {
     }
 }
 
+/// What an export that ended with the error `code` reports as its `last_error`: what happened and what to do.
+fn ended(code: &str) -> &'static str {
+    match code {
+        codes::QUERY_TIMEOUT => {
+            "a read of the export ran longer than the export class allows; narrow the window or the selection and \
+             create the export again"
+        }
+        codes::QUERY_MEMORY_EXCEEDED => {
+            "a read of the export needed more memory than the export class allows; narrow the window or the \
+             selection and create the export again"
+        }
+        codes::QUERY_TOO_BROAD => {
+            "the telemetry store refused a read of the export as too broad, and refuses it again on every \
+             attempt; narrow the window or the selection and create the export again. When the server log says \
+             that ClickHouse refused the request for carrying more fields than its http_max_fields allows, set \
+             http_max_fields to at least 1000 in the default profile of ClickHouse and restart ClickHouse first"
+        }
+        codes::EXPORT_TOO_LARGE => {
+            "the export did not finish within the 29 minutes an attempt may run; narrow the window or the \
+             selection and create the export again"
+        }
+        codes::PROJECT_DELETED => "the project was deleted before the export ran",
+        _ => "the stored request of the export does not read back; create the export again",
+    }
+}
+
 /// Records why the export ended without a file. The row is then completed.
 async fn give_up(store: Arc<dyn ControlStore>, claim: Claim, code: &'static str) -> JobResult {
-    let recorded = store.export_jobs().fail(&claim, code).await?;
-    tracing::info!(job = "exports", id = %claim.id, code, recorded, "the export ended without a file");
+    let message = ended(code);
+    let recorded = store.export_jobs().fail(&claim, code, message).await?;
+    tracing::warn!(job = "exports", id = %claim.id, code, recorded, message, "the export ended without a file");
     Ok(())
 }
+
+/// What a failed attempt that a later attempt repeats reports as the export's `last_error`. The store's own text
+/// stays in the server log.
+fn attempt_message(error: &WriteError) -> &'static str {
+    match error {
+        WriteError::Read(QueryServiceError::Store(QueryError::Unavailable(_))) => {
+            "the telemetry store did not answer a read of the export"
+        }
+        WriteError::Read(_) => "a read of the export failed; the server log names the cause",
+        WriteError::Encode(_) | WriteError::Sink(_) => {
+            "writing the export file failed; the server log names the cause"
+        }
+    }
+}
+
+/// Fails the claim's attempt with `error`, which the claimed queue logs, after recording `message` as the export's
+/// `last_error`. A later attempt runs after the queue's backoff.
+async fn retry(ctx: &ClaimCtx, message: &str, error: impl std::fmt::Display) -> JobResult {
+    // Best effort: a row this attempt no longer holds keeps its own message.
+    if let Err(record) = ctx
+        .store
+        .export_jobs()
+        .attempt_failed(&ctx.claim, message)
+        .await
+    {
+        tracing::debug!(job = "exports", id = %ctx.claim.id, error = %record, "recording the attempt's message failed");
+    }
+    Err(failed(error))
+}
+
+/// The message of a file that could not be opened, written or committed.
+const FILE_FAILED: &str = "writing the export file failed; the server log names the cause";
 
 async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
     let id = ExportJobId::from_uuid(ctx.claim.id);
@@ -229,7 +292,8 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         .await;
     };
     let Some(service) = runtime.service() else {
-        return Err(failed("the telemetry store is not up yet"));
+        let message = "the telemetry store was not up yet when the attempt ran";
+        return retry(&ctx, message, message).await;
     };
     let scope = crucible_auth::stored_project_scope(&project).map_err(failed)?;
     let retention = RetentionSettings {
@@ -244,12 +308,12 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
     let started = ctx.env.clock.now();
     while let Some(wait) = service.export_wait(&read, &query) {
         if ctx.env.clock.now().saturating_duration_since(started) >= SHIPPING_WAIT {
-            return Err(failed(wait.describe()));
+            return retry(&ctx, wait.describe(), wait.describe()).await;
         }
         ctx.env.clock.sleep(Duration::from_secs(1)).await;
     }
 
-    let mut draft = Sink::open(
+    let mut draft = match Sink::open(
         Arc::clone(&ctx.env.disk),
         runtime.objects(),
         &job,
@@ -257,7 +321,10 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         options.gzip,
     )
     .await
-    .map_err(failed)?;
+    {
+        Ok(draft) => draft,
+        Err(error) => return retry(&ctx, FILE_FAILED, error).await,
+    };
     let mut writer = ExportWriter::new(job.new.format, options);
     let written = ctx
         .env
@@ -273,7 +340,7 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
             draft.abandon().await;
             return match guardrail(&error) {
                 Some(code) => give_up(Arc::clone(&ctx.store), ctx.claim.clone(), code).await,
-                None => Err(failed(error)),
+                None => retry(&ctx, attempt_message(&error), error).await,
             };
         }
         Err(_) => {
@@ -291,14 +358,17 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         Ok(finished) => finished,
         Err(error) => {
             draft.abandon().await;
-            return Err(failed(error));
+            return retry(&ctx, FILE_FAILED, error).await;
         }
     };
     if let Err(error) = draft.append(rest).await {
         draft.abandon().await;
-        return Err(failed(error));
+        return retry(&ctx, FILE_FAILED, error).await;
     }
-    let file = draft.commit().await.map_err(failed)?;
+    let file = match draft.commit().await {
+        Ok(file) => file,
+        Err(error) => return retry(&ctx, FILE_FAILED, error).await,
+    };
     let commit = ExportCommit {
         file: file.clone(),
         checksum: summary.sha256,

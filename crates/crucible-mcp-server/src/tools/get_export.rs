@@ -23,7 +23,9 @@ impl Tool for GetExport {
     const NAME: &'static str = "get_export";
     const DESCRIPTION: &'static str = "One export of the project: its state (`queued`, `running`, `ready`, \
         `failed` or `expired`), the spans and bytes written so far, and once it is ready its checksum, expiry and \
-        the REST `download_path` to fetch the file from with the same key. A failed export names its `error_code`.";
+        the REST `download_path` to fetch the file from with the same key. A failed export names its `error_code`. \
+        `attempts` counts the tries at writing the file, `waited_secs` how long a queued or running export has \
+        waited, and `last_error` says what went wrong in the latest failed attempt, or why a failed export ended.";
     type Args = Args;
     type Output = ExportView;
 

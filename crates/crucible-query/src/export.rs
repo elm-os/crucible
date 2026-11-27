@@ -9,6 +9,9 @@
 //!   page made of one run reads the run completely.
 //! - **Duplicates.** A span sent twice is exported once: the copy with the greatest `lsn`, with the payload row
 //!   of that copy.
+//! - **Statements.** Every statement stays within what one ClickHouse request carries: a selection of more than
+//!   [`MAX_LIST`] traces is scanned one chunk of traces per plan and the chunks' rows merged in key order, and a
+//!   page's spans are looked up [`EXPORT_LOOKUP_SPANS`] at a time and its traces' facts [`MAX_LIST`] at a time.
 //! - **Completeness.** The store is the only source, so [`QueryService::export_wait`] says when a span
 //!   acknowledged before `as_of` may not be in the store yet; the caller waits instead of writing a short file.
 //!   A store that does not answer fails the page.
@@ -17,8 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use crucible_plan::{
-    EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, FactTable, MAX_LIST, Row, Value,
-    export_facts, export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
+    EXPORT_LOOKUP_SPANS, EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, FactTable,
+    MAX_LIST, Row, Value, export_facts, export_mcp_content, export_mcp_ops, export_payloads,
+    export_spans, export_ties,
 };
 use crucible_recent::RecentSpan;
 use crucible_records::{
@@ -55,12 +59,29 @@ pub struct ExportQuery {
 }
 
 impl ExportQuery {
-    fn selection(&self) -> ExportSelection<'_> {
-        ExportSelection {
-            trace_ids: &self.trace_ids,
+    /// The selections the page scan reads, one plan each: the window's spans when no trace is named, else one
+    /// chunk of at most [`MAX_LIST`] of `traces`, the distinct named traces.
+    fn selections<'a>(&'a self, traces: &'a [TraceId]) -> Vec<ExportSelection<'a>> {
+        let narrowed = |trace_ids| ExportSelection {
+            trace_ids,
             user_id: self.user_id.as_deref(),
             session_id: self.session_id.as_deref(),
+        };
+        if traces.is_empty() {
+            vec![narrowed(&[])]
+        } else {
+            traces.chunks(MAX_LIST).map(narrowed).collect()
         }
+    }
+
+    /// The named traces, each once, in order.
+    fn traces(&self) -> Vec<TraceId> {
+        self.trace_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn selects(&self, span: &RecentSpan) -> bool {
@@ -554,6 +575,17 @@ fn fact_candidates(table: FactTable, rows: Vec<Row>) -> Decoded<Vec<Candidate>> 
     }
 }
 
+/// Core rows and their keys, in key order: the order of one scan, for the rows of several scans together. Rows
+/// that tie keep their order.
+fn in_key_order(rows: Vec<Row>) -> Decoded<(Vec<Row>, Vec<ExportKey>)> {
+    let mut keyed = rows
+        .into_iter()
+        .map(|row| Ok((key_of(&row)?, row)))
+        .collect::<Decoded<Vec<_>>>()?;
+    keyed.sort_by_key(|(key, _)| *key);
+    Ok(keyed.into_iter().map(|(key, row)| (row, key)).unzip())
+}
+
 /// The run of rows that ends at `end` (exclusive) and ties with the row before it starts at the returned index.
 fn run_start(keys: &[ExportKey], end: usize) -> usize {
     let Some(last) = end.checked_sub(1).and_then(|at| keys.get(at)) else {
@@ -598,34 +630,46 @@ impl QueryService {
         }
         let mut read = self.read(ctx, "export_page");
         let scope = ctx.scope;
-        let selection = query.selection();
-        let plan = export_spans(
-            scope,
-            query.window,
-            &read.clamp,
-            selection,
-            query.as_of,
-            after,
-            limits.rows,
-        );
-        let mut rows = read.rows(plan).await?;
-        let mut keys = rows.iter().map(key_of).collect::<Decoded<Vec<_>>>()?;
+        let traces = query.traces();
+        let selections = query.selections(&traces);
+        // Each chunk of traces gives its first rows after `after`; merged in key order, the first `limit` of them
+        // are the page, because a chunk's later rows follow its first `limit` in key order.
+        let mut rows = Vec::new();
+        for selection in &selections {
+            let plan = export_spans(
+                scope,
+                query.window,
+                &read.clamp,
+                *selection,
+                query.as_of,
+                after,
+                limits.rows,
+            );
+            rows.extend(read.rows(plan).await?);
+        }
+        let (mut rows, mut keys) = in_key_order(rows)?;
+        let full = rows.len() >= limits.rows as usize;
+        rows.truncate(limits.rows as usize);
+        keys.truncate(limits.rows as usize);
         let mut next = None;
-        if rows.len() == limits.rows as usize {
+        if full {
             let start = run_start(&keys, keys.len());
             match keys.get(start).copied() {
                 Some(key) if start == 0 => {
                     // One run fills the page: read the run whole.
-                    let plan = export_ties(
-                        scope,
-                        query.window,
-                        &read.clamp,
-                        selection,
-                        query.as_of,
-                        key,
-                    );
-                    rows = read.rows(plan).await?;
-                    keys = rows.iter().map(key_of).collect::<Decoded<Vec<_>>>()?;
+                    let mut tied = Vec::new();
+                    for selection in &selections {
+                        let plan = export_ties(
+                            scope,
+                            query.window,
+                            &read.clamp,
+                            *selection,
+                            query.as_of,
+                            key,
+                        );
+                        tied.extend(read.rows(plan).await?);
+                    }
+                    (rows, keys) = in_key_order(tied)?;
                     next = Some(key);
                 }
                 _ => {
@@ -705,7 +749,7 @@ impl QueryService {
 
         // Payloads: the row of the copy that was kept, else the newest.
         let mut payloads: BTreeMap<(TraceId, SpanId), (Lsn, Row)> = BTreeMap::new();
-        for chunk in keys.chunks(MAX_LIST) {
+        for chunk in keys.chunks(EXPORT_LOOKUP_SPANS) {
             for row in read
                 .rows(export_payloads(scope, &read.clamp, chunk))
                 .await?
@@ -736,7 +780,7 @@ impl QueryService {
             .collect();
         let mut ops: BTreeMap<(TraceId, SpanId), Vec<ExportColumn>> = BTreeMap::new();
         let mut contents: BTreeMap<(TraceId, SpanId), Vec<ExportColumn>> = BTreeMap::new();
-        for chunk in mcp_keys.chunks(MAX_LIST) {
+        for chunk in mcp_keys.chunks(EXPORT_LOOKUP_SPANS) {
             for row in read.rows(export_mcp_ops(scope, &read.clamp, chunk)).await? {
                 use McpOpsCol as M;
                 let c = Cols::<M>::of(&row);

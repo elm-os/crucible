@@ -8,8 +8,8 @@
 # Create the organization and its owner as with compose.yaml (docs/self-hosting/quickstart.md), with
 # `docker compose -f compose.cluster.yaml exec crucible crucible admin init ...`.
 #
-# Optional settings in .env: CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT and CRUCIBLE_OTLP_HTTP_PORT,
-# as in compose.yaml.
+# Optional settings in .env: CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT, CRUCIBLE_OTLP_HTTP_PORT and
+# RUST_LOG, as in compose.yaml.
 #
 # Crucible creates its tables, users and row policies on both replicas with ON CLUSTER statements, and inserts
 # into one replica, from which the other fetches each insert through Keeper. An insert counts as stored once a
@@ -153,6 +153,8 @@ services:
       CRUCIBLE_POSTGRES_URL: postgres://crucible@postgres:5432/crucible
       CRUCIBLE_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see the top of this file)}
       CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (see the top of this file)}
+      # The filter of the server's log; unset, it holds info and above.
+      RUST_LOG: ${RUST_LOG:-}
     # Every start migrates: the ledger in Postgres skips the steps that are already applied.
     command:
       - serve

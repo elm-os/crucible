@@ -372,8 +372,12 @@ pub trait ExportJobRepo: Send + Sync {
     /// Records the committed file. `false` when the row is no longer pending under the claim's attempt, already
     /// has a file or an error, or was expired meanwhile.
     async fn commit(&self, claim: &Claim, commit: &ExportCommit) -> Result<bool, TxError>;
-    /// Records why the export ended without a file, under the same conditions as [`ExportJobRepo::commit`].
-    async fn fail(&self, claim: &Claim, error: &str) -> Result<bool, TxError>;
+    /// Records why the export ended without a file, its error code and the message for `last_error`, under the
+    /// same conditions as [`ExportJobRepo::commit`].
+    async fn fail(&self, claim: &Claim, error: &str, message: &str) -> Result<bool, TxError>;
+    /// Records the message of the claim's attempt, which failed and leaves the row for a later attempt, as
+    /// `last_error`. `false` when the row is no longer pending under that attempt.
+    async fn attempt_failed(&self, claim: &Claim, message: &str) -> Result<bool, TxError>;
     /// Expires every export of the project created before `before` that is not expired at `now`, and returns
     /// them as they are after the change: a deletion request expires the exports it predates (contract 13.4).
     async fn expire_before(

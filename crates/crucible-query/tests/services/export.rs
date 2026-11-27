@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_env::QueryError;
-use crucible_plan::{FactTable, Value};
+use crucible_plan::{FactTable, MAX_LIST, Value};
 use crucible_query::{ExportLimits, ExportQuery, ExportWait, QueryServiceError};
 use crucible_records::{
     FactTargetKind, Lsn, SpanId, TableId, TimeWindow, Timestamp, TraceId, Uuid,
@@ -185,6 +185,85 @@ proptest! {
         let got = export_all(&world, &query(as_of), ExportLimits { rows, bytes }).unwrap();
         prop_assert_eq!(got, expected);
     }
+}
+
+/// A selection of more traces than one plan names is scanned one chunk of traces per plan, and the chunks' rows
+/// merged in key order: every selected span once, in key order, whatever the page size, also when the copies of
+/// one span fill a page.
+#[test]
+fn a_selection_of_more_traces_than_one_plan_names_is_exported_in_key_order() {
+    let world = World::new(16);
+    let traces = 2 * MAX_LIST as u64 + 3;
+    let mut copies = Vec::new();
+    for n in 0..traces {
+        // Trace 1's span starts first; three copies of it fill the first page of two rows.
+        let minutes = if n == 1 {
+            -1
+        } else {
+            i64::try_from(n % 5).unwrap()
+        };
+        copies.push(Copy {
+            project: 1,
+            trace: n,
+            span: n + 1,
+            start: NOW.saturating_add_micros(minutes * MINUTE),
+            lsn: n + 1,
+            event_bytes: 1,
+        });
+    }
+    for lsn in [traces + 1, traces + 2] {
+        copies.push(Copy { lsn, ..copies[1] });
+    }
+    for copy in &copies {
+        store(&world, copy);
+    }
+    // Every trace but the multiples of three, named in no order and one of them twice.
+    let selected: Vec<u64> = (0..traces).rev().filter(|n| n % 3 != 0).collect();
+    let mut q = query(received(traces + 9));
+    q.trace_ids = selected.iter().map(|n| trace(*n)).collect();
+    q.trace_ids.push(trace(selected[7]));
+    assert!(q.trace_ids.len() > MAX_LIST);
+    let mut expected: BTreeMap<Key, (TraceId, SpanId, u64)> = BTreeMap::new();
+    for copy in copies.iter().filter(|c| c.trace % 3 != 0) {
+        let entry =
+            expected
+                .entry(key_of(copy))
+                .or_insert((trace(copy.trace), span_id(copy.span), 0));
+        entry.2 = entry.2.max(copy.lsn);
+    }
+    let expected: Vec<_> = expected
+        .into_values()
+        .map(|(t, s, kept)| (t, s, kept, input(kept)))
+        .collect();
+    for rows in [1_000, 97] {
+        let limits = ExportLimits {
+            rows,
+            ..ExportLimits::default()
+        };
+        assert_eq!(
+            export_all(&world, &q, limits).unwrap(),
+            expected,
+            "{rows} rows"
+        );
+    }
+    // The three copies fill a page of two: the page holds the span whole, and the next one starts after it. A
+    // full page leaves out its last run, which may go on past the page.
+    let two = ExportLimits {
+        rows: 2,
+        ..ExportLimits::default()
+    };
+    let first = run(world.service.export_page(&ctx(1), &q, None, two)).unwrap();
+    let ids = |records: &[crucible_query::ExportRecord]| -> Vec<(SpanId, u64)> {
+        records
+            .iter()
+            .map(|r| (r.span.core.span_id, r.span.core.ingestion.lsn.get()))
+            .collect()
+    };
+    assert_eq!(ids(&first.records), [(span_id(2), traces + 2)]);
+    assert_eq!(first.next, Some(key_of(&copies[1])));
+    let second = run(world.service.export_page(&ctx(1), &q, first.next, two)).unwrap();
+    let (_, next, kept, _) = &expected[1];
+    assert_eq!(ids(&second.records), [(*next, *kept)]);
 }
 
 #[test]

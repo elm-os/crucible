@@ -156,6 +156,7 @@ fn sql_error(failure: Failure) -> SqlError {
         // A workspace statement may run as long as its profile allows, so the deadline stays a timeout.
         Failure::Timeout | Failure::NoAnswer => SqlError::Timeout,
         Failure::Client(message) => SqlError::Internal(message),
+        Failure::OverBudget { fields } => SqlError::Internal(crate::codes::over_budget(fields)),
     }
 }
 

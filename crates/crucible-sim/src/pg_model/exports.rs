@@ -1,4 +1,4 @@
-//! The export-job repository of the model (migration V5): the rows of `export_jobs` are claim rows of
+//! The export-job repository of the model (migrations V5 and V12): the rows of `export_jobs` are claim rows of
 //! [`Queue::ExportJobs`] that also carry the export's own columns.
 
 use async_trait::async_trait;
@@ -20,6 +20,7 @@ pub(super) struct ExportCols {
     checksum: Option<String>,
     expires_at: Option<Timestamp>,
     error: Option<String>,
+    last_error: Option<String>,
 }
 
 fn key(id: ExportJobId) -> Vec<u8> {
@@ -45,6 +46,7 @@ fn view(job: &JobRow) -> Option<ExportJob> {
         checksum: export.checksum.clone(),
         expires_at: export.expires_at,
         error: export.error.clone(),
+        last_error: export.last_error.clone(),
     })
 }
 
@@ -114,6 +116,7 @@ impl ExportJobRepo for Runner {
                     checksum: None,
                     expires_at: None,
                     error: None,
+                    last_error: None,
                 })),
             };
             cx.insert(Tbl::Jobs, key(export.id), Row::Job(row), "export_jobs_pkey")
@@ -217,10 +220,20 @@ impl ExportJobRepo for Runner {
         .await
     }
 
-    async fn fail(&self, claim: &Claim, error: &str) -> Result<bool, TxError> {
+    async fn fail(&self, claim: &Claim, error: &str, message: &str) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| {
             under_claim(cx, claim, open, |export| {
                 export.error = Some(error.to_owned());
+                export.last_error = Some(message.to_owned());
+            })
+        })
+        .await
+    }
+
+    async fn attempt_failed(&self, claim: &Claim, message: &str) -> Result<bool, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            under_claim(cx, claim, open, |export| {
+                export.last_error = Some(message.to_owned());
             })
         })
         .await

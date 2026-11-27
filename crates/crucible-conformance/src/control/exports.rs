@@ -1,7 +1,7 @@
 //! Export jobs (contracts 11.1, 11.7 and 12.8): the rows of `export_jobs`, which are also the claimed queue of
 //! the export job. Every statement of `ExportJobRepo`: inserts and their constraints, the reads by id, by
-//! deduplication key, by project and by id list, progress, commit and failure under the claim's attempt, and
-//! the expiry a deletion request makes.
+//! deduplication key, by project and by id list, progress, commit, failure and a failed attempt's message under
+//! the claim's attempt, and the expiry a deletion request makes.
 
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ const LEASE: Duration = Duration::from_secs(30);
 fn shape(job: &ExportJob) -> String {
     format!(
         "{} {} {} {:?} attempts {} lease {} spans {} bytes {} skipped {} file {:?} checksum {:?} expires {} \
-         error {:?}",
+         error {:?} last error {:?}",
         job.new.dedup_key,
         job.new.format,
         job.new.selector,
@@ -31,6 +31,7 @@ fn shape(job: &ExportJob) -> String {
         job.checksum,
         job.expires_at.is_some(),
         job.error,
+        job.last_error,
     )
 }
 
@@ -153,6 +154,16 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         exports.progress(&stale, 11, 1_100).await,
     );
     t.outcome(
+        "an attempt's message",
+        exports
+            .attempt_failed(claim, "the telemetry store did not answer")
+            .await,
+    );
+    t.outcome(
+        "another attempt's message",
+        exports.attempt_failed(&stale, "not this one").await,
+    );
+    t.outcome(
         "the claimed row",
         exports
             .get(one.id, ExportJobId::from_uuid(id(3)))
@@ -175,14 +186,23 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     t.outcome("commit again", exports.commit(claim, &commit).await);
     t.outcome(
         "fail after the commit",
-        exports.fail(claim, "query_timeout").await,
+        exports.fail(claim, "query_timeout", "too late").await,
+    );
+    t.outcome(
+        "an attempt's message after the commit",
+        exports.attempt_failed(claim, "too late").await,
     );
     t.outcome("complete", claims.complete(claim).await);
 
     let second = claims.claim(Queue::ExportJobs, 1, LEASE).await?;
     ensure!(second.len() == 1, "a second export is claimed");
     t.note("claimed next", (second[0].id == id(1), second[0].attempt));
-    t.outcome("fail", exports.fail(&second[0], "query_too_broad").await);
+    t.outcome(
+        "fail",
+        exports
+            .fail(&second[0], "query_too_broad", "narrow the window")
+            .await,
+    );
     t.outcome(
         "commit after the failure",
         exports.commit(&second[0], &commit).await,
