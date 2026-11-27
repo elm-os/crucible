@@ -82,6 +82,14 @@ The job fails when either differs from what is committed, or when a generated ty
 route permissions, `cargo xtask authz-matrix` regenerates
 [docs/architecture/authz-matrix.md](docs/architecture/authz-matrix.md), which a test compares.
 
+The model tables of [docs/guides/priced-models.md](docs/guides/priced-models.md) are generated from
+`crates/crucible-normalize/data/prices.json`. After changing the price table, rewrite them with Python 3.11 or
+newer; the job runs the same tool with `--check`:
+
+```sh
+python3 -I tools/docs/priced-models.py
+```
+
 ### Kani proofs (`kani` job)
 
 The `kani` job runs `cargo kani -p <crate>` for every crate with a `kani::proof`, when a pull request changes Rust

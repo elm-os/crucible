@@ -68,6 +68,27 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   readable when a bucket holds a few calls.
 - MCP time series use at most 200 buckets: a day in quarter hours and a week in hours. A day was 288 five-minute
   buckets.
+- Password and secret fields show and hide with an eye icon inside the field, level with the input, on the sign-in,
+  setup, invitation and reset pages, in the Connect dialog and in the sign-in provider forms. The toggle keeps its
+  name, such as "Show password", and reports its state with `aria-pressed`. In 0.1.3 the word "Show" ran past the
+  field's edge.
+- On the trace page, Add tag sits level with the New tag input, and the score form's fields line up at the top, with
+  Add score level with their inputs and the comment box one line tall until it is resized.
+- On Home, the sparklines of the five headline tiles sit level at the bottom of the tiles, also when a caption takes
+  two lines.
+- The trace timeline gives span names three fifths of its width from 640 px up, so a name such as
+  `tools/call create_pull_request` shows in full at 1440 px; a name that is still cut, in the timeline or on an agent
+  graph node, shows in full on hover.
+- Dialogs keep their title and their actions in view: when a dialog is taller than the window, the fields between
+  them scroll. In 0.1.3 Cancel and Create rule of New alert rule sat below the dialog's edge at 1440 by 900. On a
+  phone, New alert rule and New dashboard keep a margin at both sides.
+- The Traces list pages: Load more traces reads the next traces, as the Spans, Sessions and Users lists do. 0.1.3
+  showed the newest 50 only.
+- An account menu holds who is signed in and Sign out, in place of the name and the Sign out button, so on a phone the
+  header takes two rows: the menu, the project and the account menu, then the time range and Feedback.
+- The SQL page's schema browser keeps column names on one line, shows an enum column as `Enum8` with its values on
+  the line below, and gives the unit of the cost, duration and token columns. Result headers show the short type,
+  with the full type on hover.
 - `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
   status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
   its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's

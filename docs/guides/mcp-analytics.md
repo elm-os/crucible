@@ -25,7 +25,7 @@ The time range is the shell's, at most the project's maximum window (30 days by 
 |---|---|
 | Servers | For each server: calls, errors, error rate, caller faults, p50, p90 and p99 latency, the last call, how many clients called it, its version and its deploys |
 | Tools | For each tool: the same measures and its response bytes. Tools a server listed that nobody called are under **Unused**, with the hash of their latest listed schema. Listings come from servers on the TypeScript SDK; the Python, Go and Rust SDKs and the proxy send none, so **Unused** lists nothing for their servers |
-| Tool | One tool: calls and errors over time as bars, p50, p90 and p99 latency as lines, with deploy markers and a table view; its error classes and its top clients |
+| Tool | One tool: calls and errors over time as bars, and latency as one range per bucket (a dot for p50, a square for p90, a triangle for p99), with deploy markers and a table view; its error classes and its top clients. A range has at most 200 buckets: minutes for an hour, quarter hours for a day, hours for 7 days and days for 30 days |
 | Errors | Calls by error class, and the failing methods and targets; the breakdown groups the errors by message and JSON-RPC code |
 | Clients | Calls by client name, or by name and version; names and versions are what the clients reported about themselves |
 | Users | The users behind the calls |

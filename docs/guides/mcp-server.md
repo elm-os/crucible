@@ -127,7 +127,7 @@ session the server does not hold, such as one from before it restarted; the clie
 | `search_spans` | Spans whose input or output contain words, or whose metadata holds `key=value` entries, newest first, with highlighted fragments. Up to 20 hits per call |
 | `list_mcp_servers` | The MCP servers seen on one side in the window, most calls first: calls, errors, error rate, calls the caller caused, latency p50, p90 and p99, distinct clients, last seen and the latest deploy's version, with the capture source read for each |
 | `list_mcp_tools` | The MCP tools called on one side, most calls first, then the tools a server listed but nobody called: calls, errors, latency, bytes and the latest schema hash |
-| `get_mcp_tool` | One MCP tool over the window and per time bucket: calls, errors and latency, calls per error class, the top clients, and its servers' deploys |
+| `get_mcp_tool` | One MCP tool over the window and per time bucket, at most 200 buckets with their size in `granularity`: calls, errors and latency, calls per error class, the top clients, and its servers' deploys |
 | `list_mcp_errors` | The errors of MCP calls on one side: calls per error class and failed calls per method and tool, or with `breakdown` the failed calls grouped down to the JSON-RPC code and message |
 | `compare_mcp_deploys` | One MCP server's tools in two deploys: per tool the calls, errors, error rate and latency of each, and the tools added, removed or with a changed schema |
 | `create_export` | Starts an export of the window's spans as `crucible-jsonl` or `otlp-json` |

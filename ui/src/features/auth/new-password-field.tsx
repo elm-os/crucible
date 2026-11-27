@@ -35,7 +35,7 @@ export function NewPasswordField({
         onValueChange={(next) => setValue(next)}
       >
         <PasswordInputControl pattern={LENGTH} />
-        <PasswordInputToggle aria-label="Show password">Show</PasswordInputToggle>
+        <PasswordInputToggle aria-label="Show password" />
       </PasswordInput>
       <FieldDescription className="flex items-center gap-1.5">
         {fits ? <CheckIcon className="shrink-0" /> : <TodoIcon className="shrink-0" />}
