@@ -3,6 +3,7 @@
 import { createLocalStorage } from "@ui-sdk/core";
 import { useSearchParams } from "next/navigation";
 import { useMemo, useState, useSyncExternalStore } from "react";
+import type { Granularity } from "@/api/generated/Granularity";
 import type { TimeWindow } from "@/api/types";
 
 export const RANGES = ["1h", "24h", "7d", "30d"] as const;
@@ -23,6 +24,22 @@ const RANGE_MS: Record<Range, number> = {
   "7d": 7 * 24 * 60 * MINUTE_MS,
   "30d": 30 * 24 * 60 * MINUTE_MS,
 };
+
+/**
+ * Buckets wide enough to read on a chart of this range: an hour in minutes, a day and a week in hours, and a
+ * month in days. Lines and bars of one range share their buckets, so a tile and its chart agree.
+ */
+export function chartGranularity(range: Range): Granularity {
+  switch (range) {
+    case "1h":
+      return "minute";
+    case "24h":
+    case "7d":
+      return "hour";
+    case "30d":
+      return "day";
+  }
+}
 
 export function parseRange(value: string | null | undefined): Range | null {
   return RANGES.find((range) => range === value) ?? null;

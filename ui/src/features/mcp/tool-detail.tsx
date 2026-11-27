@@ -9,7 +9,7 @@ import { Section } from "@/components/section";
 import { MetaNotice } from "@/components/status";
 import { TimeSeriesChart } from "@/components/time-series-chart";
 import type { ChartSeries } from "@/primitives/chart/chart-model";
-import { formatCount, formatDuration, parseMicros } from "@/lib/format";
+import { formatCount, formatDuration, formatDurationAxis, parseMicros } from "@/lib/format";
 import { useProject } from "@/lib/project";
 import { rangeWindow, useTimeRange } from "@/lib/time-range";
 import { useUrlParam } from "@/lib/url-state";
@@ -99,6 +99,8 @@ export function ToolDetail() {
           <TimeSeriesChart
             title="Calls over time"
             form="bar"
+            summable
+            step={stepMs(tool.granularity)}
             format={(v) => formatCount(Math.round(v))}
             series={callSeries(tool)}
             markers={markers(tool)}
@@ -115,8 +117,11 @@ export function ToolDetail() {
         {(tool) => (
           <TimeSeriesChart
             title="Latency percentiles"
+            form="range"
             family
+            step={stepMs(tool.granularity)}
             format={(v) => formatDuration(v)}
+            axisFormat={formatDurationAxis}
             series={latencySeries(tool)}
             markers={markers(tool)}
           />
@@ -180,6 +185,21 @@ function Tile({ label, value }: { label: string; value: string }) {
       <dd className="text-body font-medium tabular-nums">{value}</dd>
     </div>
   );
+}
+
+const STEP_MS: Record<McpToolDetail["granularity"], number | null> = {
+  auto: null,
+  minute: 60_000,
+  five_minutes: 300_000,
+  fifteen_minutes: 900_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+  week: 604_800_000,
+};
+
+/** The bucket width the server chose, so empty buckets break the latency lines instead of joining them. */
+function stepMs(granularity: McpToolDetail["granularity"]): number | null {
+  return STEP_MS[granularity] ?? null;
 }
 
 function callSeries(tool: McpToolDetail): ChartSeries[] {

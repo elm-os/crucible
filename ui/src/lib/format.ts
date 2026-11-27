@@ -51,3 +51,12 @@ export function parseMicros(iso: string): number | null {
   if (Number.isNaN(ms)) return null;
   return ms * 1_000 + Number((match[2] ?? "").padEnd(6, "0"));
 }
+
+/** A duration on a chart axis: round ticks read short, and zero reads as 0. */
+export function formatDurationAxis(us: number): string {
+  if (us === 0) return "0";
+  if (us < 1_000) return `${Math.round(us)} µs`;
+  if (us < 1_000_000) return `${Math.round(us / 1_000)} ms`;
+  if (us < 60_000_000) return `${Number((us / 1_000_000).toFixed(1))} s`;
+  return `${Number((us / 60_000_000).toFixed(1))} min`;
+}

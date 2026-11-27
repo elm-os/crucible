@@ -3,7 +3,7 @@ import type { MetricsResponse } from "@/api/generated/MetricsResponse";
 import type { MetricsSchema } from "@/api/generated/MetricsSchema";
 import type { MetricsSeries } from "@/api/generated/MetricsSeries";
 import type { SchemaMeasure } from "@/api/generated/SchemaMeasure";
-import { formatCost, formatCount, formatDuration } from "@/lib/format";
+import { formatCost, formatCount, formatDuration, formatDurationAxis } from "@/lib/format";
 import type { ChartSeries } from "@/primitives/chart/chart-model";
 
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
@@ -15,6 +15,14 @@ export function formatter(unit: string): (value: number) => string {
   if (unit === "us") return (us) => formatDuration(us);
   if (unit === "ppm") return (ppm) => percent.format(ppm / 1_000_000);
   return formatCount;
+}
+
+/** How a value reads on a chart axis, where ticks are round numbers. */
+export function axisFormatter(unit: string): (value: number) => string {
+  if (unit === "us") return formatDurationAxis;
+  if (unit === "count" || unit === "tokens")
+    return (v) => (Math.abs(v) >= 10_000 ? compact.format(v) : formatCount(v));
+  return formatter(unit);
 }
 
 /** A headline number: counts of ten thousand and more in compact form. */
