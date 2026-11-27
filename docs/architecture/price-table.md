@@ -2,8 +2,8 @@
 
 Stage A of the normalizer prices usage that arrives without a provided cost (contract 3.4). The prices come from
 a versioned, immutable price table. The bundled table is compiled into the binary from
-`crates/crucible-normalize/data/prices.json`. Per-project override tables are designed to come from the control
-plane in milestone 4; the normalizer context already carries a slot for them (`PriceSnapshot::project`).
+`crates/crucible-normalize/data/prices.json`. [Priced models](../guides/priced-models.md) lists its models for
+users.
 
 ## Version
 
@@ -92,3 +92,4 @@ threshold on `input`, which already includes the cache reads and writes.
 5. When a new model has names worth pinning, add them with the row they must match to
    `crates/crucible-normalize/tests/fixtures/model_names.json` and update the corpus count in `tests/prices.rs`.
 6. A change to the data file changes the price table version, not `NORMALIZER_VERSION`.
+7. Update the model names, the version and the date in `docs/guides/priced-models.md`.

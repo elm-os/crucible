@@ -59,7 +59,9 @@ API, which needs a session or an API key.
 
 - A key has scopes: `ingest` (send telemetry), `read` (every read, exports and the MCP server), `write` (tags,
   flags, feedback and corrections), `delete` (deletion requests) and `sql` (SQL workspace runs). A new key has
-  `ingest`, `read` and `write`. Give each key only what it needs: an exporter needs `ingest` alone.
+  `ingest`, `read` and `write`, and a key made in **Settings**, **API keys** always has those three, so it can also
+  send traces and write. Give each key only what it needs: an exporter needs `ingest` alone, and an agent that only
+  reads, `read` ([below](#making-a-key-with-fewer-scopes)).
 - A key belongs to one project and never manages keys, members, channels, alert rules or settings.
 - With Postgres reachable, a revoked or changed key stops working on every server within 5 seconds, and on the
   server that revoked it at once.
@@ -68,6 +70,19 @@ API, which needs a session or an API key.
 - People have an organization role (`owner`, `admin`, `member`, `viewer`) and, per project, a project role
   (`admin`, `member`, `viewer`). [The authorization matrix](../architecture/authz-matrix.md) lists the permission
   that every route needs, and which role and key scope grant it.
+
+### Making a key with fewer scopes
+
+From the command line, `--scopes` takes a comma-separated list. An ingest-only key and a read-only key:
+
+```sh
+docker compose exec crucible crucible admin create-key --project default --scopes ingest --note exporter
+docker compose exec crucible crucible admin create-key --project default --scopes read --note agent
+```
+
+Through the API, a project admin who is signed in sends `POST /api/v1/projects/{project_id}/api-keys` with the
+scopes in the body, such as `{"note": "agent", "scopes": ["read"]}`, and the answer holds the secret key as
+`secret_key` ([API](../api/README.md#authentication) shows how to sign in and send the CSRF token).
 
 ## The master key
 
