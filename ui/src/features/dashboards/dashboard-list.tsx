@@ -167,9 +167,7 @@ function NewDashboard({ project }: { project: string }) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger className="text-data">New dashboard</DialogTrigger>
       <DialogBackdrop />
-      <DialogContent>
-        {open ? <NewDashboardForm project={project} /> : null}
-      </DialogContent>
+      <DialogContent>{open ? <NewDashboardForm project={project} /> : null}</DialogContent>
     </Dialog>
   );
 }
