@@ -6,8 +6,9 @@ and is pinned by tests.
 
 from __future__ import annotations
 
+import re
 from collections.abc import MutableSequence
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 from mcp.server import MCPServer, Server, ServerRequestContext
@@ -24,8 +25,12 @@ __all__ = [
     "cancel_requested",
     "middleware_of",
     "name_and_version",
+    "refusal",
     "token_identity",
 ]
+
+# pydantic's text for a model that refused its input: "1 validation error for echoArguments", ...
+_VALIDATION_ERRORS = re.compile(r"[0-9]+ validation errors? for ")
 
 
 def _lowlevel(server: Server[Any] | MCPServer[Any]) -> Server[Any]:
@@ -52,6 +57,17 @@ def cancel_requested(ctx: ServerRequestContext[Any, Any]) -> bool:
     dispatch = getattr(ctx.session, "_request_outbound", None)
     event = getattr(dispatch, "cancel_requested", None)
     return isinstance(event, anyio.Event) and event.is_set()
+
+
+def refusal(tool: str, text: str) -> Literal["validation", "not_found"] | None:
+    """Why `MCPServer` refused a `tools/call` before the tool ran, from the text of the isError result it answers
+    with: no tool has the name, or the arguments failed the tool's input model. None for any other tool error."""
+    if text == f"Unknown tool: {tool}":
+        return "not_found"
+    prefix = f"Error executing tool {tool}: "
+    if text.startswith(prefix) and _VALIDATION_ERRORS.match(text, len(prefix)):
+        return "validation"
+    return None
 
 
 def token_identity() -> tuple[str, str | None, str | None] | None:

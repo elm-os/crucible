@@ -90,7 +90,7 @@ test("a client call is a CLIENT span, and the server span is its child", async (
 
   const failed = find(CLIENT, "fail");
   expect(failed.attributes["error.type"]).toBe("tool_error");
-  expect(failed.status.code).toBe(2);
+  expect(failed.status).toEqual({ code: 2, message: "order not found" });
   const missing = find(CLIENT, "missing");
   expect(missing.attributes["rpc.response.status_code"]).toBe("-32602");
   expect(missing.attributes["error.type"]).toBe("-32602");
