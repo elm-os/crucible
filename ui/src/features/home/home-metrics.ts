@@ -5,7 +5,7 @@ import { queryMetrics } from "@/api/client";
 import type { MeasureRequest } from "@/api/generated/MeasureRequest";
 import type { MetricsResponse } from "@/api/generated/MetricsResponse";
 import type { MetricsSeries } from "@/api/generated/MetricsSeries";
-import { type Range, rangeWindow } from "@/lib/time-range";
+import { chartGranularity, type Range, rangeWindow } from "@/lib/time-range";
 import type { ChartSeries } from "@/primitives/chart/chart-model";
 
 export type HomeQuery = "traces" | "cost" | "tokens" | "errors" | "latency";
@@ -47,7 +47,17 @@ export function useHomeMetrics(project: string, range: Range, which: HomeQuery) 
   return useQuery({
     queryKey: [project, "metrics", which, range],
     queryFn: ({ signal }) =>
-      queryMetrics(project, { ...MEASURES[which], ...rangeWindow(range, Date.now()) }, signal),
+      queryMetrics(
+        project,
+        {
+          ...MEASURES[which],
+          ...rangeWindow(range, Date.now()),
+          // Buckets wide enough to read at this range, and an empty bucket of a count is a zero.
+          granularity: chartGranularity(range),
+          fill: which === "latency" ? "none" : "zero",
+        },
+        signal,
+      ),
   });
 }
 

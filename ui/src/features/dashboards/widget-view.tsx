@@ -19,6 +19,7 @@ import { RANGE_PHRASE, type Range, rangeWindow } from "@/lib/time-range";
 import { chartModel } from "@/primitives/chart/chart-model";
 import { Markdown } from "./markdown";
 import {
+  axisFormatter,
   chartSeries,
   formatHeadline,
   formatter,
@@ -185,6 +186,10 @@ function WidgetBody({
           family={isFamily(response)}
           series={chartSeries(catalog, response, measures.length)}
           format={formatter(unit)}
+          axisFormat={axisFormatter(unit)}
+          summable={
+            response.series.length > 0 && response.series.every((s) => isAdditive(catalog, s))
+          }
         />
       );
     case "bar": {
@@ -244,7 +249,14 @@ function StatBody({
           aria-hidden="true"
           preserveAspectRatio="none"
         >
-          <path d={path} fill="none" stroke="var(--color-series-1)" strokeWidth={1.5} />
+          <path
+            d={path}
+            fill="none"
+            stroke="var(--color-series-1)"
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
         </svg>
       ) : null}
     </div>
