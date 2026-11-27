@@ -33,8 +33,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   holds a thrown error's message, scrubbed and cut at 2 KiB as the Go and Rust SDKs and the proxy send it. MCP >
   Errors groups them by it and the Operation page shows it, where 0.1.3 showed "No message".
 - MCP tool errors recorded by the Python SDK carry a message too: the text of the result's first text block, scrubbed
-  and cut at 8,192 characters like its other MCP error messages. mcp keeps a raised exception's own text on the
-  server, so the error of a tool that raised reads "Error executing tool <name>".
+  and cut at 2 KiB. mcp keeps a raised exception's own text on the server, so the error of a tool that raised reads
+  "Error executing tool <name>".
+- The Python SDK cuts the error messages of MCP spans at 2 KiB on a character boundary, as the TypeScript, Go and
+  Rust SDKs and the proxy do. 0.1.3 cut them at 8,192 characters.
 - The TypeScript SDK emits one process warning (code `CRUCIBLE_EXPORT`) when an export first fails, naming the traces
   URL, the HTTP status and Crucible's message, for example the 401 for a key the server does not accept, or the
   connection error; later failures count in `stats().failed` without another warning.

@@ -151,6 +151,17 @@ async def test_a_tool_error_carries_its_first_text_block_as_its_message(sdk: Col
 
 
 @pytest.mark.anyio
+async def test_a_tool_error_message_is_cut_at_2_kib_as_the_other_sdks_cut_it(sdk: Collector, mode: str) -> None:
+    async with connect(reference_server.instrumented(), mode) as client:
+        await client.call_tool("fail", {"reason": "é" * 1500})
+        await client.call_tool("fail", {"reason": "x" * 2040 + " jane.doe@example.com"})
+    messages = sorted(s.status_message for s in mcp_spans(sdk, "tools/call"))
+    # 2,048 UTF-8 bytes on a character boundary (contract 3.5), scrubbed before the cut.
+    assert messages == ["x" * 2040 + " [redact", "é" * 1024]
+    assert b"jane.doe@example.com" not in sdk.raw()
+
+
+@pytest.mark.anyio
 async def test_calls_refused_before_the_tool_ran_are_the_callers_fault(sdk: Collector, mode: str) -> None:
     async with connect(reference_server.instrumented(), mode) as client:
         results = [

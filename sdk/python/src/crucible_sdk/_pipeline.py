@@ -41,9 +41,10 @@ QUEUE_BYTES = 8 << 20
 EXPORT_TIMEOUT = 10.0
 
 SCRUBBER = Scrubber.builtin()
-# Error text of MCP spans is cut before it is scrubbed, which bounds the scrubbing work (contract 3.1 keeps 8 KiB of a
-# status message).
-STATUS_CHARS = 8192
+# The status message of an MCP span is its error message (contract 3.5 `error_message`): scrubbed, then cut at 2 KiB
+# on a character boundary, as the other SDKs and the proxy send it. It is cut before it is scrubbed too, which bounds
+# the scrubbing work.
+ERROR_MESSAGE_BYTES = 2048
 EVENT_CHARS = 16384
 
 # The message of each MCP tool error whose span has not ended, by span id. mcp's own middleware sets a tool error's
@@ -52,14 +53,15 @@ EVENT_CHARS = 16384
 _TOOL_ERRORS: dict[int, str] = {}
 # Spans of a tracer provider without the processor never take theirs; this bounds what they leave.
 _TOOL_ERRORS_MAX = 4096
+# More of a tool error's message than the export path reads: the cap and the scrubber's margin past the cut.
+_TOOL_ERROR_CHARS = 16384
 
 
 def note_tool_error(span_id: int, message: str) -> None:
-    """Keeps the message of the tool error of span `span_id` until the span ends, cut to more than the export path
-    reads of a status message."""
+    """Keeps the message of the tool error of span `span_id` until the span ends."""
     if len(_TOOL_ERRORS) >= _TOOL_ERRORS_MAX:
         _TOOL_ERRORS.clear()
-    _TOOL_ERRORS[span_id] = message[: 2 * STATUS_CHARS]
+    _TOOL_ERRORS[span_id] = message[:_TOOL_ERROR_CHARS]
 
 
 @dataclass(frozen=True)
@@ -262,7 +264,8 @@ class Pipeline:
             if tool_error and status.status_code is StatusCode.ERROR and not status.description:
                 status = Status(StatusCode.ERROR, tool_error)
             if status.description:
-                status = Status(status.status_code, SCRUBBER.bounded_text(status.description, STATUS_CHARS))
+                message = SCRUBBER.bounded_text(status.description, ERROR_MESSAGE_BYTES)
+                status = Status(status.status_code, message.encode()[:ERROR_MESSAGE_BYTES].decode("utf-8", "ignore"))
             events = tuple(_scrub_event(event) for event in events)
         return ReadableSpan(
             name=span.name,
