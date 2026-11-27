@@ -18,6 +18,7 @@ mod codes;
 pub mod control;
 pub mod control_pg;
 mod differential;
+mod field_budget;
 mod inserts;
 mod keep_alive;
 mod lifecycle;
@@ -371,6 +372,14 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "An export of more than 1,000 spans in pages of 1,000 (8.7, 12.8)",
         m2_export::large(&ctx)
+    );
+    row!(
+        "Lists at their filter caps under 200 pending deletions (8.3, 13.6)",
+        field_budget::lists(&ctx)
+    );
+    row!(
+        "An MCP read of a selection of 1,000 servers (8.3, 9.5)",
+        field_budget::mcp_selection(&ctx)
     );
     row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
     row!("ChModel differential: typed plans (2.6, 8.1)", async {
