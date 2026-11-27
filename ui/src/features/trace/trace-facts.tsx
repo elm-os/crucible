@@ -407,7 +407,7 @@ function Scores({
             value={comment}
             onValueChange={(next) => setComment(next)}
             rows={1}
-            className="text-data"
+            className="min-h-8 py-1 text-data"
           />
           {bytes(comment) > COMMENT_BYTES - 500 ? (
             <FieldDescription className="text-label text-ink-soft">

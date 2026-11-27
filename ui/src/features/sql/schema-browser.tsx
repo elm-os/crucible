@@ -100,7 +100,7 @@ export function SchemaBrowser({
                     <caption className="sr-only">Columns of {relation.name}</caption>
                     <thead>
                       <tr className="text-ink-soft">
-                        <th scope="col" className="pe-3 text-start font-medium">
+                        <th scope="col" className="w-px pe-3 text-start font-medium">
                           Column
                         </th>
                         <th scope="col" className="text-start font-medium">

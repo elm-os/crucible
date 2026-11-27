@@ -115,7 +115,7 @@ export function RuleFormDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger className={className ?? "text-data"}>{label}</DialogTrigger>
       <DialogBackdrop />
-      <DialogContent className="w-full max-w-2xl">
+      <DialogContent className="w-[min(42rem,calc(100%_-_2rem))]">
         {open ? <RuleForm project={project} rule={rule} onSaved={() => setOpen(false)} /> : null}
       </DialogContent>
     </Dialog>
