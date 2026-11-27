@@ -225,9 +225,17 @@ pub enum Filter {
     Name(String),
 }
 
+/// The most values one member of a list filter takes: every value is a bound value of the read's statement.
+pub const MAX_FILTER_VALUES: usize = 100;
+
 /// The most tags a trace list filter tests. Each is resolved over the traces' tag edits with two sets of its own,
 /// about twenty bound values of the statement, and a ClickHouse request holds at most 1,000 values and settings.
 pub const TRACE_LIST_MAX_TAGS: usize = 20;
+
+/// The most values a trace list filter holds in all its members together ([`Filter::values`]). The trace list
+/// reads its heads and its span conditions in one statement, where each value is a bound value and each tag about
+/// twenty; above this a request could carry more fields than ClickHouse takes.
+pub const TRACE_LIST_MAX_VALUES: usize = 256;
 
 /// `tags` on the trace list: the trace's effective tags have one of `values` (contract 3.8). Effective tags are the
 /// head's ingest tags, plus the tags whose latest edit added them, minus those whose latest edit removed them. Per
@@ -315,6 +323,18 @@ impl Filter {
     /// The filter that keeps every row.
     pub const fn all() -> Self {
         Self::And(Vec::new())
+    }
+
+    /// The values the filter names: each text value, tag and metadata entry. Levels and observation types, whose
+    /// sets are small, and the name do not count.
+    pub fn values(&self) -> usize {
+        match self {
+            Self::And(operands) | Self::Or(operands) => operands.iter().map(Self::values).sum(),
+            Self::Not(operand) => operand.values(),
+            Self::Text(_, values) | Self::Tags(values) => values.len(),
+            Self::Metadata { .. } => 1,
+            Self::Level(_) | Self::ObservationType(_) | Self::Name(_) => 0,
+        }
     }
 
     /// The field of a condition; `None` for `And`, `Or` and `Not`.

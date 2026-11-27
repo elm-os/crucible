@@ -79,6 +79,9 @@ pub const READ_CODES: [(u32, ReadCodeClass); 10] = [
 /// A failed statement, before it is mapped to the error type of its method.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Failure {
+    /// The store did not send the statement: its request would carry `fields` fields, above
+    /// [`crate::render::FIELD_BUDGET`].
+    OverBudget { fields: usize },
     /// The server answered with an exception.
     Server { code: u32, message: String },
     /// The connection could not be opened, so no byte of the request was sent.
@@ -165,6 +168,10 @@ impl Failure {
                 code: None,
                 message,
             },
+            Self::OverBudget { fields } => InsertError::UnknownOutcome {
+                code: None,
+                message: over_budget(fields),
+            },
             Self::Timeout | Self::NoAnswer => InsertError::UnknownOutcome {
                 code: None,
                 message: "the insert deadline passed".to_owned(),
@@ -179,6 +186,8 @@ impl Failure {
             Self::Timeout => QueryError::Timeout,
             Self::NoAnswer => QueryError::Unavailable(NO_ANSWER.to_owned()),
             Self::Client(message) => QueryError::Internal(message),
+            // Too many values for one request: `query_too_broad`, as for too many ids (contract 12.3).
+            Self::OverBudget { .. } => QueryError::TooBroad,
         }
     }
 
@@ -189,8 +198,18 @@ impl Failure {
             Self::Timeout => StoreError::Unavailable("the statement deadline passed".to_owned()),
             Self::NoAnswer => StoreError::Unavailable(NO_ANSWER.to_owned()),
             Self::Client(message) => StoreError::Internal(message),
+            Self::OverBudget { fields } => StoreError::Internal(over_budget(fields)),
         }
     }
+}
+
+/// What a statement the store did not send because of its size reports.
+pub(crate) fn over_budget(fields: usize) -> String {
+    format!(
+        "the statement was not sent: its request would carry {fields} fields, above the store's budget of {}, \
+         and ClickHouse refuses more than its http_max_fields (default 1,000)",
+        crate::render::FIELD_BUDGET
+    )
 }
 
 /// The class of a failed insert by its server code and message (contract 5.6).
@@ -299,6 +318,16 @@ mod tests {
         assert_eq!(code(241), "query_memory_exceeded");
         assert_eq!(code(202), "telemetry_store_unavailable");
         assert_eq!(code(62), "internal_error");
+    }
+
+    /// A statement the store keeps back for its size fails as too broad, and says why.
+    #[test]
+    fn a_statement_above_the_budget_is_too_broad() {
+        let kept = Failure::OverBudget { fields: 1_031 };
+        assert_eq!(kept.clone().into_query(), QueryError::TooBroad);
+        assert!(
+            matches!(kept.into_store(), StoreError::Internal(message) if message.contains("1031 fields"))
+        );
     }
 
     #[test]

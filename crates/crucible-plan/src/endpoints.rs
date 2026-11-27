@@ -43,10 +43,10 @@ pub use mcp_metrics::{
 };
 pub use mcp_ops::{
     MCP_CHAIN_COLUMNS, MCP_CHAIN_LIMIT, MCP_LIST_MAX_LIMIT, MCP_OPERATION_COLUMNS, MCP_PEER_LIMIT,
-    McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey, mcp_client_versions,
-    mcp_error_breakdown, mcp_operation, mcp_operation_chain, mcp_operation_content,
-    mcp_operation_peers, mcp_operations, mcp_session_errors, mcp_sessions, mcp_user_errors,
-    mcp_users, subject_hash,
+    MCP_USER_ERRORS_PER_READ, McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey,
+    mcp_client_versions, mcp_error_breakdown, mcp_operation, mcp_operation_chain,
+    mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_session_errors, mcp_sessions,
+    mcp_user_errors, mcp_users, subject_hash,
 };
 pub use mcp_rollup::{
     mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_classes, mcp_inventory, mcp_servers,

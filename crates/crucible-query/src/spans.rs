@@ -122,10 +122,13 @@ impl Read<'_> {
         let mut counts: BTreeMap<SpanId, u64> = BTreeMap::new();
         if let (Some(trace), false) = (trace, spans.is_empty()) {
             let (scope, caller) = (self.ctx.scope, self.ctx.caller);
-            let plan = child_counts(scope, trace, &self.clamp, caller, &ids(spans));
-            for row in self.rows(plan).await? {
-                let f = Fields(row.values());
-                counts.insert(f.span_id(0)?, f.uint(1)?);
+            // One statement holds at most a list of `MAX_LIST` spans.
+            for parents in ids(spans).chunks(crucible_plan::MAX_LIST) {
+                let plan = child_counts(scope, trace, &self.clamp, caller, parents);
+                for row in self.rows(plan).await? {
+                    let f = Fields(row.values());
+                    counts.insert(f.span_id(0)?, f.uint(1)?);
+                }
             }
         }
         for child in recent.iter().filter(|span| span.lsn > state.watermark) {

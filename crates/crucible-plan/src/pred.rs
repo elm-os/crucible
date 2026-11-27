@@ -11,8 +11,11 @@ use crate::error::PlanError;
 use crate::literal::Literal;
 use crate::node::Aggregate;
 
-/// The longest `In` or `HasAny` list a plan may hold.
-pub const MAX_LIST: usize = 10_000;
+/// The longest `In` or `HasAny` list a plan may hold. Each value of a list is a bound value of the plan's statement
+/// and the renderer pads a list to the next power of two, while a ClickHouse request carries at most 1,000 values
+/// (`http_max_fields`); 512 leaves room for the project, the window, the rows that pending deletions hide and the
+/// settings. A longer list is read in chunks of this length, one statement each.
+pub const MAX_LIST: usize = 512;
 
 /// A comparison operator.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

@@ -6,13 +6,11 @@
 //! `filter/...` in an MCP tool's arguments.
 
 use crucible_api_types::ListFilter;
-use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_TAGS, TextField};
+pub use crucible_plan::MAX_FILTER_VALUES;
+use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_TAGS, TRACE_LIST_MAX_VALUES, TextField};
 use crucible_records::{Level, ObservationType};
 
 use crate::params::Params;
-
-/// The most values one filter member takes.
-pub const MAX_FILTER_VALUES: usize = 100;
 
 /// The list whose rows a filter selects, which decides the rules beyond the members' own: the trace list keeps a
 /// trace by its head and by the spans of one span table, the span list and search test each span.
@@ -64,8 +62,9 @@ fn parse_all<T: Copy>(
 
 /// The filter AST of a list filter for `list`: one condition per member that holds values, in a fixed order. A
 /// member with more than [`MAX_FILTER_VALUES`] values, or a metadata entry without `key=value`, is a problem; on
-/// the trace list so are more than [`TRACE_LIST_MAX_TAGS`] tags and conditions that its span tables cannot test
-/// together (`metadata` with `observation_type`). Every surface that takes the filter reports the same problems
+/// the trace list so are more than [`TRACE_LIST_MAX_TAGS`] tags, more than [`TRACE_LIST_MAX_VALUES`] values
+/// across the members, and conditions that its span tables cannot test together (`metadata` with
+/// `observation_type`). Every surface that takes the filter reports the same problems
 /// under the same member; every problem is reported at once.
 pub fn plan_filter(filter: &ListFilter, list: FilterList) -> Result<Filter, Vec<FilterProblem>> {
     let mut problems = Vec::new();
@@ -148,6 +147,31 @@ pub fn plan_filter(filter: &ListFilter, list: FilterList) -> Result<Filter, Vec<
                 message: format!(
                     "the trace list filters by at most {TRACE_LIST_MAX_TAGS} tags, each resolved over the \
                      traces' tag edits; filter by fewer tags"
+                ),
+            });
+        }
+        // Each member is within its own cap here, so the largest member names the problem.
+        let members = [
+            ("environment", filter.environment.as_ref()),
+            ("release", filter.release.as_ref()),
+            ("version", filter.version.as_ref()),
+            ("user_id", filter.user_id.as_ref()),
+            ("session_id", filter.session_id.as_ref()),
+            ("tags", filter.tags.as_ref()),
+            ("metadata", filter.metadata.as_ref()),
+        ];
+        let total = planned.values();
+        if total > TRACE_LIST_MAX_VALUES && problems.is_empty() {
+            let largest = members
+                .iter()
+                .max_by_key(|(_, values)| values.map_or(0, Vec::len))
+                .map_or("tags", |(member, _)| *member);
+            problems.push(FilterProblem {
+                member: largest,
+                code: "too_many_values",
+                message: format!(
+                    "the trace list filters by at most {TRACE_LIST_MAX_VALUES} values across its members, and \
+                     this filter holds {total}; filter by fewer values"
                 ),
             });
         }

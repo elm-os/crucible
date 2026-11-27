@@ -232,9 +232,9 @@ pub fn export_mcp_content(
     )
 }
 
-/// The candidate facts of the traces of a page in one fact table, about the traces themselves and about their
-/// spans, in no order: every column of the table, in the table's order. The window is over the facts'
-/// `target_time`.
+/// The candidate facts of some traces of a page (1 to [`MAX_LIST`]) in one fact table, about the traces themselves
+/// and about their spans, in no order: every column of the table, in the table's order. The window is over the
+/// facts' `target_time`.
 pub fn export_facts(
     scope: ProjectScope,
     window: TimeWindow,

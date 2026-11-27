@@ -184,15 +184,16 @@ impl Read<'_> {
             return Ok(roots);
         }
         let root_ids: BTreeSet<SpanId> = ids(&roots).into_iter().collect();
-        let rows = match trace {
-            Some(trace) => {
-                let parents: Vec<SpanId> = root_ids.iter().copied().collect();
-                let plan =
-                    spans_of_parents(scope, trace, &self.clamp, caller, &parents, room as u32);
-                self.rows(plan).await?
+        let mut rows = Vec::new();
+        if let Some(trace) = trace {
+            // One statement holds at most a list of `MAX_LIST` roots; each chunk's first `room` children in
+            // order hold the first `room` of all of them, which the merge below keeps.
+            let parents: Vec<SpanId> = root_ids.iter().copied().collect();
+            for chunk in parents.chunks(crucible_plan::MAX_LIST) {
+                let plan = spans_of_parents(scope, trace, &self.clamp, caller, chunk, room as u32);
+                rows.extend(self.rows(plan).await?);
             }
-            None => Vec::new(),
-        };
+        }
         let recent_children = entries
             .iter()
             .filter(|span| root_ids.contains(&span.summary.parent_span_id))
