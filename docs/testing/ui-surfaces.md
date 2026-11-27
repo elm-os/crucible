@@ -217,5 +217,4 @@ and requests nothing.
 - A deep link to a span below the loaded levels of a paged trace is not revealed; the panel says how to find it.
 - The account page, password change, ownership transfer, project members and project deletion have API routes and
   no pages.
-- The set-up steps on Home do not read data bounds or API keys.
 - Charts have no brush-to-zoom; the crosshair, the bucket slider and the table view cover reading values.

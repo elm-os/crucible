@@ -7,9 +7,24 @@ data is in the [REST API](../api/README.md#reading-traces).
 ## Home
 
 **Home** shows the project's activity over the time range: traces over time, spans and errors per bucket, span
-latency percentiles, and the totals of traces, spans, errors and the error rate, tokens and cost. A project that has
-received nothing yet shows the setup steps instead: send a first trace, instrument an MCP server, create an API key
-and invite your team.
+latency percentiles, and the totals of traces, spans, errors and the error rate, tokens and cost.
+
+The **Set up** card lists four steps, each marked **To do**, **Done** or **Couldn't check**:
+
+1. **Create an API key** is done once the project has a key that is neither revoked nor expired. Its link opens
+   **Settings**, **API keys**.
+2. **Send your first trace** is done once the project has spans inside its retention. Its link opens
+   [sending traces](sending-traces.md).
+3. **Instrument an MCP server** is done once the project has MCP operations from either side: an MCP server's SDK
+   wrapper or `crucible proxy`, or an agent's MCP client wrapper. Its link opens the [MCP overview](mcp.md).
+4. **Invite your team** is done once the organization has more than one member; an invitation counts once it is
+   accepted. Its link opens **Settings**, **Members**.
+
+On a project that has received no spans the card comes first, above the tiles; otherwise it comes after the
+charts, and it is gone once no step is left to do. A step the viewer cannot do says who does it instead: project
+admins create API keys, and organization owners and admins invite people. On a server without a control plane, the
+key step says the keys come from the keys file, and the invite step says how to turn on sign-in and members. When a
+step's read fails, or the data comes back incomplete, the step says **Couldn't check**, with **Check again**.
 
 ## Traces
 
