@@ -139,6 +139,8 @@ pub(crate) fn start(
         timeout: config.export_timeout,
         batch: Vec::new(),
         batch_bytes: 0,
+        traces_url: config.traces_url.clone(),
+        warned: false,
     };
     std::thread::Builder::new()
         .name("crucible-export".to_owned())
@@ -254,6 +256,9 @@ struct Worker {
     timeout: Duration,
     batch: Vec<SpanData>,
     batch_bytes: u64,
+    traces_url: String,
+    /// Whether a failed export was logged: only the first one is.
+    warned: bool,
 }
 
 impl Worker {
@@ -354,6 +359,17 @@ impl Worker {
             }
             Err(error) => {
                 Counters::add(&self.counters.failed, size);
+                // Once: a wrong key or endpoint fails every batch, and an application that never calls `flush`
+                // hears of it only here.
+                if !self.warned {
+                    self.warned = true;
+                    tracing::warn!(
+                        "crucible: could not send spans to {}: {error}; spans go to Options::endpoint, an OTLP \
+                         listener, with Options::secret_key, a secret key that has the ingest scope. \
+                         stats().failed counts the spans not sent; this warning is not repeated.",
+                        self.traces_url
+                    );
+                }
                 Err(FlushError(format!("the export failed: {error}")))
             }
         }

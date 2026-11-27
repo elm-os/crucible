@@ -8,6 +8,7 @@ import {
   Server,
 } from "@modelcontextprotocol/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import * as z from "zod/v4";
 import { flush, init, shutdown } from "../src/index.ts";
 import {
   type InstrumentOptions,
@@ -63,6 +64,11 @@ async function inMemory(
   await client.close();
   await flush();
   return collector.spans.filter((span) => span.attributes["mcp.method.name"] === "tools/call");
+}
+
+/** The recorded call of `tool`. */
+function callOf(tool: string): DecodedSpan | undefined {
+  return collector.spans.find((span) => span.attributes["gen_ai.tool.name"] === tool);
 }
 
 /** The attributes that differ between tool calls of one in-memory session. */
@@ -162,6 +168,51 @@ describe("content capture", () => {
   });
 });
 
+describe("tool inventory", () => {
+  test("a tools/list result records each listed tool's name and schemas", async () => {
+    const server = buildServer();
+    server.registerTool(
+      "report",
+      {
+        description: "Counts orders.",
+        inputSchema: z.object({ day: z.string() }),
+        outputSchema: z.object({ orders: z.number() }),
+      },
+      async () => ({ content: [], structuredContent: { orders: 3 } }),
+    );
+    const [clientSide, serverSide] = inMemoryPair();
+    await instrument(server).connect(serverSide);
+    const client = newClient("legacy");
+    await client.connect(clientSide);
+    const { tools } = await client.listTools();
+    await client.close();
+    await flush();
+    const listing = collector.spans.find(
+      (span) => span.attributes["mcp.method.name"] === "tools/list",
+    );
+    const inventory: unknown = JSON.parse(String(listing?.attributes["crucible.mcp.tools"]));
+    // Only what the inventory reads: the name, and the schemas its hash covers.
+    expect(inventory).toEqual(
+      tools.map(({ name, inputSchema, outputSchema }) => ({
+        name,
+        inputSchema,
+        ...(outputSchema !== undefined && { outputSchema }),
+      })),
+    );
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "echo",
+      "fail",
+      "throw",
+      "slow",
+      "secret",
+      "needs_input",
+      "lookup_order",
+      "report",
+    ]);
+    expect(tools.at(-1)?.outputSchema).toBeDefined();
+  });
+});
+
 describe("error marks", () => {
   test("markNotFound and markValidation refine a tool error; annotateError adds a subclass", async () => {
     const [missing, malformed, fail] = await inMemory({}, [
@@ -190,7 +241,103 @@ describe("error marks", () => {
       "error.type": "tool_error",
       "crucible.mcp.error.subclass": "business",
     });
-    expect([missing, malformed, fail].map((span) => span?.status.code)).toEqual([2, 2, 2]);
+    expect([missing, malformed, fail].map((span) => span?.status)).toEqual([
+      { code: 2, message: "no such order" },
+      { code: 2, message: "malformed order id" },
+      { code: 2, message: "order not found" },
+    ]);
+  });
+
+  test("arguments the MCP SDK refused and an unknown tool are the caller's fault", async () => {
+    const server = buildServer();
+    server.registerTool(
+      "report",
+      { inputSchema: z.object({}), outputSchema: z.object({ orders: z.number() }) },
+      // No structured content: the SDK refuses the result after the handler ran, which is the server's fault.
+      async () => ({ content: [{ type: "text", text: "3 orders" }] }),
+    );
+    const [clientSide, serverSide] = inMemoryPair();
+    await instrument(server).connect(serverSide);
+    const client = newClient("legacy");
+    await client.connect(clientSide);
+    const refused = await client.callTool({ name: "echo", arguments: { text: 42 } });
+    await client.callTool({ name: "cancel_order", arguments: {} }).catch(() => undefined);
+    await client.callTool({ name: "report", arguments: {} }).catch(() => undefined);
+    await client.close();
+    await flush();
+    expect(refused.isError).toBe(true);
+    // The SDK checked the arguments against the input schema before the handler ran.
+    expect(callAttributes(callOf("echo"))).toEqual({
+      "gen_ai.tool.name": "echo",
+      "crucible.mcp.result_type": "complete",
+      "crucible.mcp.content.blocks.text": 1n,
+      "error.type": "tool_error",
+      "rpc.response.status_code": "-32602",
+      "crucible.mcp.error.class": "validation",
+    });
+    expect(callAttributes(callOf("cancel_order"))).toEqual({
+      "gen_ai.tool.name": "cancel_order",
+      "error.type": "-32602",
+      "rpc.response.status_code": "-32602",
+      "crucible.mcp.error.class": "not_found",
+    });
+    expect(callAttributes(callOf("report"))).toEqual({
+      "gen_ai.tool.name": "report",
+      "crucible.mcp.result_type": "complete",
+      "crucible.mcp.content.blocks.text": 1n,
+      "error.type": "tool_error",
+    });
+    expect(callOf("echo")?.status.code).toBe(2);
+    expect(callOf("echo")?.status.message).toMatch(
+      /^Input validation error: Invalid arguments for tool echo: /,
+    );
+    expect(callOf("cancel_order")?.status).toEqual({
+      code: 2,
+      message: "Tool cancel_order not found",
+    });
+    expect(callOf("report")?.status).toEqual({
+      code: 2,
+      message:
+        "Output validation error: Tool report has an output schema but no structured content was provided",
+    });
+  });
+
+  test("a tool error's message is scrubbed and cut at 2 KiB", async () => {
+    const server = buildServer();
+    server.registerTool(
+      "refuse",
+      { inputSchema: z.object({ text: z.string() }) },
+      async ({ text }) => ({
+        content: [
+          { type: "image", data: "aGk=", mimeType: "image/png" },
+          { type: "text", text },
+        ],
+        isError: true,
+      }),
+    );
+    server.registerTool(
+      "crash",
+      { inputSchema: z.object({ text: z.string() }) },
+      async ({ text }) => {
+        throw new Error(text);
+      },
+    );
+    const [clientSide, serverSide] = inMemoryPair();
+    await instrument(server).connect(serverSide);
+    const client = newClient("legacy");
+    await client.connect(clientSide);
+    const secret = "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo";
+    await client.callTool({ name: "refuse", arguments: { text: `gateway refused ${secret}` } });
+    await client.callTool({ name: "crash", arguments: { text: `é${"x".repeat(5_000)}` } });
+    await client.close();
+    await flush();
+    // The first text block, after the image block.
+    expect(callOf("refuse")?.status).toEqual({
+      code: 2,
+      message: "gateway refused [redacted:secret_key]",
+    });
+    // The thrown error's message, cut at 2,048 bytes on a character boundary.
+    expect(callOf("crash")?.status).toEqual({ code: 2, message: `é${"x".repeat(2_046)}` });
   });
 });
 

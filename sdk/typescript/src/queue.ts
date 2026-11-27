@@ -28,6 +28,8 @@ export interface QueueOptions {
   flushIntervalMs: number;
   /** Bound on one export, and on the whole of `forceFlush` and `shutdown`. */
   timeoutMs: number;
+  /** Called after each failed export with the exporter's error, `undefined` when the export gave no answer in time. */
+  onFailure?: (error: unknown) => void;
 }
 
 /** Extra time an export may take beyond its own timeout before the queue stops waiting for it. */
@@ -183,7 +185,7 @@ export class QueueSpanProcessor implements SpanProcessor {
   #export(batch: ReadableSpan[]): Promise<void> {
     return new Promise((resolve) => {
       let settled = false;
-      const settle = (ok: boolean): void => {
+      const settle = (ok: boolean, error?: unknown): void => {
         if (settled) {
           return;
         }
@@ -193,6 +195,7 @@ export class QueueSpanProcessor implements SpanProcessor {
           this.#exported += batch.length;
         } else {
           this.#failed += batch.length;
+          this.#options.onFailure?.(error);
         }
         resolve();
       };
@@ -202,11 +205,11 @@ export class QueueSpanProcessor implements SpanProcessor {
         // The exporter's own HTTP request must not produce spans.
         context.with(suppressTracing(context.active()), () => {
           this.#exporter.export(batch, (result) =>
-            settle(result.code === ExportResultCode.SUCCESS),
+            settle(result.code === ExportResultCode.SUCCESS, result.error),
           );
         });
-      } catch {
-        settle(false);
+      } catch (error) {
+        settle(false, error);
       }
     });
   }

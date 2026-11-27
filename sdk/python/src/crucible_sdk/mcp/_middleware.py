@@ -139,6 +139,18 @@ def _block_type(block: object) -> object:
     return block.get("type") if isinstance(block, Mapping) else getattr(block, "type", None)
 
 
+def _first_text(result: object) -> str | None:
+    """The text of a tool result's first text block."""
+    content = _field(result, "content", "content")
+    if not isinstance(content, Sequence) or isinstance(content, str):
+        return None
+    for block in content:
+        if _block_type(block) == "text":
+            text = block.get("text") if isinstance(block, Mapping) else getattr(block, "text", None)
+            return text if isinstance(text, str) else None
+    return None
+
+
 class CrucibleMiddleware:
     """An mcp `ServerMiddleware` that enriches the built-in span; see `crucible_sdk.mcp.instrument`."""
 
@@ -381,10 +393,21 @@ class CrucibleMiddleware:
             attributes[_keys.MRTR_STATE_OUT] = mrtr_hash(key, state)
         if ctx.method == "tools/call":
             if _field(result, "isError", "is_error") is True:
+                tool = ctx.params.get("name") if isinstance(ctx.params, Mapping) else None
+                text = _first_text(result)
+                if text is not None:
+                    # The status message, which mcp's own middleware sets after this one returns, without it.
+                    _pipeline.note_tool_error(span.get_span_context().span_id, text)
+                refused = _seam.refusal(tool, text) if isinstance(tool, str) and text is not None else None
                 if operation.validation:
                     attributes[_keys.ERROR_CLASS] = "validation"
                 elif operation.not_found:
                     attributes[_keys.ERROR_CLASS] = "not_found"
+                elif refused is not None:
+                    # mcp answers a call it refused before the tool ran with an isError result; the -32602 that
+                    # stands for makes it the caller's fault (contract 9.2).
+                    attributes[_keys.RPC_STATUS_CODE] = str(INVALID_PARAMS)
+                    attributes[_keys.ERROR_CLASS] = refused
                 elif operation.subclass is not None:
                     attributes[_keys.ERROR_SUBCLASS] = operation.subclass
             content = _field(result, "content", "content")

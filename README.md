@@ -74,6 +74,7 @@ ClickHouse and Postgres, with no clone and no build:
 mkdir crucible && cd crucible
 curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.3/deploy/compose/compose.yaml
 printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
+echo 'CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1.3' >> .env
 docker compose up -d --wait
 ```
 

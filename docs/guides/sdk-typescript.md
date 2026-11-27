@@ -163,8 +163,8 @@ This `init` reads the endpoint and the key from `CRUCIBLE_ENDPOINT` and `CRUCIBL
 - The observation's `span` is the OpenTelemetry span, for keys the helpers do not set, such as
   `crucible.trace.tags` and `crucible.level`.
 
-[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which of these keys the trace views show
-on main. Two notes for agents: the views show the model from `responseModel`, while `model` alone prices a span but
+[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which of these keys the trace views show.
+Two notes for agents: the views show the model from `responseModel`, while `model` alone prices a span but
 is not shown; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that `withContext`
 sets.
 
