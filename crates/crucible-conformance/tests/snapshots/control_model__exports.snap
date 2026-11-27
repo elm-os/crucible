@@ -9,30 +9,33 @@ insert: ()
 insert a taken deduplication key: error UniqueViolation("export_jobs_dedup_key_key")
 insert a taken id: error UniqueViolation("export_jobs_pkey")
 insert for a missing project: error ForeignKeyViolation("export_jobs_project_id_fkey")
-get: Some("01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None")
+get: Some("01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None")
 get under another project: false
-get by deduplication key: Some("01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None")
+get by deduplication key: Some("01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None")
 get by deduplication key under another project: false
-list, newest first: ["01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None", "01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None", "01a3185c-512d-7000-8000-00000000012d:key-3 crucible-jsonl {\"n\":3} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None"]
-list, at most two: ["01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None", "01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None"]
+list, newest first: ["01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None", "01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None", "01a3185c-512d-7000-8000-00000000012d:key-3 crucible-jsonl {\"n\":3} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None"]
+list, at most two: ["01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None", "01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None"]
 count in the last ten minutes: 2
-get many, ordered by id: ["01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None", "01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None", "01a3185c-512e-7000-8000-00000000012e:key-4 otlp-json {\"n\":4} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None"]
+get many, ordered by id: ["01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None", "01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None", "01a3185c-512e-7000-8000-00000000012e:key-4 otlp-json {\"n\":4} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None"]
 get many of none: []
 claimed: (true, 1, "{}")
 progress: true
 progress of another attempt: false
-the claimed row: Some("01a3185c-512d-7000-8000-00000000012d:key-3 crucible-jsonl {\"n\":3} Pending attempts 1 lease true spans 10 bytes 1000 skipped 0 file None checksum None expires false error None")
+an attempt's message: true
+another attempt's message: false
+the claimed row: Some("01a3185c-512d-7000-8000-00000000012d:key-3 crucible-jsonl {\"n\":3} Pending attempts 1 lease true spans 10 bytes 1000 skipped 0 file None checksum None expires false error None last error Some(\"the telemetry store did not answer\")")
 commit of another attempt: false
 commit: true
 commit again: false
 fail after the commit: false
+an attempt's message after the commit: false
 complete: true
 claimed next: (true, 1)
 fail: true
 commit after the failure: false
-the failed row: Some("01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 1 lease true spans 0 bytes 0 skipped 0 file None checksum None expires false error Some(\"query_too_broad\")")
-expire before now: ["01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 1 lease true spans 0 bytes 0 skipped 0 file None checksum None expires true error Some(\"query_too_broad\")", "01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires true error None", "01a3185c-512d-7000-8000-00000000012d:key-3 crucible-jsonl {\"n\":3} Done attempts 1 lease false spans 12 bytes 1234 skipped 1 file Some(\"01a3185c-512d-7000-8000-00000000012d/01a3185c-5003-7000-8000-000000000003.1.jsonl\") checksum Some(\"abababababababababababababababababababababababababababababababab\") expires true error None"]
+the failed row: Some("01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 1 lease true spans 0 bytes 0 skipped 0 file None checksum None expires false error Some(\"query_too_broad\") last error Some(\"narrow the window\")")
+expire before now: ["01a3185c-512d-7000-8000-00000000012d:key-1 crucible-jsonl {\"n\":1} Pending attempts 1 lease true spans 0 bytes 0 skipped 0 file None checksum None expires true error Some(\"query_too_broad\") last error Some(\"narrow the window\")", "01a3185c-512d-7000-8000-00000000012d:key-2 otlp-json {\"n\":2} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires true error None last error None", "01a3185c-512d-7000-8000-00000000012d:key-3 crucible-jsonl {\"n\":3} Done attempts 1 lease false spans 12 bytes 1234 skipped 1 file Some(\"01a3185c-512d-7000-8000-00000000012d/01a3185c-5003-7000-8000-000000000003.1.jsonl\") checksum Some(\"abababababababababababababababababababababababababababababababab\") expires true error None last error Some(\"the telemetry store did not answer\")"]
 expire again: []
-project two is untouched: Some("01a3185c-512e-7000-8000-00000000012e:key-4 otlp-json {\"n\":4} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None")
+project two is untouched: Some("01a3185c-512e-7000-8000-00000000012e:key-4 otlp-json {\"n\":4} Pending attempts 0 lease false spans 0 bytes 0 skipped 0 file None checksum None expires false error None last error None")
 commit of export 4 after the expiry: true
 commit of export 2 after the expiry: false
