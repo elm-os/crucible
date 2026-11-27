@@ -68,7 +68,8 @@ nothing and cost almost nothing.
 ## Export never blocks the caller
 
 Finished spans go on a bounded queue that one goroutine exports in batches. When the queue is full a span is dropped
-and counted; ending a span never waits for the network. `crucible.CurrentStats()` returns the counters (`Exported`,
+and counted; ending a span never waits for the network. The first failed export after `Init` writes one line through
+the standard `log` package with Crucible's reason. `crucible.CurrentStats()` returns the counters (`Exported`,
 `QueueFull`, `ExportFailed`, `QueuedBytes`, and `FeedbackSent`, `FeedbackDropped`, `FeedbackFailed` for scores),
 `Flush` exports what has ended, sends the queued scores and returns the export error if there is one, else why the
 last score that was not sent failed, and `Shutdown` gives up on spans and scores still queued when its context ends.
