@@ -36,6 +36,7 @@ function item(fields: Partial<Export>): Export {
     checksum: "ab".repeat(32),
     expires_at: "2026-11-24T14:01:00.000000Z",
     download_path: DOWNLOAD,
+    attempts: 1,
     saturated: false,
     ...fields,
   };

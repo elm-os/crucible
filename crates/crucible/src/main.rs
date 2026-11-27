@@ -261,10 +261,12 @@ impl ConfigArgs {
         crucible_config::load(self.config.as_deref(), &self.flags())
     }
 
-    /// Loads the configuration for a command that runs, logging what looks like a mistake.
+    /// Loads the configuration for a command that runs, logging what looks like a mistake. `RUST_LOG` filters the
+    /// log ([`log_filter`]).
     fn load_for_run(&self) -> anyhow::Result<Config> {
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
+            .with_env_filter(log_filter().from_env_lossy())
             .init();
         let loaded = self.load()?;
         for warning in &loaded.warnings {
@@ -272,6 +274,13 @@ impl ConfigArgs {
         }
         Ok(loaded.config)
     }
+}
+
+/// The filter of the log, which reads its directives from `RUST_LOG`, for example `info,crucible_jobs=debug`.
+/// Unset or empty, the log holds info and above; a directive it cannot read is left out.
+fn log_filter() -> tracing_subscriber::filter::Builder {
+    tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
 }
 
 /// The disk backend the configuration names.
@@ -463,6 +472,17 @@ mod tests {
     use super::*;
 
     const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+    #[test]
+    fn rust_log_filters_the_log_and_info_is_the_default() {
+        use tracing_subscriber::filter::LevelFilter;
+        let most = |directives: &str| log_filter().parse_lossy(directives).max_level_hint();
+        assert_eq!(most(""), Some(LevelFilter::INFO));
+        assert_eq!(most("warn"), Some(LevelFilter::WARN));
+        assert_eq!(most("info,crucible_jobs=debug"), Some(LevelFilter::DEBUG));
+        // A directive that does not read leaves the default.
+        assert_eq!(most("crucible_jobs=loud"), Some(LevelFilter::INFO));
+    }
 
     #[test]
     fn cli_is_well_formed_and_prints_the_version() {

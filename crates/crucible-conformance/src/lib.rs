@@ -368,6 +368,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         "Reads leave column statistics unused (8.4)",
         statistics::statistics(&ctx)
     );
+    row!(
+        "An export of more than 1,000 spans in pages of 1,000 (8.7, 12.8)",
+        m2_export::large(&ctx)
+    );
     row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
     row!("ChModel differential: typed plans (2.6, 8.1)", async {
         let extra = differential::extra(&ctx).await?;

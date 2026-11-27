@@ -13,7 +13,7 @@
 #   CRUCIBLE_MASTER_KEY           64 hexadecimal characters, made once: openssl rand -hex 32
 #   CRUCIBLE_POSTGRES_URL         postgres://<user>:<password>@<host>:5432/<database>?sslmode=require (Postgres 15
 #                                 or newer): the control plane, which holds sign-in, projects, members and API keys
-#   CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT, CRUCIBLE_OTLP_HTTP_PORT  as in compose.yaml
+#   CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT, CRUCIBLE_OTLP_HTTP_PORT, RUST_LOG  as in compose.yaml
 # Then: docker compose -f compose.cloud.yaml up -d --wait, and create the owner as for compose.yaml.
 name: crucible-cloud
 
@@ -27,6 +27,8 @@ services:
       CRUCIBLE_CLICKHOUSE_PASSWORD: ${CRUCIBLE_CLICKHOUSE_PASSWORD:?set CRUCIBLE_CLICKHOUSE_PASSWORD in .env}
       CRUCIBLE_CLICKHOUSE_CLUSTER: ${CRUCIBLE_CLICKHOUSE_CLUSTER:-}
       CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (openssl rand -hex 32)}
+      # The filter of the server's log; unset, it holds info and above.
+      RUST_LOG: ${RUST_LOG:-}
       # The password goes in the URL; `crucible config print` shows it redacted.
       CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:?set CRUCIBLE_POSTGRES_URL in .env, for example postgres://<user>:<password>@<host>:5432/<database>?sslmode=require}
     # --migrate is idempotent, so it stays on: every start applies the steps that are missing.

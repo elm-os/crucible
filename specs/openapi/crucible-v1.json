@@ -12803,6 +12803,7 @@
           "spans",
           "skipped",
           "bytes",
+          "attempts",
           "saturated"
         ],
         "properties": {
@@ -12810,6 +12811,12 @@
             "type": "string",
             "format": "date-time",
             "description": "The arrival bound of its reads: only spans received at or before it are exported."
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The attempts the export job has made at writing the file; 0 before the first. A failed attempt is tried\nagain after a pause, up to 12 attempts.",
+            "minimum": 0
           },
           "bytes": {
             "$ref": "#/components/schemas/SafeU64",
@@ -12858,6 +12865,10 @@
             "type": "boolean",
             "description": "Whether spans with a field cut by a size cap are kept (`otlp-json`)."
           },
+          "last_error": {
+            "type": "string",
+            "description": "What went wrong in the latest failed attempt of a queued or running export, which a later attempt tries\nagain, or why a failed export ended: what happened and what to do."
+          },
           "saturated": {
             "type": "boolean",
             "description": "Whether a count was cut to 2^53 - 1."
@@ -12890,6 +12901,10 @@
           "user_id": {
             "type": "string",
             "description": "Only spans of this user."
+          },
+          "waited_secs": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "How long the export has waited for its file, in whole seconds since it was created, while it is queued or\nrunning."
           }
         }
       },

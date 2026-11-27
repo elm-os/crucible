@@ -113,6 +113,9 @@ pub fn export_dto(job: &ExportJob, now: Timestamp) -> Export {
         ),
         _ => None,
     };
+    let waiting = matches!(state, ExportState::Queued | ExportState::Running);
+    let waited =
+        u64::try_from(now.micros().saturating_sub(job.new.created_at.micros())).unwrap_or(0);
     Export {
         id: id.to_string(),
         format: format_to_wire(job.new.format),
@@ -132,6 +135,12 @@ pub fn export_dto(job: &ExportJob, now: Timestamp) -> Export {
         checksum: job.checksum.clone().filter(|_| state == ExportState::Ready),
         expires_at: job.expires_at.map(|t| t.to_string()),
         error_code,
+        attempts: job.attempts,
+        waited_secs: waiting.then(|| saturation.u64(waited / 1_000_000)),
+        last_error: job
+            .last_error
+            .clone()
+            .filter(|_| waiting || state == ExportState::Failed),
         download_path: (state == ExportState::Ready).then(|| {
             format!(
                 "{}/projects/{}/exports/{id}/download",

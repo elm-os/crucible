@@ -24,8 +24,8 @@ mod users;
 
 pub use data_bounds::{DataBoundsPlans, data_bounds};
 pub use export::{
-    EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, export_facts, export_mcp_content,
-    export_mcp_ops, export_payloads, export_spans, export_ties,
+    EXPORT_LOOKUP_SPANS, EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, export_facts,
+    export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
 };
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
@@ -43,10 +43,10 @@ pub use mcp_metrics::{
 };
 pub use mcp_ops::{
     MCP_CHAIN_COLUMNS, MCP_CHAIN_LIMIT, MCP_LIST_MAX_LIMIT, MCP_OPERATION_COLUMNS, MCP_PEER_LIMIT,
-    McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey, mcp_client_versions,
-    mcp_error_breakdown, mcp_operation, mcp_operation_chain, mcp_operation_content,
-    mcp_operation_peers, mcp_operations, mcp_session_errors, mcp_sessions, mcp_user_errors,
-    mcp_users, subject_hash,
+    MCP_USER_ERRORS_PER_READ, McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey,
+    mcp_client_versions, mcp_error_breakdown, mcp_operation, mcp_operation_chain,
+    mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_session_errors, mcp_sessions,
+    mcp_user_errors, mcp_users, subject_hash,
 };
 pub use mcp_rollup::{
     mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_classes, mcp_inventory, mcp_servers,

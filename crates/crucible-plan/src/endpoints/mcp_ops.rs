@@ -216,9 +216,13 @@ pub fn mcp_users(
     )
 }
 
-/// The failed operations of a page of users: `user_id`, `user_subject_hash`, then `count()`, one row per user
-/// of `users` with an error. The plan keeps every pair of the ids and hashes given; the caller matches the
-/// page's own pairs.
+/// The most users one [`mcp_user_errors`] names: two bound values each, beside the capture-source selection's
+/// server names and the rows that pending deletions hide. A page of users is read in chunks of this length.
+pub const MCP_USER_ERRORS_PER_READ: usize = 128;
+
+/// The failed operations of some users of a page (1 to [`MCP_USER_ERRORS_PER_READ`]): `user_id`,
+/// `user_subject_hash`, then `count()`, one row per user of `users` with an error. The plan keeps every pair of
+/// the ids and hashes given; the caller matches the page's own pairs.
 pub fn mcp_user_errors(
     scope: ProjectScope,
     window: TimeWindow,
@@ -232,6 +236,9 @@ pub fn mcp_user_errors(
     };
     if users.is_empty() {
         return Err(PlanError::Empty);
+    }
+    if users.len() > MCP_USER_ERRORS_PER_READ {
+        return Err(PlanError::Limit);
     }
     parts.push(errors());
     parts.push(Pred::In(

@@ -45,13 +45,21 @@
 use std::fmt::{self, Write as _};
 
 use crucible_plan::{
-    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DEFAULT_MAX_IDS, DeletePlan,
-    DeleteTarget, Direction, FieldRange, Fill, HourSplit, Literal, Measure, Node, Order,
-    PointLookup, Pred, ProbeKind, QueryPlan, Scan, SemiJoin, Step, TextSearch, TimeSeries,
-    TokenMode, pad_in_list,
+    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CLASS_FIXED_SETTINGS, ClassLimits, CmpOp,
+    DEFAULT_MAX_IDS, DeletePlan, DeleteTarget, Direction, FieldRange, Fill, HourSplit, Literal,
+    Measure, Node, Order, PointLookup, Pred, ProbeKind, QueryPlan, Scan, SemiJoin, Step,
+    TextSearch, TimeSeries, TokenMode, pad_in_list,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str};
 use crucible_schema::{ColumnRef, DATABASE, Ident, PROJECT_ID, TableDef, Ty, table};
+
+/// The most fields the request of one statement may carry ([`Statement::fields`]). A read's URL holds its output
+/// format, its query id and its settings, and its form body holds the statement text and one part per bound
+/// value; ClickHouse refuses a request whose URL fields, or whose form parts, number more than `http_max_fields`
+/// (default 1,000), before the statement starts. The store counts both together and refuses a statement above
+/// this budget before sending it, which keeps every request it sends under the server's default with room to
+/// spare.
+pub const FIELD_BUDGET: usize = 950;
 
 /// The byte cap of one `metadata_kv` item (contract 3.1).
 const METADATA_KV_CAP: usize = 1_024;
@@ -76,6 +84,15 @@ pub struct Statement {
     pub params: Vec<Param>,
     /// Settings the statement needs besides those of its class.
     pub settings: Vec<(&'static str, String)>,
+}
+
+impl Statement {
+    /// The fields of the request that sends the statement with `settings` beside its own: the statement text,
+    /// the query id, the output format, each bound value and each setting. The store refuses a statement above
+    /// [`FIELD_BUDGET`].
+    pub fn fields(&self, settings: &[(&str, String)]) -> usize {
+        3 + self.params.len() + self.settings.len() + settings.len()
+    }
 }
 
 impl fmt::Display for Statement {
@@ -988,6 +1005,63 @@ pub fn plan_on_replicas(plan: &QueryPlan, cluster: &Ident) -> Result<Statement, 
     let mut statement = b.finish(sql);
     every_replica(&mut statement, false);
     Ok(statement)
+}
+
+/// The settings every read carries besides its statement's own: the limits of its class and the fixed settings
+/// (contracts 8.4 and 8.5).
+pub fn class_settings(limits: ClassLimits) -> Vec<(&'static str, String)> {
+    let mut settings = vec![
+        (
+            "max_execution_time",
+            limits.max_execution_time_secs.to_string(),
+        ),
+        ("max_memory_usage", limits.max_memory_usage.to_string()),
+        ("max_threads", limits.max_threads.to_string()),
+    ];
+    if let Some(rows) = limits.max_rows_to_read {
+        settings.push(("max_rows_to_read", rows.to_string()));
+    }
+    if let Some(bytes) = limits.max_bytes_to_read {
+        settings.push(("max_bytes_to_read", bytes.to_string()));
+    }
+    settings.extend(
+        CLASS_FIXED_SETTINGS
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_owned())),
+    );
+    settings
+}
+
+/// The fields of the request that reads `plan` ([`Statement::fields`] with its class settings), on one server
+/// or, for a plan read on every replica, on a cluster, whichever is more. The store refuses a read above
+/// [`FIELD_BUDGET`] before it sends it.
+pub fn read_fields(plan: &QueryPlan) -> Result<usize, RenderError> {
+    let settings = class_settings(plan.limits());
+    let mut fields = self::plan(plan)?.fields(&settings);
+    if plan.every_replica() {
+        let cluster = Ident::new("cluster").map_err(|_| RenderError::Set)?;
+        fields = fields.max(plan_on_replicas(plan, &cluster)?.fields(&settings));
+    }
+    Ok(fields)
+}
+
+/// A short name of a plan for logs: its root node, the table that node reads and its class, such as
+/// `PointLookup(span_payload) in class export`.
+pub fn describe(plan: &QueryPlan) -> String {
+    let (kind, table) = match plan.root() {
+        Node::Scan(n) => ("Scan", n.table()),
+        Node::PointLookup(n) => ("PointLookup", n.table()),
+        Node::Aggregate(n) => ("Aggregate", n.table()),
+        Node::SemiJoin(n) => ("SemiJoin", n.left().table()),
+        Node::TextSearch(n) => ("TextSearch", n.table()),
+        Node::TimeSeries(n) => ("TimeSeries", n.aggregate().table()),
+        Node::FieldRange(n) => ("FieldRange", n.table()),
+    };
+    format!(
+        "{kind}({}) in class {}",
+        table.name(),
+        plan.class().as_str()
+    )
 }
 
 /// `FROM crucible.<table> WHERE <the probe's predicate>`.

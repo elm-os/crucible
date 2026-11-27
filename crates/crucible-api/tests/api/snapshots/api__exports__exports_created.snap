@@ -4,6 +4,7 @@ expression: "serde_json::to_string_pretty(&stable(created.body.clone())).unwrap(
 ---
 {
   "as_of": "<now>",
+  "attempts": 0,
   "bytes": 0,
   "created_at": "<now>",
   "format": "crucible-jsonl",
@@ -16,5 +17,6 @@ expression: "serde_json::to_string_pretty(&stable(created.body.clone())).unwrap(
   "spans": 0,
   "state": "queued",
   "to": "2026-11-17T10:00:00.000000Z",
-  "trace_count": 0
+  "trace_count": 0,
+  "waited_secs": 0
 }

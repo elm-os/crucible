@@ -76,6 +76,13 @@ pub(crate) struct ExportView {
     /// Why a failed export ended without a file; `query_timeout`, `query_memory_exceeded`, `query_too_broad`
     /// and `export_too_large` mean: narrow the window or the selection.
     error_code: Option<String>,
+    /// The attempts made at writing the file; a failed attempt is tried again after a pause, up to 12.
+    attempts: u32,
+    /// Seconds since the export was created, while it is queued or running.
+    waited_secs: Option<u64>,
+    /// What went wrong in the latest failed attempt of a queued or running export, or why a failed export
+    /// ended: what happened and what to do.
+    last_error: Option<String>,
     /// The REST path of the download (GET with the same key), once it is ready.
     download_path: Option<String>,
     /// When it was created, RFC 3339.
@@ -108,6 +115,9 @@ pub(crate) fn view(exports: &Exports, job: &ExportJob) -> ExportView {
         checksum: dto.checksum,
         expires_at: dto.expires_at,
         error_code: dto.error_code,
+        attempts: dto.attempts,
+        waited_secs: dto.waited_secs.map(|secs| secs.get()),
+        last_error: dto.last_error,
         download_path: dto.download_path,
         created_at: dto.created_at,
     }

@@ -528,22 +528,24 @@ impl QueryService {
         users.truncate(limit as usize);
         if !users.is_empty() {
             let keys: Vec<McpUserKey> = users.iter().map(|u| u.key.clone()).collect();
-            let plan = mcp_user_errors(
-                ctx.scope,
-                query.window,
-                &read.clamp,
-                ctx.caller,
-                &mcp,
-                &keys,
-            );
             let mut errors: BTreeMap<McpUserKey, u64> = BTreeMap::new();
-            for row in read.rows(plan).await? {
-                let f = fields(&row);
-                let key = McpUserKey {
-                    user_id: f.text(0)?.to_string(),
-                    subject_hash: f.hash16(1)?.unwrap_or([0; 16]),
-                };
-                errors.insert(key, f.uint(2)?);
+            for chunk in keys.chunks(crucible_plan::MCP_USER_ERRORS_PER_READ) {
+                let plan = mcp_user_errors(
+                    ctx.scope,
+                    query.window,
+                    &read.clamp,
+                    ctx.caller,
+                    &mcp,
+                    chunk,
+                );
+                for row in read.rows(plan).await? {
+                    let f = fields(&row);
+                    let key = McpUserKey {
+                        user_id: f.text(0)?.to_string(),
+                        subject_hash: f.hash16(1)?.unwrap_or([0; 16]),
+                    };
+                    errors.insert(key, f.uint(2)?);
+                }
             }
             for user in &mut users {
                 user.errors = errors.get(&user.key).copied().unwrap_or(0);
