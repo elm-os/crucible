@@ -305,12 +305,18 @@ impl McpRead<'_> {
     }
 }
 
-/// The step of an MCP time series over `window`: the finest that gives at most [`METRICS_MAX_BUCKETS`]
-/// buckets, else a week.
+/// The most buckets an MCP time series is drawn with: enough for detail, few enough that each bar and each
+/// stretch of line can be read (a day in quarter hours, a week in hours).
+pub const MCP_SERIES_READABLE_BUCKETS: u64 = 200;
+
+/// The step of an MCP time series over `window`: the finest that gives at most
+/// [`MCP_SERIES_READABLE_BUCKETS`] buckets (never more than [`METRICS_MAX_BUCKETS`]), else a week. Percentiles
+/// come from the merged histograms of each bucket, so a wider step is still exact.
 pub fn mcp_series_step(window: TimeWindow) -> Step {
+    let cap = MCP_SERIES_READABLE_BUCKETS.min(METRICS_MAX_BUCKETS);
     Step::ALL
         .into_iter()
-        .find(|step| step.buckets(window).1 <= METRICS_MAX_BUCKETS)
+        .find(|step| step.buckets(window).1 <= cap)
         .unwrap_or(Step::Week)
 }
 
@@ -459,7 +465,7 @@ mod tests {
             .unwrap()
         };
         assert_eq!(mcp_series_step(window(3_600_000_000)), Step::Minute);
-        assert_eq!(mcp_series_step(window(day)), Step::FiveMinutes);
+        assert_eq!(mcp_series_step(window(day)), Step::FifteenMinutes);
         assert_eq!(mcp_series_step(window(7 * day)), Step::Hour);
         assert_eq!(mcp_series_step(window(30 * day)), Step::Day);
     }

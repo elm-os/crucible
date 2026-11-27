@@ -1,12 +1,18 @@
 import { describe, expect, test } from "vitest";
 import {
+  barPath,
   bucketTimes,
   chartModel,
   MARKER_NAMES,
   markerIndexes,
+  mergeBuckets,
+  mergeFactor,
+  minStep,
   nearestBucket,
+  regularize,
   seriesStyle,
   tableRows,
+  timeTickFormat,
 } from "./chart-model";
 
 const LAYOUT = { width: 400, height: 100, top: 0, right: 0, bottom: 0, left: 0 };
@@ -92,5 +98,86 @@ describe("the chart model", () => {
     expect(spread).toHaveLength(12);
     expect(spread[0]).toBe(0);
     expect(spread.at(-1)).toBe(287);
+  });
+});
+
+describe("readable buckets", () => {
+  const step = MINUTE;
+  const sparse = {
+    id: "p50",
+    label: "p50",
+    points: [
+      { t: T0, v: 5 },
+      { t: T0 + 3 * step, v: 7 },
+    ],
+  };
+
+  test("a bucket the server left out becomes null, so a line breaks instead of joining across the gap", () => {
+    expect(regularize([sparse], { step })[0]?.points.map((p) => p.v)).toEqual([5, null, null, 7]);
+  });
+
+  test("a missing bucket of a count is zero", () => {
+    expect(regularize([sparse], { step, zero: true })[0]?.points.map((p) => p.v)).toEqual([
+      5, 0, 0, 7,
+    ]);
+  });
+
+  test("without a known width, the smallest gap between buckets is the width", () => {
+    expect(minStep([T0, T0 + 2 * step, T0 + 3 * step])).toBe(step);
+    expect(minStep([T0])).toBeNull();
+  });
+
+  test("buckets that are not on one grid are left as they are", () => {
+    const offGrid = {
+      id: "x",
+      label: "x",
+      points: [
+        { t: T0, v: 1 },
+        { t: T0 + step + 1, v: 2 },
+      ],
+    };
+    expect(regularize([offGrid], { step })[0]?.points).toHaveLength(2);
+  });
+
+  test("thin bars merge into a whole clock interval, and wide ones stay", () => {
+    // 288 five-minute buckets across 1,100 px would be under 4 px each: 30-minute bars instead.
+    expect(mergeFactor(288, 1_100, 5 * step)).toBe(6);
+    expect(mergeFactor(24, 540, 60 * step)).toBe(1);
+  });
+
+  test("merged buckets add up and start on the clock", () => {
+    const at = Date.parse("2026-11-17T09:05:00Z");
+    const calls = {
+      id: "calls",
+      label: "Calls",
+      points: [
+        { t: at, v: 1 },
+        { t: at + 5 * step, v: 2 },
+        { t: at + 30 * step, v: 4 },
+      ],
+    };
+    expect(mergeBuckets([calls], 6, 5 * step)[0]?.points).toEqual([
+      { t: Date.parse("2026-11-17T09:00:00Z"), v: 3 },
+      { t: Date.parse("2026-11-17T09:30:00Z"), v: 4 },
+    ]);
+  });
+
+  test("a bar is rounded at its data end and square at the baseline, and an empty one draws nothing", () => {
+    const d = barPath(10, 20, 8, 100, 4);
+    expect(d.startsWith("M10,100")).toBe(true);
+    expect(d).toContain("Q10,20 14,20");
+    expect(barPath(10, 100, 8, 100)).toBe("");
+  });
+
+  test("time ticks read as clock times within a day and as dates beyond it", () => {
+    expect(timeTickFormat(24 * 3_600_000)(T0)).toContain(":");
+    expect(timeTickFormat(7 * 24 * 3_600_000)(T0)).not.toContain(":");
+  });
+
+  test("the range form puts each bucket inside its own slot, as bars do", () => {
+    const model = chartModel([spans], LAYOUT, "range");
+    expect(model.x(new Date(T0))).toBe(0);
+    expect(model.step).toBeGreaterThan(0);
+    expect(model.paths).toHaveLength(1);
   });
 });

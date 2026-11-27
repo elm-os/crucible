@@ -54,6 +54,17 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and the guides to sending traces and to instrumenting an MCP server.
 - The Home Set up card comes first on a project that has received no data, and it is hidden once every step is done
   or is one the viewer can't do.
+- The web UI's charts are drawn at the size they are shown, so axis labels stay at the label size on a wide chart
+  and on a phone. A day or a week is drawn in hours and a month in days; bars have rounded ends, are at most 24 px
+  wide, and are added together into whole clock intervals (15 minutes, 30 minutes, an hour) when they would be too
+  thin; an empty bucket of a count is zero; and lines break where there is no data instead of drawing across it.
+- Hovering or focusing a chart shows each series' value for that bucket in a tooltip beside the pointer, and the arrow
+  keys, Home and End step through the buckets; the slider under each chart is gone. The duration axis reads in round
+  units ("20 s", "1 min").
+- An MCP tool's latency percentiles are drawn as one range per bucket, from p50 to p99 with p90 marked, which stays
+  readable when a bucket holds a few calls.
+- MCP time series use at most 200 buckets: a day in quarter hours and a week in hours. A day was 288 five-minute
+  buckets.
 
 ## [0.1.3] - 2026-11-26
 
