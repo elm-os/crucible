@@ -110,6 +110,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The span panel's Input and Output tabs say "The input was cut at the size limit, so it shows as text." only for a
   field the span reports as cut, and label other text "Text". In 0.1.3 every text value carried a notice that it
   might be JSON cut at the size limit.
+- The trace page's timeline fits its card beside the span panel: its columns follow the timeline's own width instead
+  of the window's. In 0.1.3 the Duration column was cut off in a window 1024 px wide.
 
 ## [0.1.3] - 2026-11-26
 
