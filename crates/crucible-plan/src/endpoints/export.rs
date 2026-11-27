@@ -25,7 +25,8 @@ pub const EXPORT_LOOKUP_SPANS: usize = MAX_LIST / 4;
 /// What an export reads besides its window: every condition given must hold.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ExportSelection<'a> {
-    /// Only these traces; every trace when empty. At most [`MAX_LIST`].
+    /// Only these traces; every trace when empty. At most [`MAX_LIST`] in one plan: a longer list of traces is
+    /// read with one plan per chunk of [`MAX_LIST`] traces.
     pub trace_ids: &'a [TraceId],
     /// Only spans of this user.
     pub user_id: Option<&'a str>,

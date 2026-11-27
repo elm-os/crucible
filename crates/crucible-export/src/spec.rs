@@ -1,7 +1,6 @@
 //! What an export reads and how it writes: the selector and the options, as the job row stores them (JSON text,
 //! opaque to the control store).
 
-use crucible_plan::MAX_LIST;
 use crucible_query::ExportQuery;
 use crucible_records::{TimeWindow, Timestamp, TraceId};
 use serde::{Deserialize, Serialize};
@@ -20,8 +19,8 @@ pub struct Selector {
     pub session_id: Option<String>,
 }
 
-/// The most trace ids one selector names.
-pub const MAX_TRACE_IDS: usize = MAX_LIST;
+/// The most trace ids one selector names. The reads take them a chunk of `crucible_plan::MAX_LIST` at a time.
+pub const MAX_TRACE_IDS: usize = 10_000;
 
 /// How an export is written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
