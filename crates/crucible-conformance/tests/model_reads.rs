@@ -757,6 +757,49 @@ fn reads_and_maintenance_fail_as_unavailable_under_an_outage_or_the_read_fault()
     });
 }
 
+/// A read whose request the store would not send, because ClickHouse refuses it at its default limits, is refused
+/// as too broad (contract 2.6: the model is never more permissive than the store): more fields than the store's
+/// budget, or a value longer than a field holds. A read of the same shape within both runs.
+#[test]
+fn a_read_the_store_would_not_send_is_too_broad() {
+    block_on(async {
+        let model = model(19, 0);
+        insert(&model, ops(project(1), 1, T0), 1, T0).await;
+        let read = |pred: Pred| {
+            let scan = Scan::new(TableId::McpOps, [McpOpsCol::DurationUs], pred).unwrap();
+            plan(project(1), QueryClass::List, Node::Scan(scan))
+        };
+        // One bound value per comparison.
+        let compared = |n: u64| {
+            read(Pred::Or(
+                (0..n)
+                    .map(|n| Pred::cmp(McpOpsCol::DurationUs, CmpOp::Eq, n))
+                    .collect(),
+            ))
+        };
+        assert!(model.read(&compared(900)).is_ok());
+        assert!(matches!(
+            model.read(&compared(951)),
+            Err(QueryError::TooBroad)
+        ));
+        assert!(matches!(
+            model.execute(compared(951)).await,
+            Err(QueryError::TooBroad)
+        ));
+        let user = |len: usize| {
+            read(Pred::In(
+                McpOpsCol::UserId.column_ref(),
+                vec![crucible_plan::Literal::String("u".repeat(len))],
+            ))
+        };
+        assert!(model.read(&user(100_000)).is_ok());
+        assert!(matches!(
+            model.read(&user(131_072)),
+            Err(QueryError::TooBroad)
+        ));
+    });
+}
+
 /// The query-class guardrails (contract 8.4): a read above a limit its plan carries is refused with the class
 /// of error a server answers, and a read at the limit runs.
 #[test]
