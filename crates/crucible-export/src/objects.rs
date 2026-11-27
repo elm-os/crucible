@@ -326,6 +326,7 @@ mod tests {
             checksum: None,
             expires_at: None,
             error: None,
+            last_error: None,
         }
     }
 

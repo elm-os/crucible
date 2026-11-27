@@ -725,6 +725,16 @@ impl ClickHouseStore {
         if fields > render::FIELD_BUDGET {
             return Err(Failure::OverBudget { fields });
         }
+        Ok(self.query_past_budget(identity, statement, settings))
+    }
+
+    /// [`ClickHouseStore::query`] whatever the statement's size.
+    pub(crate) fn query_past_budget(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        settings: &[(&str, String)],
+    ) -> (Uuid, clickhouse::query::Query) {
         let query_id = self.inner.env.new_id();
         let mut query = self.clients().by_identity[slot(identity)]
             .query_raw(&statement.sql)
@@ -738,7 +748,7 @@ impl ClickHouseStore {
         for (name, value) in &statement.settings {
             query = query.with_setting(*name, value.as_str());
         }
-        Ok((query_id, query))
+        (query_id, query)
     }
 
     /// Runs a statement that returns nothing.

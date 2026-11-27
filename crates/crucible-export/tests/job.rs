@@ -2,7 +2,9 @@
 //! leaves no partial file under a final name, and the export resumes on the restarted node, which commits one
 //! complete file whose checksum the row records; the sweep then leaves only that file. Also: a deletion's purge
 //! expires the export and removes its file, the API service's rate limit and `Idempotency-Key`, and, with an
-//! object store, a file that is an object any node hands out a link to, which expiry and purge remove.
+//! object store, a file that is an object any node hands out a link to, which expiry and purge remove. A read the
+//! store refuses ends the export at once with a message that says what to change, and a failed attempt that a
+//! later one repeats leaves its message on the row.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -70,6 +72,8 @@ struct Spans {
     base: Timestamp,
     /// How long each span's name is: 400 characters, or more for an export of several multipart parts.
     name_len: usize,
+    /// The error every read fails with, for a store that refuses or does not answer.
+    refuse: Option<QueryError>,
 }
 
 impl Spans {
@@ -139,6 +143,9 @@ impl TelemetryStore for Spans {
         })
     }
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
+        if let Some(error) = &self.refuse {
+            return Err(error.clone());
+        }
         let blocks = RowBlock::split(self.page(&plan)).into_iter().map(Ok);
         Ok(RowStream::new(
             Uuid::from_bytes([1; 16]),
@@ -232,6 +239,7 @@ fn start(
         Spans {
             base,
             name_len: 400,
+            refuse: None,
         },
         objects,
     )
@@ -481,6 +489,92 @@ fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
         assert_eq!(names, vec![recorded], "crash after {crash_after} ops");
         left
     })
+}
+
+/// The row of an export whose every read fails with `refusal`, a minute after it was created.
+fn refused(refusal: QueryError) -> (ExportJob, ExportState) {
+    crucible_sim::run(7, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        model.projects().insert(&project()).await.unwrap();
+        let now = database.clock.wall_now();
+        let base = now.saturating_add_micros(-600_000_000);
+        let selector = Selector {
+            window: TimeWindow::new(base, now).unwrap(),
+            trace_ids: Vec::new(),
+            user_id: None,
+            session_id: None,
+        };
+        let id = ExportJobId::from_bytes([0x0e; 16]);
+        let new = NewExport {
+            id,
+            project_id: PROJECT,
+            format: ExportFormat::CrucibleJsonl,
+            selector: selector.to_text(),
+            options: Options::default().to_text(),
+            dedup_key: id.to_string(),
+            created_by: "user:test".to_owned(),
+            created_at: now,
+            as_of: now,
+        };
+        model.export_jobs().insert(&new).await.unwrap();
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let spans = Spans {
+            base,
+            name_len: 400,
+            refuse: Some(refusal),
+        };
+        let running = start_over(&host, &model, spans, None);
+        database.clock.sleep(Duration::from_secs(60)).await;
+        let job = row(&model, id).await;
+        let state = ExportState::of(&job, host.env.clock.wall_now());
+        drop(running);
+        host.stop().await;
+        (job, state)
+    })
+}
+
+#[test]
+fn a_refused_read_ends_the_export_at_once_with_what_to_change() {
+    // ClickHouse refuses a request with more fields than its http_max_fields as too broad, as the store does
+    // with a statement above its field budget: the same read is refused on every attempt.
+    let (job, state) = refused(QueryError::TooBroad);
+    assert_eq!(state, ExportState::Failed);
+    assert_eq!(job.attempts, 1);
+    assert_eq!(job.error.as_deref(), Some("query_too_broad"));
+    let message = job.last_error.unwrap();
+    assert!(
+        message.contains("narrow the window") && message.contains("http_max_fields"),
+        "{message}"
+    );
+    let (job, state) = refused(QueryError::Timeout);
+    assert_eq!((state, job.attempts), (ExportState::Failed, 1));
+    assert_eq!(job.error.as_deref(), Some("query_timeout"));
+}
+
+#[test]
+fn a_failed_attempt_leaves_its_message_and_a_later_attempt_tries_again() {
+    // Backoffs of 5, 10 and 20 s: a minute holds several attempts, and the row stays queued between them.
+    let (job, state) = refused(QueryError::Unavailable("ch-1:8123 refused".to_owned()));
+    assert!(
+        matches!(state, ExportState::Queued | ExportState::Running),
+        "{state:?}"
+    );
+    assert!(job.attempts > 1, "{} attempts", job.attempts);
+    assert_eq!(job.error, None);
+    assert_eq!(
+        job.last_error.as_deref(),
+        Some("the telemetry store did not answer a read of the export")
+    );
+    let (job, _) = refused(QueryError::Internal("a row of the wrong shape".to_owned()));
+    assert_eq!(job.error, None);
+    let message = job.last_error.unwrap();
+    // The store's own text stays in the server log.
+    assert!(!message.contains("wrong shape"), "{message}");
 }
 
 #[test]
@@ -868,6 +962,7 @@ fn a_throttled_store_ends_with_one_whole_object() {
         let spans = Spans {
             base,
             name_len: 4_000,
+            refuse: None,
         };
         let _running = start_over(&host, &model, spans, Some(&objects));
         let mut done = None;

@@ -109,9 +109,10 @@ impl ClaimRunner {
         let retry_at = self
             .db_now(&claim, asked)
             .saturating_add_micros(duration_micros(delay));
-        tracing::debug!(
-            job = self.name, id = %claim.id, attempt = claim.attempt, reason, retry_in = ?delay,
-            "the attempt failed"
+        tracing::warn!(
+            job = self.name, queue = %self.queue, id = %claim.id, attempt = claim.attempt,
+            max_attempts = self.policy.max_attempts, reason, retry_in = ?delay,
+            "the attempt failed; the row is tried again after the pause"
         );
         if let Err(error) = self.store.claims().fail(&claim, retry_at).await {
             tracing::debug!(job = self.name, id = %claim.id, %error, "recording the failure failed");

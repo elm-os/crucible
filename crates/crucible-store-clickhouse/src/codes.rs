@@ -76,6 +76,13 @@ pub const READ_CODES: [(u32, ReadCodeClass); 10] = [
     (394, ReadCodeClass::Unavailable),
 ];
 
+/// `POCO_EXCEPTION`: the code of every exception of the server's HTTP layer, which the message tells apart.
+pub const POCO_EXCEPTION: u32 = 1_000;
+
+/// The message of the server's refusal of a request with more URL fields or form parts than its `http_max_fields`
+/// (default 1,000). The statement never started, and the same request is refused again.
+pub const TOO_MANY_FIELDS_MESSAGE: &str = "Too many form fields";
+
 /// A failed statement, before it is mapped to the error type of its method.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Failure {
@@ -212,6 +219,11 @@ pub(crate) fn over_budget(fields: usize) -> String {
     )
 }
 
+/// Whether a server refused a request for carrying more fields than its `http_max_fields`.
+pub(crate) fn too_many_fields(code: u32, message: &str) -> bool {
+    code == POCO_EXCEPTION && message.contains(TOO_MANY_FIELDS_MESSAGE)
+}
+
 /// The class of a failed insert by its server code and message (contract 5.6).
 pub fn classify_insert(code: u32, message: String) -> InsertError {
     let class = if code == 252 && message.contains(TOO_MANY_PARTITIONS_MESSAGE) {
@@ -233,8 +245,18 @@ pub fn classify_insert(code: u32, message: String) -> InsertError {
     }
 }
 
-/// The class of a failed read by its server code (contract 5.6, read guardrails).
+/// The class of a failed read by its server code (contract 5.6, read guardrails). A request with more fields than
+/// the server's `http_max_fields` is too broad: it never started, and the same request is refused again, so it is
+/// never retried.
 pub fn classify_read(code: u32, message: String) -> QueryError {
+    if too_many_fields(code, &message) {
+        tracing::warn!(
+            code,
+            message,
+            "ClickHouse refused a read before it started: the request carries more fields than the server's              http_max_fields allows. The read fails as query_too_broad and is not tried again. Set http_max_fields              to at least 1000, its default, in the default profile of ClickHouse and restart ClickHouse"
+        );
+        return QueryError::TooBroad;
+    }
     match READ_CODES.iter().find(|(known, _)| *known == code) {
         Some((_, ReadCodeClass::TooBroad)) => QueryError::TooBroad,
         Some((_, ReadCodeClass::Timeout)) => QueryError::Timeout,
@@ -318,6 +340,28 @@ mod tests {
         assert_eq!(code(241), "query_memory_exceeded");
         assert_eq!(code(202), "telemetry_store_unavailable");
         assert_eq!(code(62), "internal_error");
+    }
+
+    /// A request with more fields than `http_max_fields` is refused before the statement starts, and the same
+    /// request is refused again: too broad, never retried. The HTTP layer's other exceptions share the code.
+    #[test]
+    fn too_many_form_fields_is_too_broad() {
+        // The answer of ClickHouse 26.3 to a read with 1,001 bound values.
+        let refused = "Poco::Exception. Code: 1000, e.code() = 0, HTML Form Exception: Too many form fields                        (version 26.3.66.4 (official build))";
+        assert_eq!(parse_code(refused), Some(POCO_EXCEPTION));
+        assert_eq!(
+            Failure::Server {
+                code: POCO_EXCEPTION,
+                message: refused.to_owned(),
+            }
+            .into_query(),
+            QueryError::TooBroad
+        );
+        let reset = "Poco::Exception. Code: 1000, e.code() = 104, Connection reset by peer";
+        assert_eq!(
+            classify_read(POCO_EXCEPTION, reset.to_owned()).problem_code(),
+            "internal_error"
+        );
     }
 
     /// A statement the store keeps back for its size fails as too broad, and says why.

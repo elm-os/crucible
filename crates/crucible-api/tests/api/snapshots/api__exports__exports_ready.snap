@@ -4,6 +4,7 @@ expression: "serde_json::to_string_pretty(&stable(read.body.clone())).unwrap()"
 ---
 {
   "as_of": "<now>",
+  "attempts": 1,
   "bytes": 150,
   "checksum": "97a13af250db951f6a5ee7011130753b5c0e13eaad9d7723df00947fbab6d159",
   "created_at": "<now>",

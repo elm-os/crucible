@@ -853,6 +853,10 @@ pub struct ExportJob {
     pub expires_at: Option<Timestamp>,
     /// Why the export ended without a file, when it did.
     pub error: Option<String>,
+    /// What went wrong in the latest attempt that failed, as a message that says what happened and, where a
+    /// person can change it, what to do: the reason of a failed export, or of an attempt that a later one
+    /// repeats. Never the store's own text.
+    pub last_error: Option<String>,
 }
 
 /// What a committed export holds (contract 12.8).
