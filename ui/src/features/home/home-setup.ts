@@ -127,12 +127,14 @@ export interface SetupStep {
 export type Placement = "first" | "last" | "hidden";
 
 // The card shows once a step is known to be left or couldn't be checked, so a set-up project never
-// flashes it, and it leads while the project has no data.
+// flashes it, and it leads while the project has no data. Where it sits turns on that data, so it
+// waits for the answer and never moves once shown.
 export function placement(steps: readonly Pick<SetupStep, "id" | "state">[]): Placement {
+  const trace = steps.find((step) => step.id === "first-trace")?.state.status;
+  if (trace === "checking") return "hidden";
   const open = steps.some(({ state }) => state.status === "todo" || state.status === "unknown");
   if (!open) return "hidden";
-  const trace = steps.find((step) => step.id === "first-trace");
-  return trace?.state.status === "todo" ? "first" : "last";
+  return trace === "todo" ? "first" : "last";
 }
 
 export function useSetupSteps(project: string): SetupStep[] {

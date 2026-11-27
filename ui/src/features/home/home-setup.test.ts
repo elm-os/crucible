@@ -245,6 +245,11 @@ describe("where the card sits", () => {
     expect(placement(steps(CHECKING, DONE, DONE, CHECKING))).toBe("hidden");
   });
 
+  test("hidden until the project's data is known, so it never moves once shown", () => {
+    expect(placement(steps(TODO, CHECKING, CHECKING, TODO))).toBe("hidden");
+    expect(placement(steps(UNKNOWN, CHECKING, CHECKING, DONE))).toBe("hidden");
+  });
+
   test("first while the project has no data, whatever else is known", () => {
     expect(placement(steps(CHECKING, TODO, TODO, CHECKING))).toBe("first");
     expect(placement(steps(DONE, TODO, TODO, DONE))).toBe("first");

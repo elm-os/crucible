@@ -478,6 +478,23 @@ describe("where the set-up card sits", () => {
     expect(precedes(section("Set up"), section("Traces"))).toBe(true);
   });
 
+  test("steps left before the data bounds answer wait for them, so the card never moves", async () => {
+    signIn();
+    const { promise: held, resolve: land } = Promise.withResolvers<Response>();
+    serve({
+      bounds: () => held,
+      keys: () => json({ data: [] }),
+      members: () => json({ data: [member()] }),
+    });
+    renderHome();
+    await settled(["/data-bounds", "/api-keys", "/org/members"]);
+    expect(setupRegion()).toBeNull();
+    await act(async () => land(json(EMPTY)));
+    await expectStep("Send your first trace", "To do");
+    await expectStep("Create an API key", "To do");
+    expect(precedes(section("Set up"), section("Traces"))).toBe(true);
+  });
+
   test("a project with data keeps it below the charts while a step is left", async () => {
     signIn();
     serve({ keys: () => json({ data: [] }) });
