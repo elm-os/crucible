@@ -22,7 +22,7 @@ import { AlertIcon, UnsetIcon } from "@/components/icons";
 import { ConnectTrigger } from "@/components/shell/connect-dialog";
 import { formatCount, formatDuration } from "@/lib/format";
 import { currentPath, loginHref } from "@/lib/next-path";
-import { formatBytes, formatCell, isNumericType, MAX_ROWS, PAGE_ROWS } from "./cells";
+import { formatBytes, formatCell, isNumericType, MAX_ROWS, PAGE_ROWS, shortType } from "./cells";
 import { SqlError } from "./errors";
 
 export type RunState =
@@ -192,8 +192,11 @@ function ResultGrid({ result }: { result: SqlResult }) {
                       className={`border-b border-ash-border px-3 py-1.5 font-medium whitespace-nowrap ${numeric[index] ? "text-end" : "text-start"}`}
                     >
                       {column.name}
-                      <span className="block font-mono text-label font-normal text-ink-soft">
-                        {column.type}
+                      <span
+                        className="block font-mono text-label font-normal text-ink-soft"
+                        title={column.type}
+                      >
+                        {shortType(column.type)}
                       </span>
                     </th>
                   ))}

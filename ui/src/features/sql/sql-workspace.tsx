@@ -228,7 +228,7 @@ function ProjectWorkspace({ project }: { project: string }) {
           onCheck={() => schema.refetch()}
         />
       ) : null}
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] lg:items-start">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] lg:items-start xl:grid-cols-[24rem_minmax(0,1fr)]">
         {notice ? null : (
           <SchemaBrowser
             query={schema}

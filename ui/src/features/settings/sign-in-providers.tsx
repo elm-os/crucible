@@ -39,6 +39,7 @@ import type { AuthProviderCreate } from "@/api/generated/AuthProviderCreate";
 import type { AuthProviderList } from "@/api/generated/AuthProviderList";
 import type { AuthProviderPatch } from "@/api/generated/AuthProviderPatch";
 import type { ProviderKind } from "@/api/generated/ProviderKind";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import {
   type CopyByCode,
@@ -518,94 +519,98 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
           </DialogDescription>
         </div>
         <form
-          className="flex flex-col gap-4"
+          className="flex min-h-0 flex-col gap-4"
           onSubmit={submit}
           onInput={() => {
             if (failure) save.reset();
           }}
         >
-          <Field name="display_name" invalid={fieldFailed(failure, "display_name") || undefined}>
-            <FieldLabel>Button text</FieldLabel>
-            <Input
-              required
-              maxLength={200}
-              pattern={TEXT_PATTERN}
-              autoComplete="off"
-              value={draft.name}
-              onValueChange={edit("name")}
-            />
-            <FieldError match="valueMissing">Enter the text for the sign-in button.</FieldError>
-            <FieldError match="patternMismatch">Enter the text for the sign-in button.</FieldError>
-            <FieldError match={fieldFailed(failure, "display_name")}>
-              Use 1 to 200 characters.
-            </FieldError>
-          </Field>
-          {provider.kind === "oidc" ? (
-            <Field name="issuer" invalid={fieldFailed(failure, "issuer") || undefined}>
-              <FieldLabel>Issuer URL</FieldLabel>
+          <DialogBody>
+            <Field name="display_name" invalid={fieldFailed(failure, "display_name") || undefined}>
+              <FieldLabel>Button text</FieldLabel>
               <Input
-                type="url"
                 required
+                maxLength={200}
+                pattern={TEXT_PATTERN}
                 autoComplete="off"
-                spellCheck={false}
-                className="font-mono"
-                value={draft.issuer}
-                onValueChange={edit("issuer")}
+                value={draft.name}
+                onValueChange={edit("name")}
               />
-              <FieldDescription>
-                A new issuer unlinks the accounts that signed in through this provider. Each person
-                links again through their verified email at their next sign-in.
-              </FieldDescription>
-              <FieldError match="valueMissing">Enter the issuer URL.</FieldError>
-              <FieldError match="typeMismatch">
-                Enter a full URL, like https://login.example.com.
+              <FieldError match="valueMissing">Enter the text for the sign-in button.</FieldError>
+              <FieldError match="patternMismatch">
+                Enter the text for the sign-in button.
               </FieldError>
-              <FieldError match={fieldFailed(failure, "issuer")}>
-                Enter the issuer URL, starting with https:// or http://.
+              <FieldError match={fieldFailed(failure, "display_name")}>
+                Use 1 to 200 characters.
               </FieldError>
             </Field>
-          ) : null}
-          <Field name="client_id" invalid={fieldFailed(failure, "client_id") || undefined}>
-            <FieldLabel>Client ID</FieldLabel>
-            <Input
-              required
-              pattern={TEXT_PATTERN}
-              autoComplete="off"
-              spellCheck={false}
-              className="font-mono"
-              value={draft.clientId}
-              onValueChange={edit("clientId")}
-            />
-            <FieldError match="valueMissing">Enter the client ID the provider issued.</FieldError>
-            <FieldError match="patternMismatch">
-              Enter the client ID the provider issued.
-            </FieldError>
-            <FieldError match={fieldFailed(failure, "client_id")}>
-              Enter the client ID the provider issued.
-            </FieldError>
-          </Field>
-          {provider.kind === "oidc" ? (
-            <Field name="scopes">
-              <FieldLabel>Extra scopes</FieldLabel>
+            {provider.kind === "oidc" ? (
+              <Field name="issuer" invalid={fieldFailed(failure, "issuer") || undefined}>
+                <FieldLabel>Issuer URL</FieldLabel>
+                <Input
+                  type="url"
+                  required
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="font-mono"
+                  value={draft.issuer}
+                  onValueChange={edit("issuer")}
+                />
+                <FieldDescription>
+                  A new issuer unlinks the accounts that signed in through this provider. Each
+                  person links again through their verified email at their next sign-in.
+                </FieldDescription>
+                <FieldError match="valueMissing">Enter the issuer URL.</FieldError>
+                <FieldError match="typeMismatch">
+                  Enter a full URL, like https://login.example.com.
+                </FieldError>
+                <FieldError match={fieldFailed(failure, "issuer")}>
+                  Enter the issuer URL, starting with https:// or http://.
+                </FieldError>
+              </Field>
+            ) : null}
+            <Field name="client_id" invalid={fieldFailed(failure, "client_id") || undefined}>
+              <FieldLabel>Client ID</FieldLabel>
               <Input
+                required
+                pattern={TEXT_PATTERN}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="None"
                 className="font-mono"
-                value={draft.scopes}
-                onValueChange={edit("scopes")}
+                value={draft.clientId}
+                onValueChange={edit("clientId")}
               />
-              <FieldDescription>
-                Optional, separated by spaces. Crucible always asks for openid, email and profile.
-              </FieldDescription>
+              <FieldError match="valueMissing">Enter the client ID the provider issued.</FieldError>
+              <FieldError match="patternMismatch">
+                Enter the client ID the provider issued.
+              </FieldError>
+              <FieldError match={fieldFailed(failure, "client_id")}>
+                Enter the client ID the provider issued.
+              </FieldError>
             </Field>
-          ) : null}
-          <DomainsField
-            value={draft.domains}
-            onChange={edit("domains")}
-            invalid={domains === "invalid"}
-            refused={fieldFailed(failure, "allowed_domains")}
-          />
+            {provider.kind === "oidc" ? (
+              <Field name="scopes">
+                <FieldLabel>Extra scopes</FieldLabel>
+                <Input
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="None"
+                  className="font-mono"
+                  value={draft.scopes}
+                  onValueChange={edit("scopes")}
+                />
+                <FieldDescription>
+                  Optional, separated by spaces. Crucible always asks for openid, email and profile.
+                </FieldDescription>
+              </Field>
+            ) : null}
+            <DomainsField
+              value={draft.domains}
+              onChange={edit("domains")}
+              invalid={domains === "invalid"}
+              refused={fieldFailed(failure, "allowed_domains")}
+            />
+          </DialogBody>
           {failure ? (
             <FormAlert copy={failureCopy(failure, "Couldn't save the provider.", EDIT_COPY)} />
           ) : null}
@@ -727,13 +732,15 @@ function ReplaceSecretDialog({ provider }: { provider: AuthProvider }) {
               </DialogDescription>
             </div>
             <form
-              className="flex flex-col gap-4"
+              className="flex min-h-0 flex-col gap-4"
               onSubmit={submit}
               onInput={() => {
                 if (failure) replace.reset();
               }}
             >
-              <SecretField label="New client secret" />
+              <DialogBody>
+                <SecretField label="New client secret" />
+              </DialogBody>
               {failure ? (
                 <FormAlert
                   copy={failureCopy(failure, "Couldn't replace the secret.", CHANGE_COPY)}
@@ -822,123 +829,127 @@ function AddProviderDialog() {
               </DialogDescription>
             </div>
             <form
-              className="flex flex-col gap-4"
+              className="flex min-h-0 flex-col gap-4"
               onSubmit={submit}
               onInput={() => {
                 if (failure) create.reset();
               }}
             >
-              <Field>
-                <FieldLabel>Provider</FieldLabel>
-                <Select
-                  items={KINDS}
-                  value={kind}
-                  onValueChange={(next) => {
-                    if (!isKind(next)) return;
-                    setKind(next);
-                    create.reset();
-                  }}
+              <DialogBody>
+                <Field>
+                  <FieldLabel>Provider</FieldLabel>
+                  <Select
+                    items={KINDS}
+                    value={kind}
+                    onValueChange={(next) => {
+                      if (!isKind(next)) return;
+                      setKind(next);
+                      create.reset();
+                    }}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {KINDS.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field
+                  name="display_name"
+                  invalid={fieldFailed(failure, "display_name") || undefined}
                 >
-                  <SelectTrigger className="text-data">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {KINDS.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field
-                name="display_name"
-                invalid={fieldFailed(failure, "display_name") || undefined}
-              >
-                <FieldLabel>Button text</FieldLabel>
-                <Input
-                  required
-                  maxLength={200}
-                  pattern={TEXT_PATTERN}
-                  autoComplete="off"
-                  placeholder="Continue with Acme SSO"
-                  value={text}
-                  onValueChange={setButtonText}
-                />
-                <FieldDescription>What the button on the sign-in page says.</FieldDescription>
-                <FieldError match="valueMissing">Enter the text for the sign-in button.</FieldError>
-                <FieldError match="patternMismatch">
-                  Enter the text for the sign-in button.
-                </FieldError>
-                <FieldError match={fieldFailed(failure, "display_name")}>
-                  Use 1 to 200 characters.
-                </FieldError>
-              </Field>
-              {kind === "oidc" ? (
-                <Field name="issuer" invalid={fieldFailed(failure, "issuer") || undefined}>
-                  <FieldLabel>Issuer URL</FieldLabel>
+                  <FieldLabel>Button text</FieldLabel>
                   <Input
-                    type="url"
                     required
+                    maxLength={200}
+                    pattern={TEXT_PATTERN}
                     autoComplete="off"
-                    spellCheck={false}
-                    placeholder="https://login.example.com"
-                    className="font-mono"
+                    placeholder="Continue with Acme SSO"
+                    value={text}
+                    onValueChange={setButtonText}
                   />
-                  <FieldDescription>
-                    Crucible reads the provider&apos;s settings from this address followed by
-                    /.well-known/openid-configuration.
-                  </FieldDescription>
-                  <FieldError match="valueMissing">Enter the issuer URL.</FieldError>
-                  <FieldError match="typeMismatch">
-                    Enter a full URL, like https://login.example.com.
+                  <FieldDescription>What the button on the sign-in page says.</FieldDescription>
+                  <FieldError match="valueMissing">
+                    Enter the text for the sign-in button.
                   </FieldError>
-                  <FieldError match={fieldFailed(failure, "issuer")}>
-                    Enter the issuer URL, starting with https:// or http://.
+                  <FieldError match="patternMismatch">
+                    Enter the text for the sign-in button.
+                  </FieldError>
+                  <FieldError match={fieldFailed(failure, "display_name")}>
+                    Use 1 to 200 characters.
                   </FieldError>
                 </Field>
-              ) : null}
-              <Field name="client_id" invalid={fieldFailed(failure, "client_id") || undefined}>
-                <FieldLabel>Client ID</FieldLabel>
-                <Input
-                  required
-                  pattern={TEXT_PATTERN}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-                <FieldError match="valueMissing">
-                  Enter the client ID the provider issued.
-                </FieldError>
-                <FieldError match="patternMismatch">
-                  Enter the client ID the provider issued.
-                </FieldError>
-                <FieldError match={fieldFailed(failure, "client_id")}>
-                  Enter the client ID and secret the provider issued.
-                </FieldError>
-              </Field>
-              <SecretField label="Client secret" />
-              {kind === "oidc" ? (
-                <Field name="scopes">
-                  <FieldLabel>Extra scopes</FieldLabel>
+                {kind === "oidc" ? (
+                  <Field name="issuer" invalid={fieldFailed(failure, "issuer") || undefined}>
+                    <FieldLabel>Issuer URL</FieldLabel>
+                    <Input
+                      type="url"
+                      required
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="https://login.example.com"
+                      className="font-mono"
+                    />
+                    <FieldDescription>
+                      Crucible reads the provider&apos;s settings from this address followed by
+                      /.well-known/openid-configuration.
+                    </FieldDescription>
+                    <FieldError match="valueMissing">Enter the issuer URL.</FieldError>
+                    <FieldError match="typeMismatch">
+                      Enter a full URL, like https://login.example.com.
+                    </FieldError>
+                    <FieldError match={fieldFailed(failure, "issuer")}>
+                      Enter the issuer URL, starting with https:// or http://.
+                    </FieldError>
+                  </Field>
+                ) : null}
+                <Field name="client_id" invalid={fieldFailed(failure, "client_id") || undefined}>
+                  <FieldLabel>Client ID</FieldLabel>
                   <Input
+                    required
+                    pattern={TEXT_PATTERN}
                     autoComplete="off"
                     spellCheck={false}
-                    placeholder="None"
                     className="font-mono"
                   />
-                  <FieldDescription>
-                    Optional, separated by spaces. Crucible always asks for openid, email and
-                    profile.
-                  </FieldDescription>
+                  <FieldError match="valueMissing">
+                    Enter the client ID the provider issued.
+                  </FieldError>
+                  <FieldError match="patternMismatch">
+                    Enter the client ID the provider issued.
+                  </FieldError>
+                  <FieldError match={fieldFailed(failure, "client_id")}>
+                    Enter the client ID and secret the provider issued.
+                  </FieldError>
                 </Field>
-              ) : null}
-              <DomainsField
-                value={domainText}
-                onChange={setDomainText}
-                invalid={domains === "invalid"}
-                refused={fieldFailed(failure, "allowed_domains")}
-              />
+                <SecretField label="Client secret" />
+                {kind === "oidc" ? (
+                  <Field name="scopes">
+                    <FieldLabel>Extra scopes</FieldLabel>
+                    <Input
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="None"
+                      className="font-mono"
+                    />
+                    <FieldDescription>
+                      Optional, separated by spaces. Crucible always asks for openid, email and
+                      profile.
+                    </FieldDescription>
+                  </Field>
+                ) : null}
+                <DomainsField
+                  value={domainText}
+                  onChange={setDomainText}
+                  invalid={domains === "invalid"}
+                  refused={fieldFailed(failure, "allowed_domains")}
+                />
+              </DialogBody>
               {failure ? (
                 <FormAlert copy={failureCopy(failure, "Couldn't add the provider.", ADD_COPY)} />
               ) : null}

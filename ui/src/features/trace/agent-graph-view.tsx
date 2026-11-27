@@ -228,7 +228,9 @@ export function AgentGraphView({
               >
                 {/* The spaces between flex items don't render, but they keep the node's name as words. */}
                 <span className="text-label text-ink-soft">{KIND_LABEL[node.kind]}</span>{" "}
-                <span className="truncate text-data font-medium">{node.name}</span>{" "}
+                <span className="truncate text-data font-medium" title={node.name}>
+                  {node.name}
+                </span>{" "}
                 <span className="flex items-center gap-2 text-label text-ink-soft">
                   {formatCount(node.spans.length)} {node.spans.length === 1 ? "span" : "spans"}{" "}
                   {node.errors > 0 ? (

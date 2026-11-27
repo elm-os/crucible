@@ -180,6 +180,7 @@ function MetricsSection({
       title={title}
       query={query}
       skeleton={skeleton}
+      fill={compact}
       // No data counts as empty only when the answer is whole; otherwise spans may exist unseen.
       isEmpty={(response) => noData(response, which) && isWhole(response.meta)}
       empty={<NoData title={title} range={range} onWiden={onWiden} compact={compact} />}
@@ -259,15 +260,16 @@ function Headline({
   const path = model?.paths[0];
   const wash = model?.areas[0];
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex grow flex-col gap-1">
       <p data-value className="text-heading-sm font-medium tabular-nums">
         {value}
       </p>
-      <p className="text-label text-ink-soft">{caption}</p>
+      <p className="mb-1 text-label text-ink-soft">{caption}</p>
+      {/* At the tile's bottom, so a caption on two lines leaves every sparkline in the row level. */}
       {path ? (
         <svg
           viewBox={`0 0 ${SPARK.width} ${SPARK.height}`}
-          className="mt-1 h-8 w-full"
+          className="mt-auto h-8 w-full"
           aria-hidden="true"
           preserveAspectRatio="none"
         >

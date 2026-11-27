@@ -137,6 +137,42 @@ describe("live tail", () => {
     expect(listReads()[1]?.searchParams.get("to")).toBe("2026-11-17T14:02:00.000000Z");
   });
 
+  test("Load more reads the next page in the first page's window, and a refresh rereads both in the next window", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-17T14:00:30Z"));
+    let firsts = 0;
+    fetchMock.mockImplementation(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.searchParams.has("since")) {
+        return json({ ...listPage([], "h-tail"), new_count: 0 });
+      }
+      const cursor = url.searchParams.get("cursor");
+      if (cursor) return json({ ...listPage([item(`older-${cursor}`)], ""), head_cursor: null });
+      firsts += 1;
+      return json({
+        ...listPage([item(`newest-${firsts}`)], `h-${firsts}`),
+        next_cursor: `c-${firsts}`,
+      });
+    });
+    renderWithClient(<TracesSection />);
+    await act(async () =>
+      (await screen.findByRole("button", { name: "Load more traces" })).click(),
+    );
+    expect(await screen.findByRole("link", { name: "trace older-c-1" })).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(await screen.findByRole("link", { name: "trace older-c-2" })).toBeTruthy();
+    expect(
+      listReads().map((url) => [url.searchParams.get("cursor"), url.searchParams.get("to")]),
+    ).toEqual([
+      [null, "2026-11-17T14:01:00.000000Z"],
+      ["c-1", "2026-11-17T14:01:00.000000Z"],
+      [null, "2026-11-17T14:02:00.000000Z"],
+      ["c-2", "2026-11-17T14:02:00.000000Z"],
+    ]);
+  });
+
   test("a count reached before the window ends stays on offer", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-11-17T14:00:30Z"));

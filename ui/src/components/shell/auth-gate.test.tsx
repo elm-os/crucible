@@ -35,6 +35,20 @@ const problem = (status: number, code: string) =>
     headers: { "content-type": "application/problem+json" },
   });
 
+// Opens the account menu from the keyboard and chooses Sign out, the item it focuses.
+async function signOutFromMenu() {
+  const trigger = screen.getByRole("button", { name: "Ada Lovelace" });
+  await act(async () => {
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  });
+  const item = screen.getByRole("menuitem", { name: "Sign out" });
+  expect(document.activeElement).toBe(item);
+  await act(async () => {
+    fireEvent.keyDown(item, { key: "Enter" });
+  });
+}
+
 function renderShell() {
   const client = createQueryClient();
   // Auto-retry counts are covered in errors.test.ts; here every failure should land at once.
@@ -53,7 +67,7 @@ describe("signed in", () => {
     setAuth({ mode: "session", session: sessionInfo({ csrf_token: "csrf-9" }) });
   });
 
-  test("the user's name and Sign out replace Connect; an agent can switch projects", async () => {
+  test("the user's account menu replaces Connect; an agent can switch projects and find Sign out", async () => {
     window.history.replaceState(null, "", "/trace/?trace=abc&span=def&range=7d");
     renderShell();
     expect(screen.getByText("Page body")).toBeTruthy();
@@ -67,9 +81,18 @@ describe("signed in", () => {
       expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
     }
     const labels = components.map((entry) => entry.label);
-    for (const label of ["Pages", "Project", "Time range", "Sign out"]) {
+    for (const label of ["Pages", "Project", "Time range", "Ada Lovelace"]) {
       expect(labels, `${label} is missing from the snapshot`).toContain(label);
     }
+    const opened = await agent.act({
+      steps: [{ ref: "Ada Lovelace", action: "setOpen", args: [true] }],
+    });
+    expect(opened.ok, opened.error?.message).toBe(true);
+    const account = agent
+      .snapshot()
+      .find((entry) => !entry.offPage && entry.label === "Ada Lovelace");
+    expect(account?.component).toBe("menu");
+    expect(account?.buttons).toEqual(["Sign out"]);
 
     const result = await agent.act({
       steps: [{ ref: "Project", action: "setValue", args: ["Search"] }],
@@ -90,9 +113,7 @@ describe("signed in", () => {
   test("sign out sends the session's token, then loads the sign-in page", async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     renderShell();
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    });
+    await signOutFromMenu();
     await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/login/"));
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("/api/v1/auth/logout");
@@ -102,9 +123,7 @@ describe("signed in", () => {
   test("a sign-out that fails says so and stays", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     renderShell();
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    });
+    await signOutFromMenu();
     expect((await screen.findByRole("alert")).textContent).toContain("Couldn't sign out.");
     expect(loadPage).not.toHaveBeenCalled();
   });

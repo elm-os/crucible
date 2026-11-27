@@ -23,6 +23,20 @@ export function isNumericType(clickhouseType: string): boolean {
   return /^(U?Int\d+|Float\d+|Decimal)/.test(unwrap(clickhouseType));
 }
 
+// A type without its enum value lists, so Enum8('unset' = 0, 'ok' = 1) reads Enum8. Values are quoted, may hold
+// parentheses and escape their quotes.
+export function shortType(clickhouseType: string): string {
+  return clickhouseType.replace(/\b(Enum(?:8|16))\((?:'(?:[^'\\]|\\.)*'|[^()'])*\)/g, "$1");
+}
+
+// The value names of the first enum in a type, in order; none for a type without one.
+export function enumValues(clickhouseType: string): string[] {
+  const list = /\bEnum(?:8|16)\(((?:'(?:[^'\\]|\\.)*'|[^()'])*)\)/.exec(clickhouseType)?.[1] ?? "";
+  return Array.from(list.matchAll(/'((?:[^'\\]|\\.)*)'/g), (match) =>
+    (match[1] ?? "").replace(/\\(.)/g, "$1"),
+  );
+}
+
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB"] as const;
 
 export function formatBytes(bytes: number): string {

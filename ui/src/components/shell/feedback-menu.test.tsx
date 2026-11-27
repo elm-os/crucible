@@ -85,7 +85,7 @@ test("Feedback stays in the header signed in, without a control plane, and when 
   setAuth({ mode: "session", session: sessionInfo() });
   const signedIn = renderShell();
   expect(header().getByRole("button", { name: "Feedback" })).toBeTruthy();
-  expect(header().getByRole("button", { name: "Sign out" })).toBeTruthy();
+  expect(header().getByRole("button", { name: "Ada Lovelace" })).toBeTruthy();
   signedIn.unmount();
 
   setAuth({ mode: "unknown" });

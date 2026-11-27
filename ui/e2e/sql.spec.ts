@@ -83,6 +83,7 @@ test.describe("sql: schema browser", () => {
       /start_time\s*DateTime64\(6\)/,
       /name\s*String/,
       /total_tokens\s*UInt64/,
+      "All tokens, from the reported usage.",
     ]);
     await expect(section(page, "Query")).toContainText("are bound to the time range in the header");
     await expectAccessible(page, "sql schema success");

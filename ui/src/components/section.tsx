@@ -37,12 +37,15 @@ export function SectionFrame({
   title,
   busy = false,
   actions,
+  fill = false,
   className,
   children,
 }: {
   title: string;
   busy?: boolean;
   actions?: ReactNode;
+  // The body fills the frame as a column, so content can keep to its bottom in a row of taller frames.
+  fill?: boolean;
   className?: string;
   children: ReactNode;
 }) {
@@ -51,7 +54,7 @@ export function SectionFrame({
     <section
       aria-labelledby={headingId}
       aria-busy={busy || undefined}
-      className={`rounded-xl border border-ash-border bg-warm-sand ${className ?? ""}`}
+      className={`rounded-xl border border-ash-border bg-warm-sand ${fill ? "flex flex-col " : ""}${className ?? ""}`}
     >
       <div
         className={`flex flex-wrap items-center justify-between gap-2 border-b border-ash-border px-4 ${actions ? "py-1.5" : "py-2.5"}`}
@@ -61,7 +64,7 @@ export function SectionFrame({
         </h2>
         {actions}
       </div>
-      <div className="px-4 py-3">{children}</div>
+      <div className={fill ? "flex grow flex-col px-4 py-3" : "px-4 py-3"}>{children}</div>
     </section>
   );
 }
@@ -77,6 +80,7 @@ export function Section<T>({
   children,
   actions,
   label = title.toLowerCase(),
+  fill,
   className,
   errorCopy,
   errorActions,
@@ -90,6 +94,7 @@ export function Section<T>({
   actions?: ReactNode;
   // What "Loading" and "Retry" name, for a title that lowercasing would spoil.
   label?: string;
+  fill?: boolean;
   className?: string;
   // The section's own words for an error it understands better than the shared table does.
   errorCopy?: (error: UiError) => { title: string; detail: string } | null;
@@ -141,7 +146,13 @@ export function Section<T>({
   }
 
   return (
-    <SectionFrame title={title} busy={query.isPending} actions={actions} className={className}>
+    <SectionFrame
+      title={title}
+      busy={query.isPending}
+      actions={actions}
+      fill={fill}
+      className={className}
+    >
       {body}
     </SectionFrame>
   );

@@ -21,6 +21,7 @@ import {
 } from "@ui-sdk/react/password-input";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { type ConnectionCheck, checkConnection } from "@/api/client";
+import { DialogBody } from "@/components/dialog-body";
 import { AlertIcon, CheckIcon } from "@/components/icons";
 import { clearConnection, saveConnection, useConnectedProject } from "@/lib/connection";
 
@@ -103,7 +104,7 @@ export function ConnectDialog() {
       </DialogTrigger>
       <DialogBackdrop />
       <DialogContent>
-        <div data-slot="stack">
+        <div className="flex flex-col gap-2">
           <DialogTitle>Connect to a project</DialogTitle>
           <DialogDescription>
             This server runs without a control plane, so there is no sign-in. Paste a project id and
@@ -111,44 +112,46 @@ export function ConnectDialog() {
             forgotten when you close it. With Postgres configured, people sign in instead.
           </DialogDescription>
         </div>
-        <form data-slot="stack" onSubmit={connect}>
-          <Field name="project">
-            <FieldLabel>Project id</FieldLabel>
-            <Input
-              required
-              pattern={PROJECT_ID}
-              defaultValue={connected ?? ""}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
-              className="font-mono"
-            />
-            <FieldError match="valueMissing">Enter the project id.</FieldError>
-            <FieldError match="patternMismatch">
-              A project id looks like 0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b.
-            </FieldError>
-          </Field>
-          <Field name="key">
-            <FieldLabel>Secret key</FieldLabel>
-            <PasswordInput required autoComplete="off">
-              <PasswordInputControl pattern={SECRET_KEY} className="font-mono" />
-              <PasswordInputToggle aria-label="Show secret key">Show</PasswordInputToggle>
-            </PasswordInput>
-            <FieldDescription>
-              The key from the server&apos;s keys file. It starts with csk_.
-            </FieldDescription>
-            <FieldError match="valueMissing">Enter the project&apos;s secret key.</FieldError>
-            <FieldError match="patternMismatch">
-              A secret key is csk_ followed by 43 letters and digits.
-            </FieldError>
-          </Field>
+        <form className="flex min-h-0 flex-col gap-4" onSubmit={connect}>
+          <DialogBody>
+            <Field name="project">
+              <FieldLabel>Project id</FieldLabel>
+              <Input
+                required
+                pattern={PROJECT_ID}
+                defaultValue={connected ?? ""}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+                className="font-mono"
+              />
+              <FieldError match="valueMissing">Enter the project id.</FieldError>
+              <FieldError match="patternMismatch">
+                A project id looks like 0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b.
+              </FieldError>
+            </Field>
+            <Field name="key">
+              <FieldLabel>Secret key</FieldLabel>
+              <PasswordInput required autoComplete="off">
+                <PasswordInputControl pattern={SECRET_KEY} className="font-mono" />
+                <PasswordInputToggle aria-label="Show secret key" />
+              </PasswordInput>
+              <FieldDescription>
+                The key from the server&apos;s keys file. It starts with csk_.
+              </FieldDescription>
+              <FieldError match="valueMissing">Enter the project&apos;s secret key.</FieldError>
+              <FieldError match="patternMismatch">
+                A secret key is csk_ followed by 43 letters and digits.
+              </FieldError>
+            </Field>
+          </DialogBody>
           {failure ? (
             <p role="alert" data-error={failure} className="flex items-center gap-1.5 text-data">
               <AlertIcon className="shrink-0" />
               {FAILURES[failure]}
             </p>
           ) : null}
-          <div data-slot="row">
+          <div className="flex justify-end gap-2">
             {connected ? <Button onClick={disconnect}>Disconnect</Button> : null}
             <DialogClose>Cancel</DialogClose>
             <Button type="submit" data-variant="solid" disabled={pending} aria-busy={pending}>

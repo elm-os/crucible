@@ -20,6 +20,7 @@ import { asUiError } from "@/api/errors";
 import type { ApiKey } from "@/api/generated/ApiKey";
 import type { ApiKeyCreated } from "@/api/generated/ApiKeyCreated";
 import type { SessionProject } from "@/api/generated/SessionProject";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy } from "@/components/form-alert";
 import { Section, SectionFrame } from "@/components/section";
@@ -253,19 +254,21 @@ function CreateKeyDialog({ project }: { project: SessionProject }) {
               </DialogDescription>
             </div>
             <form
-              className="flex flex-col gap-4"
+              className="flex min-h-0 flex-col gap-4"
               onSubmit={submit}
               onInput={() => {
                 if (failure) create.reset();
               }}
             >
-              <Field name="note">
-                <FieldLabel>Note</FieldLabel>
-                <Input autoComplete="off" />
-                <FieldDescription>
-                  Optional. What uses this key, like checkout-service.
-                </FieldDescription>
-              </Field>
+              <DialogBody>
+                <Field name="note">
+                  <FieldLabel>Note</FieldLabel>
+                  <Input autoComplete="off" />
+                  <FieldDescription>
+                    Optional. What uses this key, like checkout-service.
+                  </FieldDescription>
+                </Field>
+              </DialogBody>
               {failure ? (
                 <FormAlert copy={failureCopy(failure, "Couldn't create the key.")} />
               ) : null}

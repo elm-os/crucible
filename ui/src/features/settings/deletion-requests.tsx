@@ -27,6 +27,7 @@ import type { DeletionRequest } from "@/api/generated/DeletionRequest";
 import type { DeletionRequestCreate } from "@/api/generated/DeletionRequestCreate";
 import type { DeletionState } from "@/api/generated/DeletionState";
 import type { SessionProject } from "@/api/generated/SessionProject";
+import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy, focusField } from "@/components/form-alert";
 import { AlertIcon, CheckIcon, TodoIcon } from "@/components/icons";
@@ -263,76 +264,83 @@ function DeleteDataForm({ project, onDone }: { project: SessionProject; onDone: 
         </DialogDescription>
       </div>
       <form
-        className="flex flex-col gap-4"
+        className="flex min-h-0 flex-col gap-4"
         noValidate
         onSubmit={submit}
         onInput={() => {
           if (failure) create.reset();
         }}
       >
-        {byUser ? (
-          <SegmentedControl
-            aria-label="What to delete"
-            value={kind}
-            onValueChange={(next) => {
-              const chosen = KINDS.find((option) => option.value === next);
-              if (chosen) setKind(chosen.value);
-              setChecked(false);
-              if (failure) create.reset();
-            }}
-          >
-            <SegmentedControlIndicator />
-            {KINDS.map((option) => (
-              <SegmentedControlItem key={option.value} value={option.value} className="text-data">
-                {option.label}
-              </SegmentedControlItem>
-            ))}
-          </SegmentedControl>
-        ) : null}
-        {kind === "trace" ? (
-          <Field name="trace_ids" invalid={tracesMissing || tracesInvalid || tooMany || undefined}>
-            <FieldLabel>Trace ids</FieldLabel>
-            <Textarea
-              rows={4}
-              spellCheck={false}
-              autoComplete="off"
-              className="font-mono"
-              value={traces}
-              onValueChange={setTraces}
-            />
-            <FieldDescription>
-              One or more, separated by commas, spaces or lines. A trace&apos;s id is on its page.
-              {byUser ? "" : " Deleting by user or session needs a project admin."}
-            </FieldDescription>
-            <FieldError match={tracesMissing}>Enter at least one trace id.</FieldError>
-            <FieldError match={tracesInvalid}>
-              &quot;{parsed.invalid}&quot; isn&apos;t a trace id. A trace id is 32 characters of 0-9
-              and a-f.
-            </FieldError>
-            <FieldError match={tooMany}>
-              A request takes up to 10,000 traces. Split the list into several requests.
-            </FieldError>
-          </Field>
-        ) : (
-          <Field name="subject" invalid={subjectMissing || undefined}>
-            <FieldLabel>{kind === "user" ? "User id" : "Session id"}</FieldLabel>
-            <Input
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={512}
-              value={subject}
-              onValueChange={setSubject}
-            />
-            <FieldDescription>
-              {kind === "user"
-                ? "The user id your app sends with its traces. Every trace of the user goes, with its feedback and MCP calls."
-                : "The session id your app sends with its traces. Every trace of the session goes, with its feedback and MCP calls."}
-            </FieldDescription>
-            <FieldError match={subjectMissing}>
-              {kind === "user" ? "Enter the user id to delete." : "Enter the session id to delete."}
-            </FieldError>
-          </Field>
-        )}
+        <DialogBody>
+          {byUser ? (
+            <SegmentedControl
+              aria-label="What to delete"
+              value={kind}
+              onValueChange={(next) => {
+                const chosen = KINDS.find((option) => option.value === next);
+                if (chosen) setKind(chosen.value);
+                setChecked(false);
+                if (failure) create.reset();
+              }}
+            >
+              <SegmentedControlIndicator />
+              {KINDS.map((option) => (
+                <SegmentedControlItem key={option.value} value={option.value} className="text-data">
+                  {option.label}
+                </SegmentedControlItem>
+              ))}
+            </SegmentedControl>
+          ) : null}
+          {kind === "trace" ? (
+            <Field
+              name="trace_ids"
+              invalid={tracesMissing || tracesInvalid || tooMany || undefined}
+            >
+              <FieldLabel>Trace ids</FieldLabel>
+              <Textarea
+                rows={4}
+                spellCheck={false}
+                autoComplete="off"
+                className="font-mono"
+                value={traces}
+                onValueChange={setTraces}
+              />
+              <FieldDescription>
+                One or more, separated by commas, spaces or lines. A trace&apos;s id is on its page.
+                {byUser ? "" : " Deleting by user or session needs a project admin."}
+              </FieldDescription>
+              <FieldError match={tracesMissing}>Enter at least one trace id.</FieldError>
+              <FieldError match={tracesInvalid}>
+                &quot;{parsed.invalid}&quot; isn&apos;t a trace id. A trace id is 32 characters of
+                0-9 and a-f.
+              </FieldError>
+              <FieldError match={tooMany}>
+                A request takes up to 10,000 traces. Split the list into several requests.
+              </FieldError>
+            </Field>
+          ) : (
+            <Field name="subject" invalid={subjectMissing || undefined}>
+              <FieldLabel>{kind === "user" ? "User id" : "Session id"}</FieldLabel>
+              <Input
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={512}
+                value={subject}
+                onValueChange={setSubject}
+              />
+              <FieldDescription>
+                {kind === "user"
+                  ? "The user id your app sends with its traces. Every trace of the user goes, with its feedback and MCP calls."
+                  : "The session id your app sends with its traces. Every trace of the session goes, with its feedback and MCP calls."}
+              </FieldDescription>
+              <FieldError match={subjectMissing}>
+                {kind === "user"
+                  ? "Enter the user id to delete."
+                  : "Enter the session id to delete."}
+              </FieldError>
+            </Field>
+          )}
+        </DialogBody>
         {failure ? (
           <FormAlert copy={failureCopy(failure, "Couldn't request the deletion.", DELETE_COPY)} />
         ) : null}

@@ -253,7 +253,8 @@ test.describe("sessions", () => {
 
     const logouts = capture(api, /\/api\/v1\/auth\/logout$/, { status: 204 });
     api.on(PROVIDERS_PATH, json(signInOptions()));
-    await banner.getByRole("button", { name: "Sign out" }).click();
+    await banner.getByRole("button", { name: "Ada Lovelace" }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
     await expect(page).toHaveURL(/\/login\/$/);
     expect(logouts[0]?.headers()["x-crucible-csrf"]).toBe(CSRF);
   });

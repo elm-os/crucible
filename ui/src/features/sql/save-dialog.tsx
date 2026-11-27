@@ -24,6 +24,7 @@ import { asUiError, type UiError } from "@/api/errors";
 import type { SavedQuery } from "@/api/generated/SavedQuery";
 import type { SavedQueryInput } from "@/api/generated/SavedQueryInput";
 import type { SavedQueryParameter } from "@/api/generated/SavedQueryParameter";
+import { DialogBody } from "@/components/dialog-body";
 import { createSavedQuery, getSavedQuery, updateSavedQuery } from "./api";
 import {
   type DetectedParameter,
@@ -131,72 +132,74 @@ function SaveForm({ project, mode, loaded, sql, detected, onSaved, onReloaded }:
   };
 
   return (
-    <form className="mt-4 flex flex-col gap-4" onSubmit={submit}>
-      <Field name="name">
-        <FieldLabel>Name</FieldLabel>
-        <Input required maxLength={120} defaultValue={target?.name ?? ""} autoComplete="off" />
-        <FieldError match="valueMissing">Give the saved query a name.</FieldError>
-      </Field>
-      <Field name="description">
-        <FieldLabel>Description</FieldLabel>
-        <Textarea rows={2} maxLength={2000} defaultValue={target?.description ?? ""} />
-        <FieldDescription>Optional. What the query is for.</FieldDescription>
-      </Field>
-      <Field>
-        <FieldLabel>Visibility</FieldLabel>
-        <Select name="visibility" defaultValue={target?.visibility ?? "private"}>
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="private">Private: only you</SelectItem>
-            <SelectItem value="project">Project: everyone in the project</SelectItem>
-          </SelectContent>
-        </Select>
-      </Field>
-      {detected.length > 0 ? (
-        <fieldset className="flex flex-col gap-3">
-          <legend className="text-data font-medium">Parameters</legend>
-          <p className="text-label text-ink-soft">
-            Found in the query text. The time window is bound for you and is not listed.
-          </p>
-          {detected.map(({ name, type }) => (
-            <div key={name} className="grid gap-3 sm:grid-cols-2">
-              <Field>
-                <FieldLabel>
-                  Type of <span className="font-mono">{name}</span>
-                </FieldLabel>
-                <Select
-                  name={`type.${name}`}
-                  defaultValue={declared.get(name)?.type ?? guessParameterType(type)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PARAMETER_TYPES.map((option) => (
-                      <SelectItem key={option} value={option}>
-                        {TYPE_LABEL[option]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field name={`default.${name}`}>
-                <FieldLabel>
-                  Default for <span className="font-mono">{name}</span>
-                </FieldLabel>
-                <Input
-                  defaultValue={declared.get(name)?.default ?? ""}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-              </Field>
-            </div>
-          ))}
-        </fieldset>
-      ) : null}
+    <form className="mt-4 flex min-h-0 flex-col gap-4" onSubmit={submit}>
+      <DialogBody>
+        <Field name="name">
+          <FieldLabel>Name</FieldLabel>
+          <Input required maxLength={120} defaultValue={target?.name ?? ""} autoComplete="off" />
+          <FieldError match="valueMissing">Give the saved query a name.</FieldError>
+        </Field>
+        <Field name="description">
+          <FieldLabel>Description</FieldLabel>
+          <Textarea rows={2} maxLength={2000} defaultValue={target?.description ?? ""} />
+          <FieldDescription>Optional. What the query is for.</FieldDescription>
+        </Field>
+        <Field>
+          <FieldLabel>Visibility</FieldLabel>
+          <Select name="visibility" defaultValue={target?.visibility ?? "private"}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="private">Private: only you</SelectItem>
+              <SelectItem value="project">Project: everyone in the project</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        {detected.length > 0 ? (
+          <fieldset className="flex flex-col gap-3">
+            <legend className="text-data font-medium">Parameters</legend>
+            <p className="text-label text-ink-soft">
+              Found in the query text. The time window is bound for you and is not listed.
+            </p>
+            {detected.map(({ name, type }) => (
+              <div key={name} className="grid gap-3 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel>
+                    Type of <span className="font-mono">{name}</span>
+                  </FieldLabel>
+                  <Select
+                    name={`type.${name}`}
+                    defaultValue={declared.get(name)?.type ?? guessParameterType(type)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PARAMETER_TYPES.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {TYPE_LABEL[option]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field name={`default.${name}`}>
+                  <FieldLabel>
+                    Default for <span className="font-mono">{name}</span>
+                  </FieldLabel>
+                  <Input
+                    defaultValue={declared.get(name)?.default ?? ""}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="font-mono"
+                  />
+                </Field>
+              </div>
+            ))}
+          </fieldset>
+        ) : null}
+      </DialogBody>
       {failure ? (
         <SqlErrorCard error={failure}>
           {failure.code === "precondition_failed" ? (
