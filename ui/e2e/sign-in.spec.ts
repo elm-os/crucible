@@ -102,7 +102,8 @@ test.describe("sign in", () => {
       await fillAndSubmit(page, "a wrong password");
       const alert = alertIn(page);
       await expect(alert).toContainText(title);
-      await expect(alert).toContainText(`req-${code}`);
+      // Each is an outcome the person can act on, so no code for an administrator.
+      await expect(alert).not.toContainText(`req-${code}`);
       await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
       await expect(page).toHaveURL(/\/login\/$/);
     }

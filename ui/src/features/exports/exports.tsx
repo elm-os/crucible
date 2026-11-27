@@ -144,7 +144,8 @@ function StateCell({ item }: { item: Export }) {
         <div className="flex flex-col">
           <StatusLabel status="error" label="Failed" />
           <span className="max-w-72 text-label text-ink-soft">
-            {FAILURES[item.error_code ?? ""] ?? "Something went wrong on the server. Export again."}
+            {FAILURES[item.error_code ?? ""] ??
+              "The export failed on the server. Export again, or ask an administrator to check the server log."}
           </span>
         </div>
       );
