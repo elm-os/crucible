@@ -1,18 +1,20 @@
 #!/usr/bin/env node
-// Crucible text policy: the naming rule and the no-AI-attribution rule.
+// Crucible text policy: the naming rule, the no-AI-attribution rule and the commit identity rule.
 //
 // Usage:
 //   node tools/policy/policy.mjs files [--staged]   scan tracked (or staged) text files
 //   node tools/policy/policy.mjs commit-msg <file>   check a commit message file (git hook)
 //   node tools/policy/policy.mjs text [<string>]     check a string, or stdin (PR title/body)
 //   node tools/policy/policy.mjs branch <name>       check a branch name
-//   node tools/policy/policy.mjs commits <range>     check every commit message in a git range
-//   node tools/policy/policy.mjs selftest            run the must-flag / must-pass fixtures
+//   node tools/policy/policy.mjs commits <range>     check every commit in a git range (message, author,
+//                                                    committer); a bare revision is that one commit
+//   node tools/policy/policy.mjs selftest            run the fixtures and the planted-commit test
 //
 // Exit code 0 means clean; 1 means at least one violation; 2 means a usage error.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +23,12 @@ const root = join(here, "..", "..");
 const rules = JSON.parse(readFileSync(join(root, "policy", "naming-rules.json"), "utf8"));
 
 const attribution = rules.attribution_patterns.map((p) => new RegExp(p, "im"));
+const coAuthor = rules.co_author_patterns.map((p) => new RegExp(p, "im"));
+const [, ownerName, ownerEmail] = /^(.+) <(.+)>$/.exec(rules.commit_authors[0]);
+const identityFix =
+  `git -c user.name="${ownerName}" -c user.email="${ownerEmail}" commit --amend --no-edit --reset-author ` +
+  `for the newest commit, or the same -c flags with rebase --exec "git commit --amend --no-edit ` +
+  `--reset-author" origin/main for older ones, then push with --force-with-lease`;
 const vendorRe = new RegExp(`\\b(${rules.vendors.map(escapeRe).join("|")})\\b`, "i");
 const provenance = new Set(rules.provenance_words.flatMap((w) => w.split(" ")));
 const vendors = new Set(rules.vendors);
@@ -91,6 +99,39 @@ function checkAttribution(text) {
     : [];
 }
 
+// GitHub credits every account named in a co-author trailer as a contributor of the squash merge, whatever
+// else the line says, so the waiver marker does not apply here.
+function checkCoAuthors(label, text) {
+  return text
+    .split(/\r?\n/)
+    .flatMap((line, i) =>
+      coAuthor.some((re) => re.test(line))
+        ? [
+            `${label}:${i + 1}: [co-author] ${line.trim().slice(0, 140)}: no commit message or pull ` +
+              `request body may carry a co-author trailer, because GitHub credits the named account as a ` +
+              `contributor when the pull request is squash-merged; fix: delete the line (git commit --amend ` +
+              `for the newest commit, a rebase for older ones, or edit the pull request description)`,
+          ]
+        : [],
+    );
+}
+
+function checkIdentity(label, author, committer) {
+  if (rules.commit_authors.includes(author) && rules.commit_committers.includes(committer))
+    return [];
+  return [
+    `${label}: [identity] author "${author}", committer "${committer}": the author must be ` +
+      `${rules.commit_authors.join(" or ")} and the committer ${rules.commit_committers.join(" or ")}, ` +
+      `because GitHub credits every commit author of a pull request as a contributor when it is ` +
+      `squash-merged; fix: ${identityFix}`,
+  ];
+}
+
+// A commit message, or a pull request title and body.
+function checkMessage(label, text) {
+  return [...scanText(label, text), ...checkCoAuthors(label, text)];
+}
+
 function isExempt(path) {
   return rules.exempt_paths.some((p) => (p.endsWith("/") ? path.startsWith(p) : path === p));
 }
@@ -137,8 +178,8 @@ function scanText(label, text, { vendorCheck = false } = {}) {
   return violations;
 }
 
-function git(args) {
-  return execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+function git(args, cwd = root) {
+  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
 function looksBinary(buf) {
@@ -179,23 +220,112 @@ function commitMessageBody(text) {
     .join("\n");
 }
 
+// A range (a..b) checks the commits it selects. A bare revision checks that one commit, never its history,
+// so a commit already on main is not checked again by a later push.
+function checkCommits(range, cwd = root) {
+  const walk = range.includes("..") ? [range] : ["--no-walk", range];
+  const shas = git(["rev-list", ...walk], cwd)
+    .split(/\s+/)
+    .filter(Boolean);
+  const violations = [];
+  for (const sha of shas) {
+    // %an and %ae, never %aN and %aE: a .mailmap in the checked tree must not rename an identity.
+    const [author, committer, msg] = git(
+      ["log", "-1", "--format=%an <%ae>%x00%cn <%ce>%x00%B", sha],
+      cwd,
+    ).split("\0");
+    const label = `commit ${sha.slice(0, 12)}`;
+    violations.push(...checkIdentity(label, author, committer), ...checkMessage(label, msg));
+  }
+  return { shas, violations };
+}
+
+function fixture(name) {
+  return readFileSync(join(here, "fixtures", name), "utf8")
+    .split(/\r?\n/)
+    .filter((l) => l.trim());
+}
+
+// Plants a commit that breaks both commit rules between two clean commits in a scratch repository, then
+// checks that the range reports it, and that the clean tip alone does not re-check its history.
+function plantedCommits() {
+  const dir = mkdtempSync(join(tmpdir(), "crucible-policy-"));
+  try {
+    const run = (args, env = {}) =>
+      execFileSync("git", args, {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+        stdio: "pipe",
+      }).trim();
+    run(["init", "-q"]);
+    const tree = run(["write-tree"]);
+    const commit = (parent, author, committer, ...paragraphs) => {
+      const [, an, ae] = /^(.+) <(.+)>$/.exec(author);
+      const [, cn, ce] = /^(.+) <(.+)>$/.exec(committer);
+      const env = {
+        GIT_AUTHOR_NAME: an,
+        GIT_AUTHOR_EMAIL: ae,
+        GIT_COMMITTER_NAME: cn,
+        GIT_COMMITTER_EMAIL: ce,
+      };
+      const args = ["commit-tree", tree, ...(parent ? ["-p", parent] : [])];
+      return run([...args, ...paragraphs.flatMap((p) => ["-m", p])], env);
+    };
+    const owner = rules.commit_authors[0];
+    const stranger = "Jane Doe <jane@example.com>";
+    writeFileSync(join(dir, ".mailmap"), `${owner} ${stranger}\n`);
+    const trailer = `Co-authored-by: ${stranger}`;
+    const base = commit(null, owner, owner, "chore: base");
+    const bad = commit(base, stranger, stranger, "chore: checkpoint", trailer);
+    const tip = commit(bad, owner, "GitHub <noreply@github.com>", "fix: a clean change");
+    const found = checkCommits(`${base}..${tip}`, dir).violations;
+    const badLabel = `commit ${bad.slice(0, 12)}`;
+    const failures = [];
+    if (!found.some((v) => v.startsWith(`${badLabel}: [identity] author "${stranger}"`)))
+      failures.push("planted: the stranger's author and committer were not reported");
+    if (!found.some((v) => v.startsWith(`${badLabel}:3: [co-author] ${trailer}`)))
+      failures.push("planted: the co-author trailer was not reported");
+    if (found.some((v) => v.startsWith(`commit ${tip.slice(0, 12)}`)))
+      failures.push("planted: the clean commit was reported");
+    if (checkCommits(tip, dir).violations.length)
+      failures.push("planted: a bare revision checked the history below it");
+    return failures;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function selftest() {
-  const flag = readFileSync(join(here, "fixtures", "must-flag.txt"), "utf8")
-    .split(/\r?\n/)
-    .filter((l) => l.trim());
-  const pass = readFileSync(join(here, "fixtures", "must-pass.txt"), "utf8")
-    .split(/\r?\n/)
-    .filter((l) => l.trim());
+  const flag = fixture("must-flag.txt");
+  const pass = fixture("must-pass.txt");
+  const idFlag = fixture("identity-must-flag.txt");
+  const idPass = fixture("identity-must-pass.txt");
   const failures = [];
-  for (const l of flag)
-    if (scanText("fixture", l, { vendorCheck: true }).length === 0)
-      failures.push(`should flag: ${l}`);
-  for (const l of pass) if (scanText("fixture", l).length !== 0) failures.push(`should pass: ${l}`);
+  for (const l of flag) {
+    const found = [
+      ...scanText("fixture", l, { vendorCheck: true }),
+      ...checkCoAuthors("fixture", l),
+    ];
+    if (found.length === 0) failures.push(`should flag: ${l}`);
+  }
+  for (const l of pass)
+    if (checkMessage("fixture", l).length !== 0) failures.push(`should pass: ${l}`);
+  for (const l of idFlag)
+    if (checkIdentity("fixture", ...l.split(" | ")).length === 0)
+      failures.push(`should flag identity: ${l}`);
+  for (const l of idPass)
+    if (checkIdentity("fixture", ...l.split(" | ")).length !== 0)
+      failures.push(`should pass identity: ${l}`);
+  failures.push(...plantedCommits());
   if (failures.length) {
     console.error(failures.join("\n"));
     return 1;
   }
-  console.log(`policy selftest ok (${flag.length} must-flag, ${pass.length} must-pass)`);
+  console.log(
+    `policy selftest ok (${flag.length} must-flag, ${pass.length} must-pass, ${idFlag.length} identity ` +
+      `must-flag, ${idPass.length} identity must-pass, planted commits caught)`,
+  );
   return 0;
 }
 
@@ -203,7 +333,7 @@ function finish(violations, what) {
   if (violations.length) {
     console.error(violations.join("\n"));
     console.error(
-      `\npolicy: ${violations.length} violation(s) in ${what}. See AGENTS.md "Naming rule" and "No AI attribution".`,
+      `\npolicy: ${violations.length} violation(s) in ${what}. See AGENTS.md "Naming rule" and "No AI attribution", and policy/naming-rules.json for the allowed commit identities.`,
     );
     return 1;
   }
@@ -230,11 +360,11 @@ function main(argv) {
     case "commit-msg": {
       if (!rest[0]) return usage();
       const body = commitMessageBody(readFileSync(rest[0], "utf8"));
-      return finish(scanText("commit message", body), "commit message");
+      return finish(checkMessage("commit message", body), "commit message");
     }
     case "text": {
       const text = rest.length ? rest.join(" ") : readStdin();
-      return finish(scanText("text", text), "text");
+      return finish(checkMessage("text", text), "text");
     }
     case "branch": {
       if (!rest[0]) return usage();
@@ -242,13 +372,8 @@ function main(argv) {
     }
     case "commits": {
       if (!rest[0]) return usage();
-      const shas = git(["rev-list", rest[0]]).split(/\s+/).filter(Boolean);
-      const violations = [];
-      for (const sha of shas) {
-        const msg = git(["log", "-1", "--format=%B", sha]);
-        violations.push(...scanText(`commit ${sha.slice(0, 12)}`, msg));
-      }
-      return finish(violations, `${shas.length} commit message(s)`);
+      const { shas, violations } = checkCommits(rest[0]);
+      return finish(violations, `${shas.length} commit(s)`);
     }
     case "selftest":
       return selftest();
