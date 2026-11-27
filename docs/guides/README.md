@@ -8,6 +8,7 @@ How to send telemetry to Crucible and use it. To run a server first, follow the
 | Guide | What it covers |
 |---|---|
 | [Sending traces](sending-traces.md) | OTLP over HTTP and gRPC from any OpenTelemetry SDK or the Collector: endpoints, keys, what an acknowledgement means, retries, size caps, and the attributes the trace views read |
+| [Priced models](priced-models.md) | The models the built-in price table prices, how a model name matches, and how to price a model it does not list |
 | [TypeScript SDK](sdk-typescript.md) | `@elm-os/crucible` for Node.js agents, MCP servers and MCP clients |
 | [Python SDK](sdk-python.md) | `crucible-sdk` for Python agents, MCP servers and MCP clients |
 | [Go SDK](sdk-go.md) | `github.com/elm-os/crucible/sdk/go` for Go agents, MCP servers and MCP clients |

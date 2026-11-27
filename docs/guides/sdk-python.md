@@ -17,17 +17,23 @@ Install the package, `crucible-sdk`, from the GitHub release of Crucible 0.1.3 i
 SDK has the server's version:
 
 ```sh
+pip install "crucible-sdk @ https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible_sdk-0.1.3-py3-none-any.whl"
+```
+
+For MCP servers and clients, install it with the `mcp` extra, which adds `crucible_sdk.mcp` and the `mcp` package;
+without it, `import crucible_sdk.mcp` raises an `ImportError` that names the missing `mcp` package:
+
+```sh
 pip install "crucible-sdk[mcp] @ https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible_sdk-0.1.3-py3-none-any.whl"
 ```
 
-`uv add` and `uv pip install` take the same requirement. To install from a checkout of the repository instead:
+`uv add` and `uv pip install` take the same requirements. To install from a checkout of the repository instead:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
 uv pip install "./crucible/sdk/python[mcp]"   # or: pip install "./crucible/sdk/python[mcp]"
 ```
 
-The `mcp` extra adds `crucible_sdk.mcp` and the `mcp` package; agent tracing alone needs only the core package.
 The examples on this page are complete files. Each was run with Python 3.12 and `mcp` 2.3.0, in an environment
 installed this way, with only the endpoint changed to the SDK's test collector.
 
@@ -150,7 +156,7 @@ output.
 
 The setters act on the current span, so they also work inside spans that another instrumentation opened.
 
-[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show on main.
+[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show.
 Two notes for agents: the views show the model from `gen_ai.response.model`, which no helper sets, so set it on the
 span as the example does; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that
 `tags` sets.
@@ -276,6 +282,11 @@ middleware was removed, `instrument` puts it back. It returns the server it was 
 | `transport` | `"stdio"`, `"streamable_http"` or `"sse"`. By default a message with an HTTP request is HTTP and anything else is stdio |
 | `server_name`, `server_version` | Default to the server's own name and version |
 
+The MCP **Sessions** page groups a server's operations by the first of these that an operation has: the session id
+of a session-based HTTP connection, its session handle, the trace of the client span that made the call, and the
+server process. So on stdio, `handle_params` makes each value, each order id in the example above, a session of its
+own, shown as grouped by **Session handle**.
+
 ### What the middleware sends
 
 On every message it adds `crucible.mcp.capture_source = sdk`, the era, the transport, the server name and version,
@@ -294,10 +305,11 @@ state.
 Never sent: `requestState` values, raw session ids, raw IP addresses, Authorization values, cookies and baggage.
 Error messages and exception events of MCP spans are cut to 8,192 and 16,384 characters and scrubbed before export.
 
-On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
-as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
+Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
+with status `error`, and captured arguments and results become the span's input and output. Crucible also records
+each such span as an MCP operation on the server side, which takes the other MCP keys: they show on the MCP
+**Operation** page ([MCP analytics](mcp-analytics.md#pages)) and in the SQL workspace's `crucible_sql.mcp_operations`,
+not among the span's attributes.
 
 ### Errors and identity in tool handlers
 

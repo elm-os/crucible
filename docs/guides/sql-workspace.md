@@ -36,6 +36,20 @@ Run it with **Control+Enter**. The relations with a time column need the window:
 `Filter on the time window: add a condition such as start_time >= {from:DateTime64(6)}`. The statement goes to
 ClickHouse as written, so the ClickHouse SQL reference applies; an error says where in the statement it happened.
 
+Costs are in nano-USD, billionths of a dollar: `total_cost_nusd` is a span's cost, and `cost_values` holds the cost
+of each entry of `usage_keys` and `usage_values`. A span with a descendant that carries usage or cost, such as an
+agent span that reports its run's totals, has `usage_aggregate = 1`. Leave those spans out when you sum
+`crucible_sql.spans`, or the run's usage counts twice; the `sessions`, `users` and `span_metrics` sums leave them out
+already:
+
+```sql
+SELECT model_response AS model, sum(total_cost_nusd) / 1e9 AS cost_usd, sum(total_tokens) AS tokens
+FROM crucible_sql.spans
+WHERE start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)} AND usage_aggregate = 0
+GROUP BY model
+ORDER BY cost_usd DESC
+```
+
 ## Results and limits
 
 A result holds at most 10,000 rows and 16 MiB, with each cell cut at 64 KiB; a cut result says so. A run may take
@@ -44,8 +58,14 @@ hourly allowance of ClickHouse statements, 1,800 by default, of which a run take
 JSON lines or Parquet; CSV cells that start with `=`, `+`, `-` or `@` get a leading apostrophe, so a spreadsheet does
 not run them.
 
-**History** lists the project's runs of the last 30 days: who ran what, its outcome, rows and time. **Load** puts a
-run's query back in the editor.
+JSON lines writes 64-bit integers, such as counts, token sums and `duration_us`, as strings (`{"spans":"34"}`), which
+keeps values above 2^53 exact. To get JSON numbers, cast in the query: to a 32-bit type for values below 2^32, such
+as `toUInt32(count()) AS spans`, or to `Float64`, which is exact up to 2^53. Or convert while reading, as with
+`int(row["spans"])` in Python.
+
+**History** lists runs of the last 30 days: who ran what, its outcome, rows and time. A project admin sees every run
+of the project, and anyone else their own; a key lists only its own runs. **Load** puts a run's query back in the
+editor.
 
 ## Saved queries
 
@@ -56,8 +76,21 @@ shared ones.
 
 ## Through the API
 
+A key made in **Settings**, **API keys** has the scopes `ingest`, `read` and `write`, not `sql`. Make a key with
+`sql` on the command line, from the folder that holds the Compose file; with `read` as well, it also reads the schema
+and its own runs:
+
+```sh
+docker compose exec crucible crucible admin create-key --project default --scopes read,sql --note "sql reports"
+```
+
+Or, signed in as a project admin, send `POST /api/v1/projects/{project_id}/api-keys` with the body
+`{"note": "sql reports", "scopes": ["read", "sql"]}`, the session cookie, `X-Crucible-CSRF` and `Origin`
+([how to sign in](../api/README.md#authentication)).
+
 `POST projects/{project_id}/sql/run` takes `sql`, `from`, `to` and the values of other parameters, and returns the
-columns, the rows (as text, in ClickHouse's text form), whether the result was cut, and what the server read. With a
+columns, the rows, with each cell as ClickHouse's JSON output writes it (64-bit integers and dates as strings, other
+numbers as JSON numbers), whether the result was cut, and what the server read. With a
 key that has the `sql` scope:
 
 ```sh

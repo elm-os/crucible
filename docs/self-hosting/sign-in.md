@@ -13,7 +13,8 @@ a wider screen than a phone's; on a narrow screen they are read-only.
 - **Organization name**, 1 to 200 characters.
 - **Project access**. With **Every project**, the default, members and viewers have their organization role on
   every project. With **Only projects they're added to**, members and viewers see a project only once they are
-  added to it, with the role they get there. Owners and admins are project admins on every project either way.
+  added to it ([project members](#project-members)), with the role they get there. Owners and admins are project
+  admins on every project either way.
 - **Password sign-in**. On by default. Turned off, people sign in only through a provider. Crucible keeps it on
   while it is the only way to sign in: saving it off while the sign-in page offers no provider is refused, with what
   to turn on first.
@@ -23,11 +24,48 @@ a wider screen than a phone's; on a narrow screen they are read-only.
   when the provider they sign in with says the address is verified. Leave it empty to require an invitation for
   everyone.
 
+## Project members
+
+A project admin adds someone in the organization to a project through the API, with a project role: `admin`,
+`member` or `viewer`. With **Only projects they're added to**, that is how members and viewers reach a project.
+With **Every project**, a membership can raise someone's role on one project, so that an organization member added
+as `admin` is a project admin there; it never lowers a role.
+
+Sign in, with `CRUCIBLE_URL` set to the address you open the UI at (`server.public_url` when it is set), then list
+the organization's members to find the person's `user_id`:
+
+```sh
+CRUCIBLE_URL=http://127.0.0.1:8080
+CSRF=$(curl -s -c cookies.txt -X POST "$CRUCIBLE_URL/api/v1/auth/login" \
+  -H 'Content-Type: application/json' -H 'X-Crucible-CSRF: prelogin' -H "Origin: $CRUCIBLE_URL" \
+  -d '{"email": "you@example.com", "password": "your password"}' | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
+curl -s -b cookies.txt "$CRUCIBLE_URL/api/v1/org/members"
+```
+
+Then add them, with the project's id from **Settings**, **Project** (**Copy id**) and their `user_id` in the body:
+
+```sh
+PROJECT_ID=01a1f633-d59a-7014-8007-ae2dcfb94996
+curl -s -b cookies.txt -X POST "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/members" \
+  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: $CSRF" -H "Origin: $CRUCIBLE_URL" \
+  -d '{"user_id": "01a1f633-d59a-7014-8007-ae2dcfb94997", "role": "member"}'
+```
+
+The answer is 201 with the membership. Someone outside the organization is refused with 422 `validation_failed`:
+invite them first, and add them once they have accepted. An invitation made through the API can carry project
+memberships too: `POST /api/v1/org/invitations` with
+`{"email": "ada@example.com", "org_role": "member", "project_roles": [{"project_id": "...", "role": "member"}]}`
+adds them to those projects when they accept. `GET .../members` lists a project's members, and
+`PATCH .../members/{user_id}` with `{"role": "viewer"}` and `DELETE .../members/{user_id}` change and remove one
+([API](../api/README.md#projects-members-and-keys)).
+
 ## Sign-in providers
 
-A provider sends people back to Crucible after they sign in, so providers need `server.public_url`, the address
-people reach the server at ([configuration](configuration.md#server)). Until it is set, no provider is offered on
-the sign-in page, and each one shows **Not offered: server.public_url isn't set**.
+A provider sends people back to Crucible after they sign in, to the callback URL
+`<server.public_url>/api/v1/auth/oauth/<provider id>/callback`, so set `server.public_url`, the address people reach
+the server at ([configuration](configuration.md#server)), before you add one. Without it, no provider is offered on
+the sign-in page, and each one shows **Not offered: server.public_url isn't set** and no callback URL. The provider
+id is made when the provider is added, so the full callback URL shows once the provider exists.
 
 **Settings**, **Sign-in**, **Add provider**:
 
@@ -37,10 +75,9 @@ the sign-in page, and each one shows **Not offered: server.public_url isn't set*
 2. Optionally, list **Allowed email domains**. Only someone whose verified email address is at one of these domains
    then signs in with this provider, at every sign-in, also people who signed in with it before the list changed.
    The sign-in page names the allowed domains to someone it refuses.
-3. The last step shows the **Callback URL**, which holds the new provider's id:
-   `<server.public_url>/api/v1/auth/oauth/<provider id>/callback`. Register it with the provider: in a GitHub OAuth
-   app as the authorization callback URL, in a Google OAuth client as an authorized redirect URI, and with an
-   OpenID Connect provider as a redirect URI.
+3. The last step shows the **Callback URL**, with the new provider's id in it. Register it with the provider: in a
+   GitHub OAuth app as the authorization callback URL, in a Google OAuth client as an authorized redirect URI, and
+   with an OpenID Connect provider as a redirect URI.
 
 Each provider then shows whether it is **On** or **Turned off**, with these actions:
 

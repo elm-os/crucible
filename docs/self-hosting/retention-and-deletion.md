@@ -74,7 +74,26 @@ rows, so an export made while a request is still `pending` or `logged` can inclu
 
 ## Deleting a project
 
-An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`. The project leaves every list
+An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`, signed in: the request carries
+the session cookie, the session's CSRF token as `X-Crucible-CSRF`, the server's address as `Origin`, and the
+project's `ETag` as `If-Match` ([API](../api/README.md#authentication)). From a shell, with `CRUCIBLE_URL` set to
+the address you open the UI at (`server.public_url` when it is set) and the project's id from **Settings**,
+**Project** (**Copy id**):
+
+```sh
+CRUCIBLE_URL=http://127.0.0.1:8080
+PROJECT_ID=01a1f633-d59a-7014-8007-ae2dcfb94996
+CSRF=$(curl -s -c cookies.txt -X POST "$CRUCIBLE_URL/api/v1/auth/login" \
+  -H 'Content-Type: application/json' -H 'X-Crucible-CSRF: prelogin' -H "Origin: $CRUCIBLE_URL" \
+  -d '{"email": "you@example.com", "password": "your password"}' | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
+ETAG=$(curl -s -b cookies.txt -D - -o /dev/null "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID" \
+  | tr -d '\r' | grep -i '^etag:' | cut -d ' ' -f 2)
+curl -s -b cookies.txt -X DELETE "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID" -w '%{http_code}\n' \
+  -H "X-Crucible-CSRF: $CSRF" -H "Origin: $CRUCIBLE_URL" -H "If-Match: $ETAG"
+```
+
+The last command prints `204`. Without `If-Match` the answer is 428 `precondition_required`, and with an `ETag`
+that is no longer the project's, 412 `precondition_failed`: read the project again. The project leaves every list
 at once and its API keys stop working, on every server within 5 seconds. Its dashboards with their widgets and its
 media records go with it, and with an object store every object under the project's key prefix is deleted next
 ([media](media.md#deletion-and-retention)). Its telemetry stays in ClickHouse, where no page, API answer or MCP tool

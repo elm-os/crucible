@@ -199,7 +199,7 @@ func shutdown() {
 - `Span()` returns the OpenTelemetry span, for keys the helpers do not set, such as `crucible.trace.name`,
   `crucible.trace.tags`, `gen_ai.response.model` and `gen_ai.provider.name`.
 
-[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show on main.
+[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show.
 Two notes for agents: the views show the model from `gen_ai.response.model`, so set it on the span as the example
 does; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags of `WithTags`.
 
@@ -383,10 +383,11 @@ version and era, transport, client name and version, the outcome and its error c
 content block counts and, in the legacy era, the session id hashed as `mcp.session.id`. A `traceparent` in
 `params._meta` makes the span a child of the caller's span.
 
-On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
-as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
+Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
+with status `error`, and captured arguments and results become the span's input and output. Crucible also records
+each such span as an MCP operation on the server side, which takes the other MCP keys: they show on the MCP
+**Operation** page ([MCP analytics](mcp-analytics.md#pages)) and in the SQL workspace's `crucible_sql.mcp_operations`,
+not among the span's attributes.
 
 The MCP Go SDK does not pass middleware the JSON-RPC id of a request, so `Instrument` returns an `Instrumentation`
 whose `Transport` and `Handler` wrap what the server is connected over. With either, each request's span carries its
