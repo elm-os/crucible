@@ -303,7 +303,8 @@ the request's and the result's `requestState` are sent only as keyed hashes (`cr
 state.
 
 Never sent: `requestState` values, raw session ids, raw IP addresses, Authorization values, cookies and baggage.
-Error messages and exception events of MCP spans are cut to 8,192 and 16,384 characters and scrubbed before export.
+Error messages and exception events of MCP spans are cut to 2,048 bytes and 16,384 characters and scrubbed before
+export.
 
 Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
 with status `error`, and captured arguments and results become the span's input and output. Crucible also records
@@ -324,6 +325,18 @@ Inside a tool handler these calls refine the operation being handled; outside on
 
 Crucible hashes the subject with a per-project salt and keeps only the hash and the issuer, in the MCP operation's
 `user_subject_hash` and `user_issuer`.
+
+A tool error's message is the text of the result's first text block, sent whether or not a capture rule covers the
+tool. A tool that raises mcp's `ToolError("payment gateway unavailable")` records
+`Error executing tool <name>: payment gateway unavailable`; any other exception records only
+`Error executing tool <name>`, because mcp keeps a crash's text on the server and logs its traceback. For a failure's
+reason to show in Crucible, raise `ToolError` (from `mcp.server.mcpserver.exceptions`) or return an `isError`
+result.
+
+Calls mcp refuses before the tool runs are recorded as caller faults, with JSON-RPC code -32602: `Unknown tool:
+<name>` has the class `not_found`, and arguments that fail the tool's input model
+(`Error executing tool <name>: N validation error(s) for ...`) have the class `validation`. MCP analytics leaves
+caller faults out of calls, errors and latency unless **Include caller faults** is on.
 
 ### Content capture and scrubbing
 
@@ -396,7 +409,8 @@ a span takes the same time either way, and `flush` and `shutdown` return when th
 
 Within its 10-second timeout per export, the OpenTelemetry exporter the SDK uses retries a refused export, such as
 a 503, and waits for the server's `Retry-After` when it fits in the time left. A batch that still fails counts as
-failed and is not sent again.
+failed and is not sent again, and the exporter's logger (`opentelemetry.exporter.otlp.proto.http.trace_exporter`)
+writes a line for it, such as `Failed to export spans batch code: 401, reason: Unauthorized`.
 
 `export_stats()` returns the counters of the current exporter, all zero before `init` and after `shutdown`:
 
