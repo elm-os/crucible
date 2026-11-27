@@ -125,6 +125,7 @@ function RuleActions({ project, rule }: { project: SessionProject; rule: AlertRu
   });
   const failure = toggle.isError ? asUiError(toggle.error) : null;
 
+  // A rule that is already gone needs nothing more: the page goes back to the list either way.
   const removeOne = async (target: AlertRule) => {
     try {
       await deleteAlert(project.id, target);

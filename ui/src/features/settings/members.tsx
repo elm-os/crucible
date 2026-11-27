@@ -129,6 +129,7 @@ function MembersTable({
   const editable = (member: OrgMember) =>
     canManage && member.role !== "owner" && member.user_id !== self;
 
+  // Someone who is already gone needs nothing more: the refreshed list shows it.
   const removeMember = async (member: OrgMember) => {
     try {
       await removeOrgMember(member.user_id);

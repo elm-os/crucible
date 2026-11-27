@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { UiError } from "@/api/errors";
+import { fromHttpFailure, UiError } from "@/api/errors";
 import { Section } from "./section";
 
 afterEach(() => {
@@ -53,6 +53,35 @@ test("loading ladder: nothing before 300 ms, a skeleton until 5 s, then a label"
 
   act(() => vi.advanceTimersByTime(4_700));
   expect(screen.getByText("Still loading. Long time ranges take longer.")).toBeTruthy();
+});
+
+const failed = (status: number, code: string) =>
+  fromHttpFailure({
+    status,
+    problem: { code, status, request_id: "01a21b0c-5d3e-7a41-9b2f-6c8d0e1f2a3b" },
+    requestIdHeader: null,
+    retryAfterHeader: null,
+  });
+
+test("an unexpected failure gives the administrator's code, with a copy button", async () => {
+  renderProbe(async () => {
+    throw failed(500, "internal_error");
+  });
+  expect(await screen.findByText("This section couldn't load.")).toBeTruthy();
+  expect(screen.getByText("Try again in a moment.")).toBeTruthy();
+  expect(screen.getByText(/If this keeps happening, give your administrator this code/)).toBeTruthy();
+  expect(screen.getByText("01a21b0c-5d3e-7a41-9b2f-6c8d0e1f2a3b")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
+  expect(screen.queryByText(/Reference/)).toBeNull();
+});
+
+test("an expected failure says what to do, and shows no code", async () => {
+  renderProbe(async () => {
+    throw failed(403, "forbidden");
+  });
+  expect(await screen.findByText("Your role can't see this.")).toBeTruthy();
+  expect(screen.queryByText("01a21b0c-5d3e-7a41-9b2f-6c8d0e1f2a3b")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
 });
 
 test("a failed refresh keeps the last rows and offers a retry", async () => {

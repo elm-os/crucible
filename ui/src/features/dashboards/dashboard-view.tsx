@@ -183,6 +183,7 @@ function Actions({
   const router = useRouter();
   const queryClient = useQueryClient();
   const [remove] = useState(() => createAlertDialogController<Dashboard>());
+  // A dashboard that is already gone needs nothing more: the page goes back to the list either way.
   const run = async (target: Dashboard) => {
     try {
       await deleteDashboard(project, target);

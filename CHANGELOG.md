@@ -19,6 +19,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The docs at a release's tag install that release: the release pull request writes the new version into every
   install command in the README, the docs and the SDK READMEs, and the SDK release workflow fails while one names
   another version. At the tags v0.1.1 to v0.1.3 the install commands name the previous release.
+- The web UI shows a request's code only beside an unexpected failure (a server fault, an unknown error, or an
+  answer that is not from Crucible), as "If this keeps happening, give your administrator this code" with a Copy
+  code button; a wrong password, a field to correct, a conflict, a missing permission or a rate limit shows none.
+  In 0.1.3 every error printed a bare "Reference" id.
 
 ## [0.1.3] - 2026-11-26
 

@@ -387,6 +387,8 @@ describe("deletion requests", () => {
     await act(() => pressIn("Delete data from Checkout", "Delete data"));
     expect(await screen.findAllByText(/isn't a trace id/)).not.toHaveLength(0);
     expect(requests(`POST ${REQUESTS}`)).toHaveLength(0);
+    // Focus lands on the field to fix.
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Trace ids" }));
 
     await act(() =>
       fill(
@@ -422,6 +424,29 @@ ${TRACE} `,
     await act(() => pressIn("Delete data from Checkout", "Delete data"));
     await screen.findByText("Crucible can't reach its database.");
     expect(screen.getByRole("dialog", { name: "Delete data from Checkout" })).toBeTruthy();
+  });
+
+  test("delete data: a request saved before its first step says so, and that resending is safe", async () => {
+    signIn(["read", "delete_traces"]);
+    serve({
+      [`GET ${RETENTION}`]: json(retention()),
+      [`GET ${REQUESTS}`]: json({ data: [], next_cursor: null }),
+      [`POST ${REQUESTS}`]: problem(503, "ingest_unavailable"),
+    });
+    renderPage();
+    await screen.findByText("No deletion requests yet.");
+    await act(() => press("Delete data"));
+    await screen.findByRole("dialog", { name: "Delete data from Checkout" });
+    approve = true;
+    await act(() => fill("Trace ids", TRACE));
+    await act(() => pressIn("Delete data from Checkout", "Delete data"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "Your request is saved, and the deletion starts within seconds.",
+    );
+    expect(alert.textContent).toContain("Press Delete data again to check that it started.");
+    expect(alert.textContent).toContain("If this keeps happening, give your administrator this code:");
+    expect(alert.textContent).not.toContain("yet");
   });
 
   test("trace ids are read as people paste them", () => {

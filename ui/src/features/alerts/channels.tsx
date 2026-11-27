@@ -135,6 +135,7 @@ function ChannelsTable({
   const [remove] = useState(() => createAlertDialogController<Channel>());
   const refresh = () => queryClient.invalidateQueries({ queryKey: alertKeys.channels(project.id) });
 
+  // A channel that is already gone needs nothing more; one that changed needs the fresh version first.
   const removeOne = async (channel: Channel) => {
     try {
       await deleteChannel(project.id, channel);

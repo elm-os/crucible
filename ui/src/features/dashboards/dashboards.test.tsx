@@ -292,6 +292,59 @@ describe("dashboards for agents", () => {
   });
 });
 
+describe("a save that meets someone else's change", () => {
+  test("a reload of their version that fails says so, instead of doing nothing", async () => {
+    navigation.search = `project=${PROJECT_A}&id=${ID}`;
+    const problem = (status: number, code: string) =>
+      new Response(JSON.stringify({ code, status, request_id: "req-reload" }), {
+        status,
+        headers: { "content-type": "application/problem+json" },
+      });
+    let reads = 0;
+    serve({
+      [`GET ${BASE}/dashboards/${ID}`]: () => {
+        reads += 1;
+        return reads === 1 ? json(DASHBOARD)() : problem(503, "control_plane_unavailable");
+      },
+      [`GET ${BASE}/metrics/schema`]: json(SCHEMA),
+      [`POST ${BASE}/metrics/query`]: json(EMPTY_METRICS),
+      [`PATCH ${BASE}/dashboards/${ID}`]: () => problem(412, "precondition_failed"),
+    });
+    renderPage(<DashboardEditor />);
+    await screen.findByText("Stat of Spans");
+    const edited = await agent.act({
+      steps: [
+        { ref: "Name", action: "setValue", args: ["Checkout health EU"] },
+        { ref: "Save", action: "press" },
+      ],
+    });
+    expect(edited.ok, edited.error?.message).toBe(true);
+    expect(await screen.findByText("Someone changed this dashboard since you opened it.")).toBeTruthy();
+    const reload = await agent.act({ steps: [{ ref: "Load their version", action: "press" }] });
+    expect(reload.ok, reload.error?.message).toBe(true);
+    expect(await screen.findByText("Crucible can't reach its database.")).toBeTruthy();
+    expect(screen.getByText("req-reload")).toBeTruthy();
+  });
+
+  test("a blank name says so under the field, and Save waits for one", async () => {
+    navigation.search = `project=${PROJECT_A}&id=${ID}`;
+    serve({
+      [`GET ${BASE}/dashboards/${ID}`]: json(DASHBOARD),
+      [`GET ${BASE}/metrics/schema`]: json(SCHEMA),
+      [`POST ${BASE}/metrics/query`]: json(EMPTY_METRICS),
+    });
+    renderPage(<DashboardEditor />);
+    await screen.findByText("Stat of Spans");
+    const cleared = await agent.act({ steps: [{ ref: "Name", action: "setValue", args: [""] }] });
+    expect(cleared.ok, cleared.error?.message).toBe(true);
+    const name = screen.getByRole("textbox", { name: "Name" });
+    await waitFor(() => expect(name.getAttribute("aria-invalid")).toBe("true"));
+    const message = screen.getByText("Enter a name for the dashboard.");
+    expect(name.getAttribute("aria-describedby")?.split(" ")).toContain(message.id);
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+  });
+});
+
 describe("an MCP widget in the editor", () => {
   test("reads the side and capture source chosen in the sheet, which shows them only for MCP calls", async () => {
     navigation.search = `project=${PROJECT_A}&id=${ID}`;

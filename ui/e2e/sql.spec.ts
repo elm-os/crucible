@@ -345,7 +345,7 @@ test.describe("sql: editor and result", () => {
     );
     await expect(card.locator("[data-clickhouse]")).toHaveCSS("font-family", /mono/i);
     await expect(card.locator("[data-position]")).toHaveText("Line 2, column 6");
-    await expect(card).toContainText("req-run");
+    await expect(card).not.toContainText("req-run");
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
     const offset = SQL_EXAMPLE.indexOf("\n") + 6;
     expect(await editor(page).evaluate((field: HTMLTextAreaElement) => field.selectionStart)).toBe(
@@ -443,7 +443,7 @@ test.describe("sql: editor and result", () => {
     await open(page);
     await runButton(page).click();
     const card = section(page, "Result").getByRole("alert");
-    await expect(card).toContainText("Nothing was changed. Try again in a moment.");
+    await expect(card).toContainText("Try again in a moment.");
     await expect(card).toContainText("req-500");
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
   });
@@ -672,9 +672,8 @@ test.describe("sql: saved queries", () => {
     await expect(
       saved.getByText("Saved queries and history are unavailable right now."),
     ).toBeVisible({ timeout: 10_000 });
-    await expect(
-      saved.getByText("The control plane database did not answer. Try again shortly."),
-    ).toBeVisible();
+    await expect(saved.getByText("Crucible can't reach its database. Try again shortly.")).toBeVisible();
+    await expect(saved.getByText(/control plane/)).toHaveCount(0);
     await expect(saved.getByText("req-saved")).toBeVisible();
     expect(api.count(SQL_SAVED_PATH)).toBe(2);
     await expectAccessible(page, "sql saved queries error");
