@@ -5,6 +5,7 @@ import { AuthGate } from "./auth-gate";
 import { FeedbackMenu } from "./feedback-menu";
 import { MobileNav } from "./mobile-nav";
 import { Nav } from "./nav";
+import { Brand } from "@/components/brand";
 import { ProjectSwitcher } from "./project-switcher";
 import { TimeRangeControl } from "./time-range-control";
 
@@ -12,8 +13,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-dvh">
       <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col gap-4 border-e border-ash-border px-3 py-4 md:flex">
-        <Link href="/home" className="wordmark px-2 py-1 no-underline">
-          Crucible
+        <Link href="/home" className="inline-flex px-2 py-1 no-underline">
+          <Brand />
         </Link>
         <Nav />
       </aside>
