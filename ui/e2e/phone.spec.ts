@@ -1,5 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import {
+  BOUNDS_PATH,
+  dataBounds,
   expect,
   expectAccessible,
   expectNoPageScrollX,
@@ -61,6 +63,7 @@ test.describe("phone at 390 px", () => {
         json(metrics(measuresOf(route).map((measure) => ({ measure, values: [1, 2] })))),
       ),
     );
+    api.on(BOUNDS_PATH, json(dataBounds()));
     await page.goto(`/home/?project=${PROJECT}`);
     await expect(page.getByRole("region", { name: "Set up" })).toBeVisible();
     await expectNoPageScrollX(page);

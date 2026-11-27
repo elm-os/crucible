@@ -45,6 +45,15 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The Rust SDK logs one `tracing` warning when an export first fails, with the traces URL and the exporter's error,
   which names the HTTP status; later failures count in `stats().failed`. In 0.1.3 the Go and Rust SDKs said nothing
   when exports on the background interval failed.
+- The Set up card on Home marks each step from the project's state: Create an API key is done once the project has
+  an active key, Send your first trace once spans arrive, Instrument an MCP server once MCP operations arrive on
+  either side, and Invite your team once the organization has a second member. A step the viewer's role can't do,
+  or that a server without a control plane doesn't offer, says who or what does it instead. In 0.1.3 every step
+  stayed "To do".
+- Each step to do on the Home Set up card links to where it is done: the project's API keys page, the Members page,
+  and the guides to sending traces and to instrumenting an MCP server.
+- The Home Set up card comes first on a project that has received no data, and it is hidden once every step is done
+  or is one the viewer can't do.
 - `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
   status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
   its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's
