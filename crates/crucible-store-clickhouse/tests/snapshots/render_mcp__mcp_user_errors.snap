@@ -2,15 +2,15 @@
 source: crates/crucible-store-clickhouse/tests/render_mcp.rs
 expression: "rendered(&live(mcp_user_errors(s, w, &c, caller, &read, &users)))"
 ---
-SELECT user_id, user_subject_hash, count() AS m0 FROM crucible.mcp_ops WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (side = {p5:String} AND capture_source IN ({p6:String}) AND caller_fault = {p7:UInt8} AND error_class != {p8:String} AND user_id IN ({p9:String}) AND user_subject_hash IN (unhex({p10:String}))) GROUP BY user_id, user_subject_hash
+SELECT user_id, user_subject_hash, count() AS m0 FROM crucible.mcp_ops WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (side = {p5:String} AND capture_source IN {p6:Array(String)} AND caller_fault = {p7:UInt8} AND error_class != {p8:String} AND user_id IN {p9:Array(String)} AND user_subject_hash IN {p10:Array(FixedString(16))}) GROUP BY user_id, user_subject_hash
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime64(6, 'UTC') = "1794907800.000000"
 p2: DateTime64(6, 'UTC') = "1794911400.000000"
 p3: DateTime('UTC') = "1794907800"
 p4: DateTime('UTC') = "1794911340"
 p5: String = "server"
-p6: String = "sdk"
+p6: Array(String) = "['sdk']"
 p7: UInt8 = "0"
 p8: String = "none"
-p9: String = "alice"
-p10: String = "abababababababababababababababab"
+p9: Array(String) = "['alice']"
+p10: Array(FixedString(16)) = "['\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab\\xab']"

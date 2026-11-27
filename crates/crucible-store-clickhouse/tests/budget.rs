@@ -341,9 +341,7 @@ fn trace_plans_fit_one_request() {
             budget.plan("fact_page", fact_page(s, hour(), &c, caller, table, &ids));
         }
     }
-    // Under the costliest pending deletions the filtered trace list, which carries them on its heads and on its
-    // span table, goes above the budget; the store then refuses it as too broad.
-    budget.finish(&[("filtered_trace_list", 1_515)]);
+    budget.finish(&[]);
 }
 
 #[test]
@@ -436,10 +434,7 @@ fn span_and_search_plans_fit_one_request() {
             span_bodies(s, &c, caller, trace(0), span(0), T0),
         );
     }
-    // Under the costliest pending deletions the span list, which carries them on `span_core` and on
-    // `span_payload`, and the lookup of a search's hits go above the budget; the store then refuses them as too
-    // broad.
-    budget.finish(&[("search_spans", 1_061), ("span_list", 1_557)]);
+    budget.finish(&[]);
 }
 
 #[test]

@@ -120,8 +120,8 @@ impl From<CivilDate> for Literal {
     }
 }
 
-/// The next power of two at or above `len` (at least 1). SQL text depends on list arity only, so the renderer
-/// pads every `In` list to this length to bound the number of distinct statements (contract section 8.3).
+/// The next power of two at or above `len` (at least 1). The renderer pads the token lists of a text search, one
+/// parameter per token, to this length to bound the number of distinct statements (contract section 8.3).
 pub const fn padded_in_len(len: usize) -> usize {
     if len <= 1 { 1 } else { len.next_power_of_two() }
 }

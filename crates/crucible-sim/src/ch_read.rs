@@ -452,6 +452,8 @@ enum Test {
     TextMatch(usize, String),
     /// The column's value is among the ids of a set, evaluated before the test.
     InSet(usize, BTreeSet<Vec<u8>>),
+    /// The column's value is listed and the row's arrival time (the second column) is before its instant.
+    ArrivedBefore(usize, usize, Vec<(Value, Value)>),
 }
 
 /// The ids of a set membership's aggregate, as the read that holds it evaluates them.
@@ -489,6 +491,18 @@ impl Test {
                 )
             }
             Pred::TextMatch(needle) => Self::TextMatch(index(def, "name")?, needle.clone()),
+            Pred::ArrivedBefore {
+                column,
+                received_at,
+                before,
+            } => Self::ArrivedBefore(
+                index(def, column.name())?,
+                index(def, received_at.name())?,
+                before
+                    .iter()
+                    .map(|(value, at)| (literal(value), Value::Time(*at)))
+                    .collect(),
+            ),
         })
     }
 
@@ -532,6 +546,16 @@ impl Test {
                     return None;
                 }
                 Some(ids.contains(&key_of([found])))
+            }
+            Self::ArrivedBefore(at, arrived, before) => {
+                let found = row.get(*at)?;
+                if matches!(found, Value::Null) {
+                    return None;
+                }
+                let arrival = row.get(*arrived)?;
+                Some(before.iter().any(|(value, instant)| {
+                    equal(found, value) && compare(arrival, instant) == Some(Ordering::Less)
+                }))
             }
             Self::StartsWith(at, prefix) => Some(bytes_of(row.get(*at)?)?.starts_with(prefix)),
             Self::HasAny(at, values) => match row.get(*at)? {
@@ -581,6 +605,7 @@ fn lists(pred: &Pred) -> (usize, bool) {
             .fold((0, false), |(a, x), (b, y)| (a.max(b), x || y)),
         Pred::Not(operand) => lists(operand),
         Pred::In(_, values) => (values.len(), false),
+        Pred::ArrivedBefore { before, .. } => (before.len(), false),
         Pred::InSet(_, set) => (lists(set.pred()).0, true),
         _ => (0, false),
     }

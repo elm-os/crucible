@@ -216,8 +216,7 @@ pub fn mcp_users(
     )
 }
 
-/// The most users one [`mcp_user_errors`] names: two bound values each, beside the capture-source selection's
-/// server names and the rows that pending deletions hide. A page of users is read in chunks of this length.
+/// The most users one [`mcp_user_errors`] names. A page of users is read in chunks of this length.
 pub const MCP_USER_ERRORS_PER_READ: usize = 128;
 
 /// The failed operations of some users of a page (1 to [`MCP_USER_ERRORS_PER_READ`]): `user_id`,

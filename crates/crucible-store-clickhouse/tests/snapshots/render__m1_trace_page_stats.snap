@@ -2,11 +2,8 @@
 source: crates/crucible-store-clickhouse/tests/render.rs
 expression: rendered(&plan)
 ---
-SELECT trace_id, min(min_start) AS m0, max(max_end) AS m1, max(has_root) AS m2, min(min_head_start) AS m3, sum(span_count) AS m4, sum(error_count) AS m5, sum(total_cost_nusd) AS m6, sum(input_tokens) AS m7, sum(output_tokens) AS m8, sum(total_tokens) AS m9, max(trace_name_pick) AS m10, max(user_id_pick) AS m11, max(session_id_pick) AS m12 FROM crucible.trace_stats WHERE project_id = {p0:UUID} AND row_day >= {p1:Date} AND row_day <= {p2:Date} AND trace_id IN (unhex({p3:String}), unhex({p4:String}), unhex({p5:String}), unhex({p6:String})) GROUP BY trace_id
+SELECT trace_id, min(min_start) AS m0, max(max_end) AS m1, max(has_root) AS m2, min(min_head_start) AS m3, sum(span_count) AS m4, sum(error_count) AS m5, sum(total_cost_nusd) AS m6, sum(input_tokens) AS m7, sum(output_tokens) AS m8, sum(total_tokens) AS m9, max(trace_name_pick) AS m10, max(user_id_pick) AS m11, max(session_id_pick) AS m12 FROM crucible.trace_stats WHERE project_id = {p0:UUID} AND row_day >= {p1:Date} AND row_day <= {p2:Date} AND trace_id IN {p3:Array(FixedString(16))} GROUP BY trace_id
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: Date = "2026-11-17"
 p2: Date = "2026-11-17"
-p3: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-p4: String = "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
-p5: String = "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
-p6: String = "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+p3: Array(FixedString(16)) = "['\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1','\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2\\xa2','\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3\\xa3']"

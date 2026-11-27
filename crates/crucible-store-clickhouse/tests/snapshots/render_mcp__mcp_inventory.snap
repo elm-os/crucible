@@ -2,10 +2,9 @@
 source: crates/crucible-store-clickhouse/tests/render_mcp.rs
 expression: "rendered(&live(mcp_inventory(s, w, &c, caller, Some(\"files\"), &deploys)))"
 ---
-SELECT server_name, deploy_id, tool_name, schema_hash, min(first_seen) AS m0, max(last_seen) AS m1 FROM crucible.mcp_tool_inventory WHERE project_id = {p0:UUID} AND (server_name = {p3:String} AND deploy_id IN ({p4:String}, {p5:String})) GROUP BY server_name, deploy_id, tool_name, schema_hash HAVING max(last_seen) >= {p1:DateTime64(6, 'UTC')} AND min(first_seen) < {p2:DateTime64(6, 'UTC')}
+SELECT server_name, deploy_id, tool_name, schema_hash, min(first_seen) AS m0, max(last_seen) AS m1 FROM crucible.mcp_tool_inventory WHERE project_id = {p0:UUID} AND (server_name = {p3:String} AND deploy_id IN {p4:Array(String)}) GROUP BY server_name, deploy_id, tool_name, schema_hash HAVING max(last_seen) >= {p1:DateTime64(6, 'UTC')} AND min(first_seen) < {p2:DateTime64(6, 'UTC')}
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime64(6, 'UTC') = "1794907800.000000"
 p2: DateTime64(6, 'UTC') = "1794911400.000000"
 p3: String = "files"
-p4: String = "v1"
-p5: String = "v2"
+p4: Array(String) = "['v1','v2']"

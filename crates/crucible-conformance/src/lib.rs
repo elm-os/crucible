@@ -381,6 +381,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         "An MCP read of a selection of 1,000 servers (8.3, 9.5)",
         field_budget::mcp_selection(&ctx)
     );
+    row!(
+        "A value list of more than 100 KB in two parameters; a longer value refused before it is sent (8.3)",
+        field_budget::long_values(&ctx)
+    );
     row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
     row!("ChModel differential: typed plans (2.6, 8.1)", async {
         let extra = differential::extra(&ctx).await?;

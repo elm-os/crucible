@@ -2,17 +2,16 @@
 source: crates/crucible-store-clickhouse/tests/render_mcp.rs
 expression: "rendered(&live(mcp_tool_series(s, w, &c, caller, &files, \"read_file\",\nStep::Minute)))"
 ---
-SELECT toDateTime(toStartOfMinute(toDateTime(minute, {p0:String})), {p0:String}) AS bucket, error_class, caller_fault, sum(count) AS m0, sumMap(dur_hist) AS m1 FROM crucible.mcp_tool_rollup WHERE project_id = {p1:UUID} AND minute >= {p2:DateTime('UTC')} AND minute <= {p3:DateTime('UTC')} AND (side = {p4:String} AND ((server_name IN ({p5:String}) AND capture_source IN ({p6:String})) OR (server_name IN ({p7:String}) AND capture_source IN ({p8:String}, {p9:String}))) AND server_name = {p10:String} AND method = {p11:String} AND target_name = {p12:String}) GROUP BY bucket, error_class, caller_fault
+SELECT toDateTime(toStartOfMinute(toDateTime(minute, {p0:String})), {p0:String}) AS bucket, error_class, caller_fault, sum(count) AS m0, sumMap(dur_hist) AS m1 FROM crucible.mcp_tool_rollup WHERE project_id = {p1:UUID} AND minute >= {p2:DateTime('UTC')} AND minute <= {p3:DateTime('UTC')} AND (side = {p4:String} AND ((server_name IN {p5:Array(String)} AND capture_source IN {p6:Array(String)}) OR (server_name IN {p7:Array(String)} AND capture_source IN {p8:Array(String)})) AND server_name = {p9:String} AND method = {p10:String} AND target_name = {p11:String}) GROUP BY bucket, error_class, caller_fault
 p0: String = "UTC"
 p1: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p2: DateTime('UTC') = "1794907800"
 p3: DateTime('UTC') = "1794911340"
 p4: String = "server"
-p5: String = "files"
-p6: String = "sdk"
-p7: String = "db"
-p8: String = "proxy_stdio"
-p9: String = "proxy_http"
-p10: String = "files"
-p11: String = "tools/call"
-p12: String = "read_file"
+p5: Array(String) = "['files']"
+p6: Array(String) = "['sdk']"
+p7: Array(String) = "['db']"
+p8: Array(String) = "['proxy_stdio','proxy_http']"
+p9: String = "files"
+p10: String = "tools/call"
+p11: String = "read_file"

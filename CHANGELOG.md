@@ -4,6 +4,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- The span list, the filtered trace list and search return their rows while deletions wait to be applied, and an
+  MCP read returns its rows for more than 128 servers of one capture source: each value list of a statement is one
+  ClickHouse parameter, so no request passes the default `http_max_fields` of 1,000. In 0.1.3 ClickHouse refused
+  these reads with long filters (a span list at its filter caps from 9 pending deletions) and with 129 servers.
 - With `clickhouse.cluster` set, a start refuses tables created for a single server on any replica that answers,
   before any statement runs on the cluster, and names the replica, its tables and the fix. In 0.1.3 the check read
   only the replica that `clickhouse.url` names, and the `ON CLUSTER` statements left another replica's

@@ -17,8 +17,7 @@ use crate::pred::{MAX_LIST, Pred};
 /// The largest page of [`export_spans`].
 pub const EXPORT_PAGE_MAX: u32 = 10_000;
 
-/// The most spans one lookup of a page names ([`export_payloads`], [`export_mcp_ops`], [`export_mcp_content`]):
-/// each span is four bound values of the statement, so a lookup holds as many values as a list of [`MAX_LIST`].
+/// The most spans one lookup of a page names ([`export_payloads`], [`export_mcp_ops`], [`export_mcp_content`]).
 /// A page's spans are looked up in chunks of this length.
 pub const EXPORT_LOOKUP_SPANS: usize = MAX_LIST / 4;
 

@@ -10,21 +10,24 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
+use crucible_env::{QueryError, TelemetryStore as _};
+use crucible_plan::test_support::query_plan;
 use crucible_plan::{
-    Caller, Filter, Hidden, HiddenSelector, MAX_FILTER_VALUES, McpRead, McpSelection, Pred,
-    QueryClass, QueryPlan, RetentionClamp, Row, SEARCH_SPANS_PER_LOOKUP, SearchField, SearchKey,
-    SearchRequest, SourceChoice, SpanListRequest, TRACE_LIST_MAX_TAGS, TextField, TokenMode,
-    TraceListRequest, Value, filtered_trace_list, mcp_presence, mcp_servers, search, search_spans,
-    span_list,
+    Caller, Filter, Hidden, HiddenSelector, Literal, MAX_FILTER_VALUES, MAX_LIST, McpRead,
+    McpSelection, Node, Pred, QueryClass, QueryPlan, RetentionClamp, Row, SEARCH_SPANS_PER_LOOKUP,
+    Scan, SearchField, SearchKey, SearchRequest, SourceChoice, SpanListRequest,
+    TRACE_LIST_MAX_TAGS, TextField, TokenMode, TraceListRequest, Value, filtered_trace_list,
+    mcp_presence, mcp_servers, search, search_spans, span_list,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, HeadKind, Level, McpSide, ObservationType, ProjectScope, SpanId,
     TableId, TimeWindow, Timestamp, TraceId,
 };
 use crucible_schema::{Column, RetentionSettings, SpanCoreCol, TraceHeadsCol};
+use crucible_store_clickhouse::render;
 
 use crate::blocks::Rows;
-use crate::differential::{insert, rows, stamped};
+use crate::differential::{insert, rows, same, stamped};
 use crate::inserts::{id8, plain_rows, uuid};
 use crate::reads::rollup;
 use crate::{Ctx, T0, expect};
@@ -430,6 +433,66 @@ pub(crate) async fn lists(ctx: &Ctx) -> Result<String> {
         listed.len(),
         traces.len(),
         found.len()
+    ))
+}
+
+/// A value list whose text passes [`render::FIELD_VALUE_BYTES`] is bound as two arrays and returns its rows; a
+/// value longer than a field may hold is refused before it is sent.
+pub(crate) async fn long_values(ctx: &Ctx) -> Result<String> {
+    let scope = load(ctx).await?;
+    let window = TimeWindow::new(at(-60), at(3_600)).map_err(|e| anyhow!("{e}"))?;
+    // 511 user ids of 200 bytes, and the user of traces 3, 13, 23 and 33.
+    let mut users: Vec<Literal> = (1..MAX_LIST)
+        .map(|n| Literal::String(format!("{n:0>200}")))
+        .collect();
+    users.push(Literal::String(user(3)));
+    let by_user = |users: Vec<Literal>| -> Result<QueryPlan> {
+        let scan = Scan::new(
+            TableId::SpanCore,
+            [SpanCoreCol::SpanId],
+            Pred::In(SpanCoreCol::UserId.column_ref(), users),
+        )?;
+        Ok(query_plan(
+            scope,
+            window,
+            QueryClass::List,
+            Node::Scan(scan),
+        ))
+    };
+    let plan = by_user(users)?;
+    let statement = render::plan(&plan)?;
+    let arrays: Vec<usize> = statement
+        .params
+        .iter()
+        .filter(|param| param.ty.starts_with("Array("))
+        .map(|param| param.value.len())
+        .collect();
+    expect(
+        arrays.len() == 2 && arrays.iter().all(|len| *len <= render::FIELD_VALUE_BYTES),
+        || format!("the list of 512 users is bound as arrays of {arrays:?} bytes"),
+    )?;
+    let found: BTreeSet<Vec<u8>> = column(&rows(ctx, plan).await.context("a list of 104 KB")?, 0)
+        .into_iter()
+        .collect();
+    let expected: BTreeSet<Vec<u8>> = [3, 13, 23, 33]
+        .into_iter()
+        .flat_map(|t| [span(2 * t), span(2 * t + 1)])
+        .collect();
+    same("the spans of a list of 104 KB", &found, &expected)?;
+    let long = by_user(vec![Literal::String("u".repeat(render::FIELD_VALUE_LIMIT))])?;
+    let refused = ctx.store.execute(long).await.err();
+    same(
+        "a value longer than a field holds",
+        &refused,
+        &Some(QueryError::TooBroad),
+    )?;
+    Ok(format!(
+        "a list of 512 users bound as two arrays of {} and {} bytes returned {} spans; a list of one value of {} \
+         bytes was refused before it was sent",
+        arrays[0],
+        arrays[1],
+        found.len(),
+        render::FIELD_VALUE_LIMIT
     ))
 }
 
