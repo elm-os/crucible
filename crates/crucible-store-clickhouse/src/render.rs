@@ -74,8 +74,8 @@ pub const FIELD_BUDGET: usize = 950;
 /// statement starts.
 pub const FIELD_VALUE_BYTES: usize = 100 * 1_024;
 
-/// ClickHouse's default `http_max_field_value_size`: the store refuses a statement with a longer field (its text or
-/// a value) before it sends it.
+/// ClickHouse's default `http_max_field_value_size`: the store refuses a statement with a longer field (a value, or
+/// the text of a statement with values, which travel as form parts) before it sends it.
 pub const FIELD_VALUE_LIMIT: usize = 131_072;
 
 /// The byte cap of one `metadata_kv` item (contract 3.1).
@@ -115,11 +115,14 @@ impl Statement {
     /// before the statement starts; `None` when it would not. The store does not send such a statement.
     pub fn oversize(&self, settings: &[(&str, String)]) -> Option<Oversize> {
         let fields = self.fields(settings);
+        // A statement with bound values travels as form parts, its text one of them; without any, the text is the
+        // request body, which the field size does not limit.
+        let text = (!self.params.is_empty()).then_some(self.sql.len());
         let longest = self
             .params
             .iter()
             .map(|param| param.value.len())
-            .chain([self.sql.len()])
+            .chain(text)
             .max()
             .unwrap_or_default();
         if fields > FIELD_BUDGET {
@@ -137,7 +140,8 @@ impl Statement {
 pub enum Oversize {
     /// The request would carry this many fields, more than [`FIELD_BUDGET`].
     Fields(usize),
-    /// A field (the statement text or a value) would be this many bytes long, more than [`FIELD_VALUE_LIMIT`].
+    /// A field (a value, or the text of a statement with values) would be this many bytes long, more than
+    /// [`FIELD_VALUE_LIMIT`].
     Value(usize),
 }
 

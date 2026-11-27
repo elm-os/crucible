@@ -690,6 +690,22 @@ fn a_statement_too_large_for_the_server_is_oversize() {
     assert!(
         matches!(many.oversize(&[]), Some(render::Oversize::Fields(fields)) if fields > render::FIELD_BUDGET)
     );
+    // The text of a statement with bound values is a form part too; without any, it is the request body, which
+    // the field size does not limit.
+    let text = |params: Vec<render::Param>| Statement {
+        sql: format!("SELECT 1 /* {} */", "x".repeat(render::FIELD_VALUE_LIMIT)),
+        params,
+        settings: Vec::new(),
+    };
+    let bound = render::Param {
+        ty: "UInt8".to_owned(),
+        value: "1".to_owned(),
+    };
+    assert!(matches!(
+        text(vec![bound]).oversize(&[]),
+        Some(render::Oversize::Value(_))
+    ));
+    assert_eq!(text(Vec::new()).oversize(&[]), None);
 }
 
 /// A search's core lookup of the most hits it names, under the largest list filter the core rows test (every
