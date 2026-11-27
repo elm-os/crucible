@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"log"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Span keys the processor sets on every span at start (contract 10.6).
@@ -109,6 +112,7 @@ func complete(s sdktrace.ReadOnlySpan, work *Deferred) (out sdktrace.ReadOnlySpa
 // blocking: when either bound is reached the span is dropped and counted. One goroutine drains the queue in
 // batches to the exporter. It runs the capture work a span deferred (see Deferred) as it takes the span off the
 // queue, one span at a time, so that the work never comes in bursts and leaves the other processors to requests.
+// The first failed export is logged once with the standard library's log package.
 type Processor struct {
 	exporter   sdktrace.SpanExporter
 	release    string
@@ -128,6 +132,7 @@ type Processor struct {
 
 	exported, queueFull, exportFailed atomic.Uint64
 	queuedBytes                       atomic.Int64
+	warnOnce                          sync.Once
 
 	// deferred holds the work spans defer, by span id, until they end.
 	deferred sync.Map
@@ -262,6 +267,8 @@ func (p *Processor) run() {
 		if err := p.exporter.ExportSpans(p.exportCtx, batch); err != nil {
 			p.exportFailed.Add(uint64(len(batch)))
 			failed = err
+			// Once: a wrong key or endpoint fails every batch.
+			p.warnOnce.Do(func() { log.Print(exportWarning(err)) })
 		} else {
 			p.exported.Add(uint64(len(batch)))
 		}
@@ -306,4 +313,55 @@ func (p *Processor) run() {
 			return
 		}
 	}
+}
+
+// exportWarning is what the first failed export logs: what went wrong, then the options that decide where spans go.
+func exportWarning(err error) string {
+	return "crucible: could not send spans: " + exportError(err) + "; spans go to Options.Endpoint, an OTLP " +
+		"listener, with Options.SecretKey, a secret key that has the ingest scope. CurrentStats().ExportFailed counts " +
+		"the spans not sent; this warning is not repeated."
+}
+
+// exportError is the exporter's error, with a refusal body that is a protobuf google.rpc.Status, as Crucible
+// answers, replaced by the status's message. The exporter ends the error of a refusal with "(body: <body>)".
+func exportError(err error) string {
+	text := err.Error()
+	head, body, ok := strings.Cut(text, " (body: ")
+	if !ok || !strings.HasSuffix(body, ")") {
+		return text
+	}
+	if message := statusMessage([]byte(strings.TrimSuffix(body, ")"))); message != "" {
+		return head + " (" + message + ")"
+	}
+	return text
+}
+
+// statusMessage is the message (field 2) of a protobuf google.rpc.Status that starts with its code (field 1), or ""
+// when b is not one.
+func statusMessage(b []byte) string {
+	if len(b) == 0 || b[0] != 0x08 {
+		return ""
+	}
+	message := ""
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return ""
+		}
+		b = b[n:]
+		if num == 2 && typ == protowire.BytesType {
+			v, m := protowire.ConsumeBytes(b)
+			if m < 0 {
+				return ""
+			}
+			message, b = string(v), b[m:]
+			continue
+		}
+		m := protowire.ConsumeFieldValue(num, typ, b)
+		if m < 0 {
+			return ""
+		}
+		b = b[m:]
+	}
+	return message
 }
