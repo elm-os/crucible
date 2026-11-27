@@ -7,7 +7,10 @@ data is in the [REST API](../api/README.md#reading-traces).
 ## Home
 
 **Home** shows the project's activity over the time range: traces over time, spans and errors per bucket, span
-latency percentiles, and the totals of traces, spans, errors and the error rate, tokens and cost.
+latency percentiles, and the totals of traces, spans, errors and the error rate, tokens and cost. The charts use
+minute buckets for the 1-hour range, hourly buckets for 24 hours and 7 days, and daily buckets for 30 days. Hover
+over or focus a chart to read a bucket: the arrow keys, Home and End step through the buckets, and **View as
+table** lists every value.
 
 The **Set up** card lists four steps, each marked **To do**, **Done** or **Couldn't check**:
 
