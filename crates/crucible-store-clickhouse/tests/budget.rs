@@ -20,29 +20,30 @@ use crucible_auth::test_support::scope;
 use crucible_plan::DeletePlan;
 use crucible_plan::test_support::batch_probe;
 use crucible_plan::{
-    Aggregation, Caller, CaptureClass, DimensionId, ExportSelection, FILTER_VALUES_MAX_LIMIT,
-    FactTable, FactsOf, Fill, Filter, FilterField, FilterValuesRequest, Granularity,
-    HIDDEN_REQUESTS, HIDDEN_TRACE_IDS, Hidden, HiddenSelector, Literal, MAX_FILTER_VALUES,
-    MAX_LIST, MAX_SNIPPET_TOKENS, MCP_LIST_MAX_LIMIT, MCP_USER_ERRORS_PER_READ, METRICS_MAX_SERIES,
-    McpContentField, McpOperationsRequest, McpOpsFilter, McpRead, McpSelection, McpUserKey,
-    MeasureId, MetricsQuery, PayloadField, PayloadRangeRequest, PlanError, Pred, QueryClass,
-    QueryPlan, RetentionClamp, SEARCH_MAX_LIMIT, SEARCH_SPANS_PER_LOOKUP, SESSION_LIST_MAX_LIMIT,
-    SPAN_CHILDREN_MAX_LIMIT, SPAN_LIST_MAX_LIMIT, SearchField, SearchRequest, SessionListRequest,
-    Source, SourceChoice, SpanListRequest, Step, TRACE_ID_LIST_CHUNK, TRACE_LIST_MAX_LIMIT,
-    TRACE_LIST_MAX_TAGS, TRACE_LIST_MAX_VALUES, TRACE_PAGED_SPAN_LIMIT, TextField, TokenMode,
-    TraceBounds, TraceListRequest, TraceSelector, USER_LIST_MAX_LIMIT, USER_SESSIONS_MAX_LIMIT,
-    UserListRequest, UserSessionsRequest, child_counts, data_bounds, deletion_issuers,
-    deletion_traces, expired_before, export_facts, export_spans, export_ties, fact_page, fact_rows,
-    filter_values, filtered_trace_list, lifecycle_column, lifecycle_oldest, mcp_client_versions,
-    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown, mcp_error_classes,
-    mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_metrics_totals,
-    mcp_operation, mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations,
-    mcp_presence, mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series,
-    mcp_tools, mcp_user, mcp_user_errors, mcp_users, metrics_other, metrics_ranking,
-    metrics_series, metrics_totals, payload_range, search, search_spans, session_detail,
-    session_list, span_bodies, span_children, span_list, spans_of_parents, trace_list,
-    trace_page_stats, trace_roots, trace_spans, trace_time_bounds, user_detail, user_list,
-    user_session_counts, user_sessions,
+    Aggregation, Caller, CaptureClass, DimensionId, EXPORT_LOOKUP_SPANS, ExportSelection,
+    FILTER_VALUES_MAX_LIMIT, FactTable, FactsOf, Fill, Filter, FilterField, FilterValuesRequest,
+    Granularity, HIDDEN_REQUESTS, HIDDEN_TRACE_IDS, Hidden, HiddenSelector, Literal,
+    MAX_FILTER_VALUES, MAX_LIST, MAX_SNIPPET_TOKENS, MCP_LIST_MAX_LIMIT, MCP_USER_ERRORS_PER_READ,
+    METRICS_MAX_SERIES, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead, McpSelection,
+    McpUserKey, MeasureId, MetricsQuery, PayloadField, PayloadRangeRequest, PlanError, Pred,
+    QueryClass, QueryPlan, RetentionClamp, SEARCH_MAX_LIMIT, SEARCH_SPANS_PER_LOOKUP,
+    SESSION_LIST_MAX_LIMIT, SPAN_CHILDREN_MAX_LIMIT, SPAN_LIST_MAX_LIMIT, SearchField,
+    SearchRequest, SessionListRequest, Source, SourceChoice, SpanListRequest, Step,
+    TRACE_ID_LIST_CHUNK, TRACE_LIST_MAX_LIMIT, TRACE_LIST_MAX_TAGS, TRACE_LIST_MAX_VALUES,
+    TRACE_PAGED_SPAN_LIMIT, TextField, TokenMode, TraceBounds, TraceListRequest, TraceSelector,
+    USER_LIST_MAX_LIMIT, USER_SESSIONS_MAX_LIMIT, UserListRequest, UserSessionsRequest,
+    child_counts, data_bounds, deletion_issuers, deletion_traces, expired_before, export_facts,
+    export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties, fact_page,
+    fact_rows, filter_values, filtered_trace_list, lifecycle_column, lifecycle_oldest,
+    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
+    mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
+    mcp_metrics_totals, mcp_operation, mcp_operation_chain, mcp_operation_content,
+    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
+    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user, mcp_user_errors,
+    mcp_users, metrics_other, metrics_ranking, metrics_series, metrics_totals, payload_range,
+    search, search_spans, session_detail, session_list, span_bodies, span_children, span_list,
+    spans_of_parents, trace_list, trace_page_stats, trace_roots, trace_spans, trace_time_bounds,
+    user_detail, user_list, user_session_counts, user_sessions,
 };
 use crucible_records::{
     CaptureSource, CivilDate, ErrorClass, Level, Lsn, McpSide, ObservationType, PartitionId,
@@ -821,6 +822,18 @@ fn export_plans_fit_one_request() {
         export_spans(s, hour(), &c, selected, T0, Some(key), 1_000),
     );
     budget.plan("export_ties", export_ties(s, hour(), &c, selected, T0, key));
+    let spans: Vec<(Timestamp, TraceId, SpanId)> = (0..EXPORT_LOOKUP_SPANS)
+        .map(|n| {
+            (
+                T0.saturating_add_micros(n as i64 * 1_000_000),
+                trace(n),
+                span(n),
+            )
+        })
+        .collect();
+    budget.plan("export_payloads", export_payloads(s, &c, &spans));
+    budget.plan("export_mcp_ops", export_mcp_ops(s, &c, &spans));
+    budget.plan("export_mcp_content", export_mcp_content(s, &c, &spans));
     for table in FactTable::ALL {
         budget.plan("export_facts", export_facts(s, hour(), &c, table, &ids));
     }
@@ -936,6 +949,7 @@ proptest! {
     #[test]
     fn lists_up_to_their_caps_fit_one_request(
         traces in 1..=MAX_LIST,
+        lookups in 1..=EXPORT_LOOKUP_SPANS,
         hits in 1..=SEARCH_SPANS_PER_LOOKUP,
     ) {
         let (s, c) = (project(), clamp());
@@ -944,6 +958,9 @@ proptest! {
         let parents: Vec<SpanId> = (0..traces).map(span).collect();
         let selected = ExportSelection { trace_ids: &ids, user_id: None, session_id: None };
         budget.plan("export_spans", export_spans(s, hour(), &c, selected, T0, None, 1_000));
+        let spans: Vec<(Timestamp, TraceId, SpanId)> =
+            (0..lookups).map(|n| (T0, trace(n), span(n))).collect();
+        budget.plan("export_payloads", export_payloads(s, &c, &spans));
         budget.plan("export_facts", export_facts(s, hour(), &c, FactTable::Scores, &ids));
         budget.plan(
             "trace_page_stats",

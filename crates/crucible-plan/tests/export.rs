@@ -7,9 +7,9 @@
 
 use crucible_auth::test_support;
 use crucible_plan::{
-    Direction, EXPORT_PAGE_MAX, ExportSelection, FactTable, MAX_LIST, Node, PlanError, QueryClass,
-    QueryPlan, RetentionClamp, effective_window, export_facts, export_mcp_content, export_mcp_ops,
-    export_payloads, export_spans, export_ties,
+    Direction, EXPORT_LOOKUP_SPANS, EXPORT_PAGE_MAX, ExportSelection, FactTable, MAX_LIST, Node,
+    PlanError, QueryClass, QueryPlan, RetentionClamp, effective_window, export_facts,
+    export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
 };
 use crucible_records::{ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{
@@ -209,11 +209,20 @@ fn the_page_and_lookup_sizes_are_bounded() {
         TraceId::from_bytes([1; 16]),
         SpanId::from_bytes([1; 8]),
     );
-    let many = vec![span; MAX_LIST + 1];
-    assert!(matches!(
+    // A lookup names at most EXPORT_LOOKUP_SPANS spans, four bound values each.
+    assert!(
+        export_payloads(scope, &keep(), &vec![span; EXPORT_LOOKUP_SPANS])
+            .unwrap()
+            .is_some()
+    );
+    let many = vec![span; EXPORT_LOOKUP_SPANS + 1];
+    for refused in [
         export_payloads(scope, &keep(), &many),
-        Err(PlanError::Limit)
-    ));
+        export_mcp_ops(scope, &keep(), &many),
+        export_mcp_content(scope, &keep(), &many),
+    ] {
+        assert!(matches!(refused, Err(PlanError::Limit)));
+    }
     let traces = vec![TraceId::from_bytes([2; 16]); MAX_LIST + 1];
     let selected = ExportSelection {
         trace_ids: &traces,

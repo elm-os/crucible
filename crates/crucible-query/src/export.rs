@@ -9,6 +9,8 @@
 //!   page made of one run reads the run completely.
 //! - **Duplicates.** A span sent twice is exported once: the copy with the greatest `lsn`, with the payload row
 //!   of that copy.
+//! - **Statements.** Every statement stays within what one ClickHouse request carries: a page's spans are looked
+//!   up [`EXPORT_LOOKUP_SPANS`] at a time and its traces' facts [`MAX_LIST`] at a time.
 //! - **Completeness.** The store is the only source, so [`QueryService::export_wait`] says when a span
 //!   acknowledged before `as_of` may not be in the store yet; the caller waits instead of writing a short file.
 //!   A store that does not answer fails the page.
@@ -17,8 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use crucible_plan::{
-    EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, FactTable, MAX_LIST, Row, Value,
-    export_facts, export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
+    EXPORT_LOOKUP_SPANS, EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, FactTable,
+    MAX_LIST, Row, Value, export_facts, export_mcp_content, export_mcp_ops, export_payloads,
+    export_spans, export_ties,
 };
 use crucible_recent::RecentSpan;
 use crucible_records::{
@@ -705,7 +708,7 @@ impl QueryService {
 
         // Payloads: the row of the copy that was kept, else the newest.
         let mut payloads: BTreeMap<(TraceId, SpanId), (Lsn, Row)> = BTreeMap::new();
-        for chunk in keys.chunks(MAX_LIST) {
+        for chunk in keys.chunks(EXPORT_LOOKUP_SPANS) {
             for row in read
                 .rows(export_payloads(scope, &read.clamp, chunk))
                 .await?
@@ -736,7 +739,7 @@ impl QueryService {
             .collect();
         let mut ops: BTreeMap<(TraceId, SpanId), Vec<ExportColumn>> = BTreeMap::new();
         let mut contents: BTreeMap<(TraceId, SpanId), Vec<ExportColumn>> = BTreeMap::new();
-        for chunk in mcp_keys.chunks(MAX_LIST) {
+        for chunk in mcp_keys.chunks(EXPORT_LOOKUP_SPANS) {
             for row in read.rows(export_mcp_ops(scope, &read.clamp, chunk)).await? {
                 use McpOpsCol as M;
                 let c = Cols::<M>::of(&row);

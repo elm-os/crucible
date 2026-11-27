@@ -8,8 +8,8 @@
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_plan::{
-    ExportKey, ExportSelection, FactTable, RetentionClamp, Row, Value, export_facts,
-    export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
+    EXPORT_LOOKUP_SPANS, ExportKey, ExportSelection, FactTable, RetentionClamp, Row, Value,
+    export_facts, export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
 };
 use crucible_records::{McpSide, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{Column, RetentionSettings, SpanCoreCol};
@@ -380,9 +380,10 @@ pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
         if keys.is_empty() {
             break;
         }
-        // The payload rows of the page's spans, as the export job looks them up.
+        // The payload rows of the page's spans, as the export job looks them up: more than
+        // EXPORT_LOOKUP_SPANS in all, at most that many per statement.
         let mut payloads = 0;
-        for chunk in keys.chunks(crucible_plan::MAX_LIST) {
+        for chunk in keys.chunks(EXPORT_LOOKUP_SPANS) {
             payloads += rows(ctx, live(export_payloads(scope, &clamp(), chunk)?)?)
                 .await
                 .with_context(|| format!("the payloads of {} spans of page {pages}", chunk.len()))?

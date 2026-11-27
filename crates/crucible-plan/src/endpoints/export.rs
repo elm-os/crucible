@@ -17,6 +17,11 @@ use crate::pred::{MAX_LIST, Pred};
 /// The largest page of [`export_spans`].
 pub const EXPORT_PAGE_MAX: u32 = 10_000;
 
+/// The most spans one lookup of a page names ([`export_payloads`], [`export_mcp_ops`], [`export_mcp_content`]):
+/// each span is four bound values of the statement, so a lookup holds as many values as a list of [`MAX_LIST`].
+/// A page's spans are looked up in chunks of this length.
+pub const EXPORT_LOOKUP_SPANS: usize = MAX_LIST / 4;
+
 /// What an export reads besides its window: every condition given must hold.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ExportSelection<'a> {
@@ -131,7 +136,7 @@ pub fn export_ties(
 pub type ExportSpanKey = (Timestamp, TraceId, SpanId);
 
 fn lookup_keys(spans: &[ExportSpanKey]) -> Result<Vec<Vec<Literal>>, PlanError> {
-    if spans.is_empty() || spans.len() > MAX_LIST {
+    if spans.is_empty() || spans.len() > EXPORT_LOOKUP_SPANS {
         return Err(PlanError::Limit);
     }
     Ok(spans
@@ -155,8 +160,8 @@ fn spans_window(spans: &[ExportSpanKey]) -> Result<TimeWindow, PlanError> {
     TimeWindow::new(from, to).map_err(|_| PlanError::Bounds)
 }
 
-/// The payload rows of some spans of a page (1 to [`MAX_LIST`]), every column of `span_payload`, in no order. A
-/// span sent twice has a row per copy; a span whose payload expired under the payload retention has none.
+/// The payload rows of some spans of a page (1 to [`EXPORT_LOOKUP_SPANS`]), every column of `span_payload`, in no
+/// order. A span sent twice has a row per copy; a span whose payload expired under the payload retention has none.
 pub fn export_payloads(
     scope: ProjectScope,
     clamp: &RetentionClamp,
@@ -181,7 +186,8 @@ pub fn export_payloads(
     )
 }
 
-/// The MCP operation rows of some spans of a page (1 to [`MAX_LIST`]), every column of `mcp_ops`, in no order.
+/// The MCP operation rows of some spans of a page (1 to [`EXPORT_LOOKUP_SPANS`]), every column of `mcp_ops`, in no
+/// order.
 pub fn export_mcp_ops(
     scope: ProjectScope,
     clamp: &RetentionClamp,
@@ -206,8 +212,8 @@ pub fn export_mcp_ops(
     )
 }
 
-/// The captured MCP content rows of some spans of a page (1 to [`MAX_LIST`]), every column of `mcp_content`,
-/// in no order.
+/// The captured MCP content rows of some spans of a page (1 to [`EXPORT_LOOKUP_SPANS`]), every column of
+/// `mcp_content`, in no order.
 pub fn export_mcp_content(
     scope: ProjectScope,
     clamp: &RetentionClamp,
