@@ -271,6 +271,7 @@ The Compose files in `deploy/compose/` read these from `.env` beside them and pa
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on. `127.0.0.1` keeps them on this machine |
 | `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the main listener |
 | `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | The host port of OTLP/HTTP ingest |
+| `RUST_LOG` | unset: info and above | The filter of the server's log, such as `info,crucible_jobs=debug` |
 | `MEDIA_ACCESS_KEY`, `MEDIA_SECRET_KEY` | none, required by `compose.media.yaml` | The credentials of the bundled S3 gateway ([media](media.md)) |
 | `CRUCIBLE_MEDIA_PORT` | `7070` | The host port of the bundled S3 gateway |
 | `CRUCIBLE_MEDIA_PUBLIC_URL` | `http://localhost:7070` | The gateway's address as SDKs and browsers reach it, which upload and download links name |

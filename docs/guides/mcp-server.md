@@ -131,7 +131,7 @@ session the server does not hold, such as one from before it restarted; the clie
 | `list_mcp_errors` | The errors of MCP calls on one side: calls per error class and failed calls per method and tool, or with `breakdown` the failed calls grouped down to the JSON-RPC code and message |
 | `compare_mcp_deploys` | One MCP server's tools in two deploys: per tool the calls, errors, error rate and latency of each, and the tools added, removed or with a changed schema |
 | `create_export` | Starts an export of the window's spans as `crucible-jsonl` or `otlp-json` |
-| `get_export` | One export's state and, once it is `ready`, the REST path to download the file from with the same key |
+| `get_export` | One export's state; while it is queued or running, its attempts, the seconds it has waited and its last error; and, once it is `ready`, the REST path to download the file from with the same key |
 
 - Every tool reads except `create_export`, which starts an export job and is marked as not read-only.
 - `filter` on `list_traces` and `list_spans` holds the conditions of the REST list filters: `environment`, `release`,

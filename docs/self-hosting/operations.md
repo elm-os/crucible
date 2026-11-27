@@ -193,6 +193,9 @@ listener, the WAL backend, whether the UI is embedded, and the mode (`clickhouse
 `postgres` or without a control plane). A request that failed on the server side is logged with the request id that
 its response carried in `X-Request-Id`.
 
+`RUST_LOG` filters the log, for example `RUST_LOG=info,crucible_jobs=debug` for the background jobs' debug lines;
+unset or empty, the server logs info and above. The Compose files pass it from the environment or `.env`.
+
 ## Memory and disk
 
 - **Memory.** The server's memory budgets are the recent-span index (`recent.max_bytes`, by default 10% of the

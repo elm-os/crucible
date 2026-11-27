@@ -28,7 +28,12 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
   -d '{"format": "crucible-jsonl", "from": "2026-11-19T00:00:00Z", "to": "2026-11-21T00:00:00Z", "gzip": true}'
 ```
 
-The answer is the export, `queued`. Poll `GET .../exports/{export_id}` until `state` is `ready`, then download the
+The answer is the export, `queued`. While it is `queued` or `running`, it carries `attempts` (the tries at writing
+the file, 0 before the first; a failed attempt is tried again after a pause, up to 12 attempts), `waited_secs` (the
+seconds since it was created) and `last_error` (what went wrong in the latest failed attempt, and what to do); a
+failed export's `last_error` says why it ended. The list of exports carries the same fields.
+
+Poll `GET .../exports/{export_id}` until `state` is `ready`, then download the
 file from its `download_path` with the same key; the file's SHA-256 is the export's `checksum`. With object storage
 the download answers `303` with a link to the file on the object store that works for 5 minutes, so follow it
 (`curl -L`), and any server of the deployment answers; without object storage the server that wrote the file
