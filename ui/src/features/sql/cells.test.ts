@@ -1,5 +1,13 @@
 import { expect, test } from "vitest";
-import { firstLine, formatBytes, formatCell, isNumericType, offsetAt } from "./cells";
+import {
+  enumValues,
+  firstLine,
+  formatBytes,
+  formatCell,
+  isNumericType,
+  offsetAt,
+  shortType,
+} from "./cells";
 
 test("formatCell shows null distinctly and keeps 64-bit integer strings whole", () => {
   expect(formatCell(null)).toEqual({ kind: "null", text: "null" });
@@ -24,6 +32,22 @@ test("isNumericType reads through Nullable and LowCardinality", () => {
   expect(isNumericType("String")).toBe(false);
   expect(isNumericType("DateTime64(6)")).toBe(false);
   expect(isNumericType("Array(UInt8)")).toBe(false);
+});
+
+test("shortType drops enum value lists, inside wrappers too, and leaves other types whole", () => {
+  expect(shortType("Enum8('unset' = 0, 'ok' = 1, 'error' = 2)")).toBe("Enum8");
+  expect(shortType("Nullable(Enum16('a' = 1))")).toBe("Nullable(Enum16)");
+  expect(shortType("Array(Enum8('a' = 1, 'b' = 2))")).toBe("Array(Enum8)");
+  expect(shortType("Enum8('it\\'s (odd)' = 1, 'x' = 2)")).toBe("Enum8");
+  expect(shortType("LowCardinality(String)")).toBe("LowCardinality(String)");
+  expect(shortType("DateTime64(6, 'UTC')")).toBe("DateTime64(6, 'UTC')");
+});
+
+test("enumValues lists an enum's value names in order, unescaped", () => {
+  expect(enumValues("Enum8('unset' = 0, 'ok' = 1, 'error' = 2)")).toEqual(["unset", "ok", "error"]);
+  expect(enumValues("Nullable(Enum16('a' = 1, 'b c' = 2))")).toEqual(["a", "b c"]);
+  expect(enumValues("Enum8('it\\'s (odd)' = 1)")).toEqual(["it's (odd)"]);
+  expect(enumValues("LowCardinality(String)")).toEqual([]);
 });
 
 test("formatBytes picks a binary unit", () => {

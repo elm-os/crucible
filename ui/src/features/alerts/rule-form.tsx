@@ -32,6 +32,7 @@ import type { AlertPreview } from "@/api/generated/AlertPreview";
 import type { AlertRule } from "@/api/generated/AlertRule";
 import type { AlertRuleInput } from "@/api/generated/AlertRuleInput";
 import type { SessionProject } from "@/api/generated/SessionProject";
+import { DialogBody } from "@/components/dialog-body";
 import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
 import { scopedHref } from "@/components/shell/nav";
@@ -114,7 +115,7 @@ export function RuleFormDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger className={className ?? "text-data"}>{label}</DialogTrigger>
       <DialogBackdrop />
-      <DialogContent className="max-h-[90dvh] w-full max-w-2xl overflow-y-auto">
+      <DialogContent className="w-[min(42rem,calc(100%_-_2rem))]">
         {open ? <RuleForm project={project} rule={rule} onSaved={() => setOpen(false)} /> : null}
       </DialogContent>
     </Dialog>
@@ -234,236 +235,356 @@ function RuleForm({
       </div>
       <form
         ref={formRef}
-        className="flex flex-col gap-6"
+        className="flex min-h-0 flex-col gap-6"
         onSubmit={submit}
         onInput={() => {
           if (failure) save.reset();
           setBadThreshold(false);
         }}
       >
-        <fieldset className="flex flex-col gap-4">
-          <legend className="mb-3 text-label font-medium text-ink-soft">Query</legend>
-          <Field name="name" invalid={failed("name") || undefined}>
-            <FieldLabel>Name</FieldLabel>
-            <Input required maxLength={120} autoComplete="off" defaultValue={rule?.name} />
-            <FieldError match="valueMissing">Enter a name, like Checkout errors.</FieldError>
-            <FieldError match={failed("name")}>Use 1 to 120 characters.</FieldError>
-          </Field>
-          {rule ? null : (
-            <Field>
-              <FieldLabel>Watch</FieldLabel>
-              <Select
-                items={RULE_SOURCES}
-                value={source}
-                onValueChange={(next) => {
-                  if (next === null) return;
-                  const chosen: RuleSource = next === "mcp_ops" ? "mcp_ops" : "spans";
-                  const first = measuresOf(chosen)[0];
-                  setSource(chosen);
-                  setMeasure(first.value);
-                  setAggregation(first.aggregations[0]);
-                  preview.reset();
-                }}
-              >
-                <SelectTrigger className="text-data">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RULE_SOURCES.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        <DialogBody className="gap-6">
+          <fieldset className="flex flex-col gap-4">
+            <legend className="mb-3 text-label font-medium text-ink-soft">Query</legend>
+            <Field name="name" invalid={failed("name") || undefined}>
+              <FieldLabel>Name</FieldLabel>
+              <Input required maxLength={120} autoComplete="off" defaultValue={rule?.name} />
+              <FieldError match="valueMissing">Enter a name, like Checkout errors.</FieldError>
+              <FieldError match={failed("name")}>Use 1 to 120 characters.</FieldError>
             </Field>
-          )}
-          {source === "mcp_ops" ? (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field invalid={failed("side") || undefined}>
-                <FieldLabel>Side</FieldLabel>
-                <Select name="side" items={SIDES} defaultValue={rule?.side ?? "server"}>
-                  <SelectTrigger className="text-data">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SIDES.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FieldError match={failed("side")}>Choose Server side or Client side.</FieldError>
-              </Field>
+            {rule ? null : (
               <Field>
-                <FieldLabel>Capture source</FieldLabel>
+                <FieldLabel>Watch</FieldLabel>
                 <Select
-                  name="capture_source"
-                  items={CAPTURE_SOURCES}
-                  defaultValue={rule?.capture_source ?? "auto"}
-                >
-                  <SelectTrigger className="text-data">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CAPTURE_SOURCES.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FieldDescription>
-                  Automatic reads each server from its SDK, else its proxy, else OTLP, at every
-                  check. Calls the caller caused never count.
-                </FieldDescription>
-              </Field>
-            </div>
-          ) : null}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field invalid={failed("measure") || undefined}>
-              <FieldLabel>Measure</FieldLabel>
-              <Select
-                items={measuresOf(source)}
-                value={measure}
-                onValueChange={(next) => {
-                  if (next === null) return;
-                  setMeasure(next);
-                  setAggregation(measureOf(next).aggregations[0]);
-                  preview.reset();
-                }}
-              >
-                <SelectTrigger className="text-data">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {measuresOf(source).map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FieldError match={failed("measure")}>Choose another measure.</FieldError>
-            </Field>
-            {option.aggregations.length > 1 ? (
-              <Field invalid={failed("aggregation") || undefined}>
-                <FieldLabel>Percentile</FieldLabel>
-                <Select
-                  items={option.aggregations.map((value) => ({
-                    value,
-                    label: AGGREGATION_LABEL[value] ?? value,
-                  }))}
-                  value={aggregation}
+                  items={RULE_SOURCES}
+                  value={source}
                   onValueChange={(next) => {
-                    if (next !== null) setAggregation(next);
+                    if (next === null) return;
+                    const chosen: RuleSource = next === "mcp_ops" ? "mcp_ops" : "spans";
+                    const first = measuresOf(chosen)[0];
+                    setSource(chosen);
+                    setMeasure(first.value);
+                    setAggregation(first.aggregations[0]);
+                    preview.reset();
                   }}
                 >
                   <SelectTrigger className="text-data">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {option.aggregations.map((value) => (
-                      <SelectItem key={value} value={value}>
-                        {AGGREGATION_LABEL[value] ?? value}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            ) : null}
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {(["dimension_1", "dimension_2"] as const).map((name, at) => (
-              // Keyed by the source, so that another source starts from None.
-              <Field key={`${source}-${name}`} invalid={failed("dimensions") || undefined}>
-                <FieldLabel>{at === 0 ? "Group by" : "Then by"}</FieldLabel>
-                <Select
-                  name={name}
-                  items={dimensionsOf(source)}
-                  defaultValue={rule?.dimensions[at] ?? NO_DIMENSION}
-                >
-                  <SelectTrigger className="text-data">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {dimensionsOf(source).map((item) => (
+                    {RULE_SOURCES.map((item) => (
                       <SelectItem key={item.value} value={item.value}>
                         {item.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {at === 1 ? (
-                  <FieldError match={failed("dimensions")}>
-                    Choose two different dimensions, or None.
-                  </FieldError>
-                ) : null}
               </Field>
-            ))}
-          </div>
-        </fieldset>
+            )}
+            {source === "mcp_ops" ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field invalid={failed("side") || undefined}>
+                  <FieldLabel>Side</FieldLabel>
+                  <Select name="side" items={SIDES} defaultValue={rule?.side ?? "server"}>
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SIDES.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldError match={failed("side")}>Choose Server side or Client side.</FieldError>
+                </Field>
+                <Field>
+                  <FieldLabel>Capture source</FieldLabel>
+                  <Select
+                    name="capture_source"
+                    items={CAPTURE_SOURCES}
+                    defaultValue={rule?.capture_source ?? "auto"}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CAPTURE_SOURCES.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Automatic reads each server from its SDK, else its proxy, else OTLP, at every
+                    check. Calls the caller caused never count.
+                  </FieldDescription>
+                </Field>
+              </div>
+            ) : null}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field invalid={failed("measure") || undefined}>
+                <FieldLabel>Measure</FieldLabel>
+                <Select
+                  items={measuresOf(source)}
+                  value={measure}
+                  onValueChange={(next) => {
+                    if (next === null) return;
+                    setMeasure(next);
+                    setAggregation(measureOf(next).aggregations[0]);
+                    preview.reset();
+                  }}
+                >
+                  <SelectTrigger className="text-data">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {measuresOf(source).map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldError match={failed("measure")}>Choose another measure.</FieldError>
+              </Field>
+              {option.aggregations.length > 1 ? (
+                <Field invalid={failed("aggregation") || undefined}>
+                  <FieldLabel>Percentile</FieldLabel>
+                  <Select
+                    items={option.aggregations.map((value) => ({
+                      value,
+                      label: AGGREGATION_LABEL[value] ?? value,
+                    }))}
+                    value={aggregation}
+                    onValueChange={(next) => {
+                      if (next !== null) setAggregation(next);
+                    }}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {option.aggregations.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {AGGREGATION_LABEL[value] ?? value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : null}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {(["dimension_1", "dimension_2"] as const).map((name, at) => (
+                // Keyed by the source, so that another source starts from None.
+                <Field key={`${source}-${name}`} invalid={failed("dimensions") || undefined}>
+                  <FieldLabel>{at === 0 ? "Group by" : "Then by"}</FieldLabel>
+                  <Select
+                    name={name}
+                    items={dimensionsOf(source)}
+                    defaultValue={rule?.dimensions[at] ?? NO_DIMENSION}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {dimensionsOf(source).map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {at === 1 ? (
+                    <FieldError match={failed("dimensions")}>
+                      Choose two different dimensions, or None.
+                    </FieldError>
+                  ) : null}
+                </Field>
+              ))}
+            </div>
+          </fieldset>
 
-        <fieldset className="flex flex-col gap-4">
-          <legend className="mb-3 text-label font-medium text-ink-soft">Condition</legend>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel>Fire when the value</FieldLabel>
-              <Select name="comparison" items={COMPARISONS} defaultValue={rule?.comparison ?? "gt"}>
-                <SelectTrigger className="text-data">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COMPARISONS.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field name="threshold" invalid={badThreshold || failed("threshold") || undefined}>
-              <FieldLabel>
-                Threshold{THRESHOLD_UNIT[option.unit] ? `, in ${THRESHOLD_UNIT[option.unit]}` : ""}
-              </FieldLabel>
-              <Input
-                required
-                inputMode="decimal"
-                autoComplete="off"
-                defaultValue={rule ? thresholdFromStored(rule.unit, rule.threshold) : undefined}
-              />
-              <FieldError match="valueMissing">Enter the threshold.</FieldError>
-              <FieldError match={badThreshold || failed("threshold")}>
-                Enter a number, like 5 or 0.25.
-              </FieldError>
-            </Field>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Field name="window" invalid={failed("window_secs") || undefined}>
-              <FieldLabel>Over the last (minutes)</FieldLabel>
-              <Input
-                type="number"
-                required
-                min={1}
-                max={1440}
-                step={1}
-                defaultValue={String((rule?.window_secs ?? 300) / 60)}
-              />
-              <FieldError match>Use a whole number of minutes from 1 to 1440.</FieldError>
-            </Field>
-            <Field invalid={failed("interval_secs") || undefined}>
-              <FieldLabel>Check every</FieldLabel>
+          <fieldset className="flex flex-col gap-4">
+            <legend className="mb-3 text-label font-medium text-ink-soft">Condition</legend>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel>Fire when the value</FieldLabel>
+                <Select
+                  name="comparison"
+                  items={COMPARISONS}
+                  defaultValue={rule?.comparison ?? "gt"}
+                >
+                  <SelectTrigger className="text-data">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {COMPARISONS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field name="threshold" invalid={badThreshold || failed("threshold") || undefined}>
+                <FieldLabel>
+                  Threshold
+                  {THRESHOLD_UNIT[option.unit] ? `, in ${THRESHOLD_UNIT[option.unit]}` : ""}
+                </FieldLabel>
+                <Input
+                  required
+                  inputMode="decimal"
+                  autoComplete="off"
+                  defaultValue={rule ? thresholdFromStored(rule.unit, rule.threshold) : undefined}
+                />
+                <FieldError match="valueMissing">Enter the threshold.</FieldError>
+                <FieldError match={badThreshold || failed("threshold")}>
+                  Enter a number, like 5 or 0.25.
+                </FieldError>
+              </Field>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field name="window" invalid={failed("window_secs") || undefined}>
+                <FieldLabel>Over the last (minutes)</FieldLabel>
+                <Input
+                  type="number"
+                  required
+                  min={1}
+                  max={1440}
+                  step={1}
+                  defaultValue={String((rule?.window_secs ?? 300) / 60)}
+                />
+                <FieldError match>Use a whole number of minutes from 1 to 1440.</FieldError>
+              </Field>
+              <Field invalid={failed("interval_secs") || undefined}>
+                <FieldLabel>Check every</FieldLabel>
+                <Select
+                  name="interval"
+                  items={INTERVALS}
+                  defaultValue={String(rule?.interval_secs ?? 60)}
+                >
+                  <SelectTrigger className="text-data">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {INTERVALS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field name="for" invalid={failed("for_secs") || undefined}>
+                <FieldLabel>For at least (minutes)</FieldLabel>
+                <Input
+                  type="number"
+                  required
+                  min={0}
+                  max={1440}
+                  step={1}
+                  defaultValue={String((rule?.for_secs ?? 0) / 60)}
+                />
+                <FieldDescription>0 fires at the first check that breaches.</FieldDescription>
+                <FieldError match>Use a whole number of minutes from 0 to 1440.</FieldError>
+              </Field>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel>When there is no data</FieldLabel>
+                <Select name="no_data" items={NO_DATA} defaultValue={rule?.no_data ?? "keep"}>
+                  <SelectTrigger className="text-data">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {NO_DATA.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field name="no_data_for" invalid={failed("no_data_for_secs") || undefined}>
+                <FieldLabel>After no data for (minutes)</FieldLabel>
+                <Input
+                  type="number"
+                  required
+                  min={0}
+                  max={1440}
+                  step={1}
+                  defaultValue={String((rule?.no_data_for_secs ?? 300) / 60)}
+                />
+                <FieldError match>Use a whole number of minutes from 0 to 1440.</FieldError>
+              </Field>
+            </div>
+          </fieldset>
+
+          <fieldset className="flex flex-col gap-4">
+            <legend className="mb-3 text-label font-medium text-ink-soft">Notify</legend>
+            <div className="flex flex-col gap-2" data-channels>
+              <p className="text-data font-medium">Channels</p>
+              {channels.isPending ? (
+                <output className="text-data text-ink-soft">Loading channels</output>
+              ) : channels.isError ? (
+                <FormAlert
+                  copy={failureCopy(asUiError(channels.error), "Couldn't load the channels.")}
+                  requestId={asUiError(channels.error).requestId}
+                  action={<Button onClick={() => channels.refetch()}>Retry channels</Button>}
+                />
+              ) : channels.data.data.length === 0 ? (
+                <p className="text-data text-ink-soft">
+                  No channels yet, so this rule records its state without notifying anyone. Create
+                  one under <Link href={scopedHref("/alerts/channels", search)}>Channels</Link>,
+                  then edit the rule.
+                </p>
+              ) : (
+                channels.data.data.map((channel) => (
+                  <label
+                    key={channel.id}
+                    data-slot="label"
+                    className="flex items-center gap-2 text-data"
+                  >
+                    <Checkbox
+                      checked={chosen.includes(channel.id)}
+                      onCheckedChange={(checked) =>
+                        setChosen((before) =>
+                          checked === true
+                            ? [...before.filter((id) => id !== channel.id), channel.id]
+                            : before.filter((id) => id !== channel.id),
+                        )
+                      }
+                    >
+                      <CheckboxIndicator>
+                        <TickIcon aria-hidden="true" />
+                      </CheckboxIndicator>
+                    </Checkbox>
+                    {channel.name} ({KIND_LABEL[channel.kind]}
+                    {channel.enabled ? "" : ", turned off"})
+                  </label>
+                ))
+              )}
+              {failed("channels") ? (
+                <p role="alert" className="text-label">
+                  A chosen channel no longer exists, or more than 10 are chosen. Check the list.
+                </p>
+              ) : null}
+            </div>
+            <Field invalid={failed("renotify_secs") || undefined}>
+              <FieldLabel>While it keeps firing, notify again every</FieldLabel>
               <Select
-                name="interval"
-                items={INTERVALS}
-                defaultValue={String(rule?.interval_secs ?? 60)}
+                name="renotify"
+                items={RENOTIFY}
+                defaultValue={String(rule?.renotify_secs ?? 14_400)}
               >
                 <SelectTrigger className="text-data">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {INTERVALS.map((item) => (
+                  {RENOTIFY.map((item) => (
                     <SelectItem key={item.value} value={item.value}>
                       {item.label}
                     </SelectItem>
@@ -471,142 +592,33 @@ function RuleForm({
                 </SelectContent>
               </Select>
             </Field>
-            <Field name="for" invalid={failed("for_secs") || undefined}>
-              <FieldLabel>For at least (minutes)</FieldLabel>
-              <Input
-                type="number"
-                required
-                min={0}
-                max={1440}
-                step={1}
-                defaultValue={String((rule?.for_secs ?? 0) / 60)}
-              />
-              <FieldDescription>0 fires at the first check that breaches.</FieldDescription>
-              <FieldError match>Use a whole number of minutes from 0 to 1440.</FieldError>
-            </Field>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel>When there is no data</FieldLabel>
-              <Select name="no_data" items={NO_DATA} defaultValue={rule?.no_data ?? "keep"}>
-                <SelectTrigger className="text-data">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {NO_DATA.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field name="no_data_for" invalid={failed("no_data_for_secs") || undefined}>
-              <FieldLabel>After no data for (minutes)</FieldLabel>
-              <Input
-                type="number"
-                required
-                min={0}
-                max={1440}
-                step={1}
-                defaultValue={String((rule?.no_data_for_secs ?? 300) / 60)}
-              />
-              <FieldError match>Use a whole number of minutes from 0 to 1440.</FieldError>
-            </Field>
-          </div>
-        </fieldset>
+          </fieldset>
 
-        <fieldset className="flex flex-col gap-4">
-          <legend className="mb-3 text-label font-medium text-ink-soft">Notify</legend>
-          <div className="flex flex-col gap-2" data-channels>
-            <p className="text-data font-medium">Channels</p>
-            {channels.isPending ? (
-              <output className="text-data text-ink-soft">Loading channels</output>
-            ) : channels.isError ? (
+          <section
+            aria-label="Preview"
+            className="flex flex-col gap-3 border-t border-ash-border pt-4"
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                onClick={runPreview}
+                disabled={preview.isPending}
+                aria-busy={preview.isPending}
+              >
+                {preview.isPending ? "Reading the last window" : "Preview"}
+              </Button>
+              <p className="text-label text-ink-soft">
+                Reads what the rule would see now. Nothing is saved and nobody is notified.
+              </p>
+            </div>
+            {previewFailure ? (
               <FormAlert
-                copy={failureCopy(asUiError(channels.error), "Couldn't load the channels.")}
-                requestId={asUiError(channels.error).requestId}
-                action={<Button onClick={() => channels.refetch()}>Retry channels</Button>}
+                copy={failureCopy(previewFailure, "The preview couldn't run.", PREVIEW_COPY)}
+                requestId={previewFailure.requestId}
               />
-            ) : channels.data.data.length === 0 ? (
-              <p className="text-data text-ink-soft">
-                No channels yet, so this rule records its state without notifying anyone. Create one
-                under <Link href={scopedHref("/alerts/channels", search)}>Channels</Link>, then edit
-                the rule.
-              </p>
-            ) : (
-              channels.data.data.map((channel) => (
-                <label
-                  key={channel.id}
-                  data-slot="label"
-                  className="flex items-center gap-2 text-data"
-                >
-                  <Checkbox
-                    checked={chosen.includes(channel.id)}
-                    onCheckedChange={(checked) =>
-                      setChosen((before) =>
-                        checked === true
-                          ? [...before.filter((id) => id !== channel.id), channel.id]
-                          : before.filter((id) => id !== channel.id),
-                      )
-                    }
-                  >
-                    <CheckboxIndicator>
-                      <TickIcon aria-hidden="true" />
-                    </CheckboxIndicator>
-                  </Checkbox>
-                  {channel.name} ({KIND_LABEL[channel.kind]}
-                  {channel.enabled ? "" : ", turned off"})
-                </label>
-              ))
-            )}
-            {failed("channels") ? (
-              <p role="alert" className="text-label">
-                A chosen channel no longer exists, or more than 10 are chosen. Check the list.
-              </p>
             ) : null}
-          </div>
-          <Field invalid={failed("renotify_secs") || undefined}>
-            <FieldLabel>While it keeps firing, notify again every</FieldLabel>
-            <Select
-              name="renotify"
-              items={RENOTIFY}
-              defaultValue={String(rule?.renotify_secs ?? 14_400)}
-            >
-              <SelectTrigger className="text-data">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {RENOTIFY.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-        </fieldset>
-
-        <section
-          aria-label="Preview"
-          className="flex flex-col gap-3 border-t border-ash-border pt-4"
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Button onClick={runPreview} disabled={preview.isPending} aria-busy={preview.isPending}>
-              {preview.isPending ? "Reading the last window" : "Preview"}
-            </Button>
-            <p className="text-label text-ink-soft">
-              Reads what the rule would see now. Nothing is saved and nobody is notified.
-            </p>
-          </div>
-          {previewFailure ? (
-            <FormAlert
-              copy={failureCopy(previewFailure, "The preview couldn't run.", PREVIEW_COPY)}
-              requestId={previewFailure.requestId}
-            />
-          ) : null}
-          {preview.isSuccess ? <PreviewResult preview={preview.data} source={source} /> : null}
-        </section>
+            {preview.isSuccess ? <PreviewResult preview={preview.data} source={source} /> : null}
+          </section>
+        </DialogBody>
 
         {failure ? (
           <FormAlert

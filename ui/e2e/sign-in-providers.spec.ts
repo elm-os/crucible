@@ -221,7 +221,8 @@ test.describe("settings: sign-in providers", () => {
     await expect(page.getByText("s3cret-value")).toHaveCount(0);
 
     capture(api, /\/api\/v1\/auth\/logout$/, { status: 204 });
-    await page.getByRole("banner").getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("banner").getByRole("button", { name: "Ada Lovelace" }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
     await expect(page).toHaveURL(/\/login\/$/);
     await expect(page.getByRole("link", { name: "Continue with Acme SSO" })).toHaveAttribute(
       "href",

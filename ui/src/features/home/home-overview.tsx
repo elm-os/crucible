@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Section, SectionFrame } from "@/components/section";
 import { isWhole, MetaNotice } from "@/components/status";
 import { TimeSeriesChart } from "@/components/time-series-chart";
-import { formatCost, formatCount, formatDuration } from "@/lib/format";
+import { formatCost, formatCount, formatDuration, formatDurationAxis } from "@/lib/format";
 import { useProject } from "@/lib/project";
 import { RANGE_PHRASE, type Range, useTimeRange } from "@/lib/time-range";
 import { type ChartSeries, chartModel } from "@/primitives/chart/chart-model";
@@ -100,6 +100,7 @@ export function HomeOverview() {
             <TimeSeriesChart
               title="Traces per bucket"
               form="bar"
+              summable
               series={response.series.map((s) => chartSeries(s, "Traces"))}
               format={formatCount}
             />
@@ -115,27 +116,31 @@ export function HomeOverview() {
           {(response) => (
             <TimeSeriesChart
               title="Spans and errors per bucket"
+              summable
               series={response.series.map((s, i) => chartSeries(s, i === 0 ? "Spans" : "Errors"))}
               format={formatCount}
             />
           )}
         </ChartSection>
-        <ChartSection
-          title="Latency percentiles"
-          which="latency"
-          query={latency}
-          range={range}
-          onWiden={widen}
-        >
-          {(response) => (
-            <TimeSeriesChart
-              title="Span latency percentiles per bucket"
-              family
-              series={response.series.map((s) => chartSeries(s, s.aggregation))}
-              format={(us) => formatDuration(us)}
-            />
-          )}
-        </ChartSection>
+        <div className="lg:col-span-2">
+          <ChartSection
+            title="Latency percentiles"
+            which="latency"
+            query={latency}
+            range={range}
+            onWiden={widen}
+          >
+            {(response) => (
+              <TimeSeriesChart
+                title="Span latency percentiles per bucket"
+                family
+                series={response.series.map((s) => chartSeries(s, s.aggregation))}
+                format={(us) => formatDuration(us)}
+                axisFormat={formatDurationAxis}
+              />
+            )}
+          </ChartSection>
+        </div>
       </div>
       {setupAt === "last" ? <SetupCard steps={setup} /> : null}
     </div>
@@ -175,6 +180,7 @@ function MetricsSection({
       title={title}
       query={query}
       skeleton={skeleton}
+      fill={compact}
       // No data counts as empty only when the answer is whole; otherwise spans may exist unseen.
       isEmpty={(response) => noData(response, which) && isWhole(response.meta)}
       empty={<NoData title={title} range={range} onWiden={onWiden} compact={compact} />}
@@ -250,21 +256,32 @@ function Headline({
   caption: string;
   series: ChartSeries | undefined;
 }) {
-  const path = series ? chartModel([series], SPARK, "line").paths[0] : undefined;
+  const model = series ? chartModel([series], SPARK, "area") : undefined;
+  const path = model?.paths[0];
+  const wash = model?.areas[0];
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex grow flex-col gap-1">
       <p data-value className="text-heading-sm font-medium tabular-nums">
         {value}
       </p>
-      <p className="text-label text-ink-soft">{caption}</p>
+      <p className="mb-1 text-label text-ink-soft">{caption}</p>
+      {/* At the tile's bottom, so a caption on two lines leaves every sparkline in the row level. */}
       {path ? (
         <svg
           viewBox={`0 0 ${SPARK.width} ${SPARK.height}`}
-          className="mt-1 h-8 w-full"
+          className="mt-auto h-8 w-full"
           aria-hidden="true"
           preserveAspectRatio="none"
         >
-          <path d={path} fill="none" stroke="var(--color-series-1)" strokeWidth={1.5} />
+          {wash ? <path d={wash} fill="var(--color-series-1)" fillOpacity={0.08} /> : null}
+          <path
+            d={path}
+            fill="none"
+            stroke="var(--color-series-1)"
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
         </svg>
       ) : null}
     </div>

@@ -1163,19 +1163,39 @@ mod tests {
         assert_eq!(nonempty(b"not json", "/data"), None);
     }
 
+    // The mean check of exponential think times reads OFFSETS due offsets, and their mean gap may differ from
+    // `1 / rate` by MEAN_TOLERANCE of it. The 9,999 gaps sum to a Gamma(9999, 1) multiple of `1 / rate`, so a
+    // correct schedule fails a case with probability 3.2e-15 (the exact Gamma tails): one false alarm in more than
+    // 10^12 runs of 256 cases. 2,000 offsets held to 10% failed a case with probability 9.1e-6, one run in 430.
+    const OFFSETS: u64 = 10_000;
+    const MEAN_TOLERANCE: f64 = 0.08;
+
+    /// The mean gap between due offsets, in units of `1 / rate`.
+    fn mean_gap(offsets: &[u64], rate: f64) -> f64 {
+        let gaps = offsets.len() - 1;
+        offsets[gaps] as f64 / gaps as f64 * rate / 1e9
+    }
+
     proptest! {
         /// Due offsets never go backwards; fixed think times are exact and exponential ones keep their mean.
         #[test]
         fn think_times_keep_their_rate(rate in 1.0f64..500.0, seed: u64) {
             let fixed = due_offsets(200, rate, Think::Fixed, seed);
             prop_assert_eq!(fixed[100], (100.0 * 1e9 / rate) as u64);
-            let poisson = due_offsets(2_000, rate, Think::Exponential, seed);
+            let poisson = due_offsets(OFFSETS, rate, Think::Exponential, seed);
             prop_assert!(poisson.windows(2).all(|w| w[0] <= w[1]));
             prop_assert_eq!(poisson[0], 0);
-            // 2,000 exponential gaps: the mean is within 10% of 1/rate with overwhelming probability.
-            let mean = poisson[1_999] as f64 / 1_999.0;
-            prop_assert!((mean * rate / 1e9 - 1.0).abs() < 0.1, "{}", mean * rate / 1e9);
-            prop_assert_eq!(&poisson, &due_offsets(2_000, rate, Think::Exponential, seed));
+            let mean = mean_gap(&poisson, rate);
+            prop_assert!((mean - 1.0).abs() < MEAN_TOLERANCE, "{}", mean);
+            prop_assert_eq!(&poisson, &due_offsets(OFFSETS, rate, Think::Exponential, seed));
         }
+    }
+
+    /// Rate 1.0 and this seed failed the mean check when it read 2,000 offsets: their mean gap was 0.8999.
+    #[test]
+    fn think_times_keep_their_rate_for_a_seed_that_drew_slow_gaps() {
+        let offsets = due_offsets(OFFSETS, 1.0, Think::Exponential, 17_333_684_883_806_559_127);
+        let mean = mean_gap(&offsets, 1.0);
+        assert!((mean - 1.0).abs() < MEAN_TOLERANCE, "{mean}");
     }
 }

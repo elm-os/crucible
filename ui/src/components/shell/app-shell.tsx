@@ -18,15 +18,16 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Nav />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* Two rows on a phone: the account menu ends the first, and the time range and Feedback take the second. */}
         <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ash-border px-4 py-3 md:px-8">
           <MobileNav />
           <ProjectSwitcher />
           <ConnectControl />
-          <div className="ms-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 max-md:order-last max-md:basis-full md:ms-auto">
             <TimeRangeControl />
             <FeedbackMenu />
-            <AccountControls />
           </div>
+          <AccountControls className="max-md:ms-auto" />
         </header>
         <main className="flex-1 px-4 py-6 md:px-8">
           <AuthGate>{children}</AuthGate>

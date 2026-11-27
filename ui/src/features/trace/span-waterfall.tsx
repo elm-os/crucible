@@ -26,7 +26,7 @@ import { moreRowParent, type TraceTree } from "./trace-tree";
 const ROW_HEIGHT = 32;
 const OVERSCAN = 8;
 const COLUMNS =
-  "grid grid-cols-[minmax(9rem,3fr)_minmax(5rem,2fr)_4rem] gap-3 sm:grid-cols-[minmax(12rem,2fr)_minmax(8rem,3fr)_4.5rem]";
+  "grid grid-cols-[minmax(9rem,3fr)_minmax(5rem,2fr)_4rem] gap-3 sm:grid-cols-[minmax(12rem,3fr)_minmax(8rem,2fr)_4.5rem]";
 const ROW = `${COLUMNS} absolute inset-x-0 h-8 items-center border-b border-ash-border px-2`;
 
 export const TYPE_LABEL: Record<ObservationType, string> = {
@@ -207,7 +207,9 @@ function SpanRow({ row, tree }: { row: WaterfallDataRow; tree: TraceTree }) {
         <span className="shrink-0 text-label text-ink-soft max-sm:hidden">
           {TYPE_LABEL[span.observation_type]}
         </span>{" "}
-        <span className="truncate">{item.label}</span>
+        <span className="truncate" title={item.label}>
+          {item.label}
+        </span>
         {failed ? (
           <>
             {" "}

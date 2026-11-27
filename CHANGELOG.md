@@ -45,6 +45,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The Rust SDK logs one `tracing` warning when an export first fails, with the traces URL and the exporter's error,
   which names the HTTP status; later failures count in `stats().failed`. In 0.1.3 the Go and Rust SDKs said nothing
   when exports on the background interval failed.
+- The Rust SDK's manifest declares `rust-version = "1.95"`, the minimum its README names, so cargo older than 1.95
+  refuses the crate up front and names the version it needs. In 0.1.3 the build failed partway, with "use of
+  unstable library feature `atomic_try_update`".
 - The Set up card on Home marks each step from the project's state: Create an API key is done once the project has
   an active key, Send your first trace once spans arrive, Instrument an MCP server once MCP operations arrive on
   either side, and Invite your team once the organization has a second member. A step the viewer's role can't do,
@@ -54,6 +57,38 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and the guides to sending traces and to instrumenting an MCP server.
 - The Home Set up card comes first on a project that has received no data, and it is hidden once every step is done
   or is one the viewer can't do.
+- The web UI's charts are drawn at the size they are shown, so axis labels stay at the label size on a wide chart
+  and on a phone. A day or a week is drawn in hours and a month in days; bars have rounded ends, are at most 24 px
+  wide, and are added together into whole clock intervals (15 minutes, 30 minutes, an hour) when they would be too
+  thin; an empty bucket of a count is zero; and lines break where there is no data instead of drawing across it.
+- Hovering or focusing a chart shows each series' value for that bucket in a tooltip beside the pointer, and the arrow
+  keys, Home and End step through the buckets; the slider under each chart is gone. The duration axis reads in round
+  units ("20 s", "1 min").
+- An MCP tool's latency percentiles are drawn as one range per bucket, from p50 to p99 with p90 marked, which stays
+  readable when a bucket holds a few calls.
+- MCP time series use at most 200 buckets: a day in quarter hours and a week in hours. A day was 288 five-minute
+  buckets.
+- Password and secret fields show and hide with an eye icon inside the field, level with the input, on the sign-in,
+  setup, invitation and reset pages, in the Connect dialog and in the sign-in provider forms. The toggle keeps its
+  name, such as "Show password", and reports its state with `aria-pressed`. In 0.1.3 the word "Show" ran past the
+  field's edge.
+- On the trace page, Add tag sits level with the New tag input, and the score form's fields line up at the top, with
+  Add score level with their inputs and the comment box one line tall until it is resized.
+- On Home, the sparklines of the five headline tiles sit level at the bottom of the tiles, also when a caption takes
+  two lines.
+- The trace timeline gives span names three fifths of its width from 640 px up, so a name such as
+  `tools/call create_pull_request` shows in full at 1440 px; a name that is still cut, in the timeline or on an agent
+  graph node, shows in full on hover.
+- Dialogs keep their title and their actions in view: when a dialog is taller than the window, the fields between
+  them scroll. In 0.1.3 Cancel and Create rule of New alert rule sat below the dialog's edge at 1440 by 900. On a
+  phone, New alert rule and New dashboard keep a margin at both sides.
+- The Traces list pages: Load more traces reads the next traces, as the Spans, Sessions and Users lists do. 0.1.3
+  showed the newest 50 only.
+- An account menu holds who is signed in and Sign out, in place of the name and the Sign out button, so on a phone the
+  header takes two rows: the menu, the project and the account menu, then the time range and Feedback.
+- The SQL page's schema browser keeps column names on one line, shows an enum column as `Enum8` with its values on
+  the line below, and gives the unit of the cost, duration and token columns. Result headers show the short type,
+  with the full type on hover.
 - Exports of 129 spans or more complete, over REST and MCP, in both formats. In 0.1.3 their payload lookups named a
   whole page of spans in one request, which ClickHouse refused under its default `http_max_fields` of 1,000, so they
   stayed `queued` and failed with `attempts_exhausted` after about 2.4 hours.

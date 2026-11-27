@@ -81,7 +81,7 @@ test.describe("shell: the Feedback menu", () => {
     api.on(LIST_PATH, json(tracePage([traceItem()])));
     await page.goto(LIST_URL);
     const banner = page.getByRole("banner");
-    await expect(banner.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expect(banner.getByRole("button", { name: "Ada Lovelace" })).toBeVisible();
     await banner.getByRole("button", { name: "Feedback", exact: true }).click();
     const opened = context.waitForEvent("page");
     await page.getByRole("menuitem", { name: "Ask a question or suggest an idea" }).click();
