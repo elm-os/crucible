@@ -175,7 +175,9 @@ refusing connections or not answering. `crucible_sdk::stats()` returns the count
 `failed`, `queued_bytes`, and `feedback_sent`, `feedback_dropped`, `feedback_failed` for scores). `flush` exports what
 has ended, sends the queued scores and returns the export error if there is one, else why the last score that was not
 sent failed, and `shutdown` exports the rest and stops the threads; each waits at most `export_timeout` in all, for
-the spans and the scores together.
+the spans and the scores together. The first failed export after `init` emits one `tracing` warning (target
+`crucible_sdk::export`), which shows where the application installs a tracing subscriber; later failures only count
+in `failed`.
 
 ## Send feedback
 

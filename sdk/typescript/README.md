@@ -61,7 +61,9 @@ Bearer key or turn its sampling off.
 
 Export runs off the request path. When the queue is full, a span is dropped and counted; ending a span never
 blocks, whether the collector is up, refusing connections or not answering. `stats()` returns the counters
-`{ queued, queuedBytes, dropped, exported, failed, feedbackSent, feedbackDropped, feedbackFailed }`.
+`{ queued, queuedBytes, dropped, exported, failed, feedbackSent, feedbackDropped, feedbackFailed }`. The first
+failed export after `init` emits one Node warning, code `CRUCIBLE_EXPORT`, on stderr, with the traces URL, the
+status and Crucible's reason; later failures only count in `failed`.
 
 ## Agent helpers
 
@@ -221,7 +223,9 @@ child, so the agent's trace and the server's operation link up.
 ## Known limits
 
 - A tool handler that throws and one that returns `isError: true` look the same on the wire; both are tool errors
-  unless the handler calls `annotateError` or a mark.
+  unless the handler calls `annotateError` or a mark. The error's message, the result's first text block, is sent
+  scrubbed and cut at 2,048 bytes. Calls the MCP SDK refuses before a handler runs (bad arguments, an unknown tool)
+  are caller faults with the class `validation` or `not_found`.
 - Stateless legacy HTTP builds a fresh server per request, so tool calls there carry no client info. Server info
   is remembered per `instrument` call, so it reaches every operation after the first result.
 - Exchanges recorded by `instrumentHandler` run no handler, so `annotateError` and `identify` cannot reach them,
