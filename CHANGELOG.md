@@ -45,6 +45,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The Rust SDK logs one `tracing` warning when an export first fails, with the traces URL and the exporter's error,
   which names the HTTP status; later failures count in `stats().failed`. In 0.1.3 the Go and Rust SDKs said nothing
   when exports on the background interval failed.
+- The Rust SDK's manifest declares `rust-version = "1.95"`, the minimum its README names, so cargo older than 1.95
+  refuses the crate up front and names the version it needs. In 0.1.3 the build failed partway, with "use of
+  unstable library feature `atomic_try_update`".
 - The Set up card on Home marks each step from the project's state: Create an API key is done once the project has
   an active key, Send your first trace once spans arrive, Instrument an MCP server once MCP operations arrive on
   either side, and Invite your team once the organization has a second member. A step the viewer's role can't do,
