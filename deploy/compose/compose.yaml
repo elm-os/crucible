@@ -14,6 +14,7 @@
 #                            127.0.0.1 keeps them on this machine)
 #   CRUCIBLE_HTTP_PORT       host port of the UI, the REST API and OTLP/HTTP ingest (default 8080)
 #   CRUCIBLE_OTLP_HTTP_PORT  host port of OTLP/HTTP ingest (default 4318)
+#   RUST_LOG                 the filter of the server's log (default info), for example info,crucible_jobs=debug
 #
 # Postgres holds the control plane: sign-in, the organization, projects, members and API keys, and the migrations
 # ledger, in which each schema step is recorded and applied once.
@@ -70,6 +71,8 @@ services:
       CRUCIBLE_POSTGRES_URL: postgres://crucible@postgres:5432/crucible
       CRUCIBLE_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (docs/self-hosting/quickstart.md)}
       CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (docs/self-hosting/quickstart.md)}
+      # The filter of the server's log; unset, it holds info and above.
+      RUST_LOG: ${RUST_LOG:-}
     # Every start migrates: the ledger in Postgres skips the steps that are already applied.
     command:
       - serve

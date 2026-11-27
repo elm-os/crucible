@@ -73,7 +73,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "
 toml = { workspace = true, features = ["std", "serde", "parse"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+# `env-filter`: `RUST_LOG` filters the server's log.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 # Basic credentials for the compat route sends.
