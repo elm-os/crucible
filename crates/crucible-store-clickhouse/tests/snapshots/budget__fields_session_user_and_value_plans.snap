@@ -1,0 +1,13 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+data_bounds                        14       14
+filter_values                      16       16
+session_detail                     15       16
+session_list                       17       18
+user_detail                        15       16
+user_list                          17       18
+user_session_counts                16       22
+user_sessions                      19       25

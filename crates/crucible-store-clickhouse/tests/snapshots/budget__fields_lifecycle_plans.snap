@@ -1,0 +1,8 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+deletion_issuers                   20       24
+deletion_traces                    21       26
+lifecycle_oldest                   21       26

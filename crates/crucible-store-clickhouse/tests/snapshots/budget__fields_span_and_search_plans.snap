@@ -1,0 +1,10 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+payload_range                      22       22
+search hits                       190      196
+search_spans                       26       32
+span_bodies                        17       17
+span_list                         137      149

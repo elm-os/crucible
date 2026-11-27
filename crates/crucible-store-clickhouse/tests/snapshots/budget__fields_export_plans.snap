@@ -1,0 +1,11 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+export_facts                       17       21
+export_mcp_content                 16       16
+export_mcp_ops                     16       16
+export_payloads                    16       16
+export_spans                       24       30
+export_ties                        23       29

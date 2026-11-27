@@ -5,11 +5,12 @@
 //! before the statement starts. The store refuses a request above `render::FIELD_BUDGET` before it sends it, so
 //! a plan above it would fail every time.
 //!
-//! Each plan is checked as product code sends it: with the most values that pending deletions add to a read
-//! (`HIDDEN_TRACE_IDS` deletions of one trace each and `HIDDEN_REQUESTS` deletions by user and by session, the
-//! costliest spread of the hiding budget), and for a plan read on every replica, on a cluster as well. Lists are
-//! drawn up to their caps; a list is padded to the next power of two, so the field count only grows with a
-//! list's length and the caps are the worst cases.
+//! Each plan is checked as it is built and as product code sends it, with the most values that pending deletions
+//! add to a read (`HIDDEN_TRACE_IDS` deletions of one trace each and `HIDDEN_REQUESTS` deletions by user and by
+//! session, the hiding budget of contract 13.6), and for a plan read on every replica, on a cluster as well. Lists
+//! are drawn up to their caps and the MCP capture-source selection names 1,000 servers per class; the field count
+//! of a list grows only with its length, so the caps are the worst cases. Each test records the largest field
+//! count of each plan in a snapshot.
 
 // Test code throughout: lets the helpers below use `unwrap`, `expect` and `panic!` under the workspace lints.
 #![cfg(test)]
@@ -119,12 +120,12 @@ fn worst_hidden() -> Vec<Hidden> {
     hidden
 }
 
-/// What a check found: the plans above the budget as they are built, which must be none, and the plans above it
-/// once the costliest pending deletions are added to them, with their largest field count.
+/// What a check found: the plans whose request ClickHouse would refuse, as they are built or under the most
+/// pending deletions a read carries, which must be none, and the largest field count of each plan in both forms.
 #[derive(Default)]
 struct Budget {
     over: Vec<String>,
-    over_hidden: BTreeMap<String, usize>,
+    counts: BTreeMap<String, (usize, usize)>,
     checked: usize,
 }
 
@@ -139,45 +140,45 @@ impl Budget {
 
     fn check(&mut self, name: &str, plan: &QueryPlan) {
         self.checked += 1;
-        let fields = |plan: &QueryPlan| {
-            render::read_fields(plan)
-                .unwrap_or_else(|error| panic!("{name}: the renderer refused it: {error}"))
-        };
-        let built = fields(plan);
-        if built > FIELD_BUDGET {
-            self.over.push(format!(
-                "{name} ({}): {built} fields",
-                render::describe(plan)
-            ));
+        let hiding = plan.clone().hiding(&worst_hidden());
+        let mut fields = [0; 2];
+        for (form, plan) in [(0, plan), (1, &hiding)] {
+            fields[form] = render::read_fields(plan)
+                .unwrap_or_else(|error| panic!("{name}: the renderer refused it: {error}"));
+            let oversize =
+                render::read_oversize(plan).unwrap_or_else(|error| panic!("{name}: {error}"));
+            if let Some(oversize) = oversize {
+                let under = ["", " under the most pending deletions"][form];
+                self.over.push(format!(
+                    "{name} ({}){under}: {oversize:?}",
+                    render::describe(plan)
+                ));
+            }
         }
-        let hidden = fields(&plan.clone().hiding(&worst_hidden()));
-        if hidden > FIELD_BUDGET {
-            let most = self.over_hidden.entry(name.to_owned()).or_default();
-            *most = (*most).max(hidden);
-        }
+        let most = self.counts.entry(name.to_owned()).or_default();
+        *most = (most.0.max(fields[0]), most.1.max(fields[1]));
     }
 
-    /// Every plan fits as it is built; under the costliest pending deletions, exactly the plans of `hidden` do
-    /// not, each at most at its count.
-    fn finish(self, hidden: &[(&str, usize)]) {
+    /// The largest field count of each plan, as built and under the most pending deletions.
+    fn table(&self) -> String {
+        let mut table = format!("{:<28} {:>8} {:>8}\n", "plan", "built", "hidden");
+        for (name, (built, hidden)) in &self.counts {
+            table.push_str(&format!("{name:<28} {built:>8} {hidden:>8}\n"));
+        }
+        table
+    }
+
+    /// Records the field counts in the snapshot `name`; every plan fits, as built and under the most pending
+    /// deletions.
+    fn finish(self, name: &str) {
+        insta::assert_snapshot!(name, self.table());
         assert!(
             self.over.is_empty(),
-            "{} of {} plans carry more than {FIELD_BUDGET} fields:
-{}",
+            "{} of {} plans carry a request ClickHouse refuses (more than {FIELD_BUDGET} fields or a field above \
+             its value size):\n{}",
             self.over.len(),
             self.checked,
-            self.over.join(
-                "
-"
-            )
-        );
-        let expected: BTreeMap<String, usize> = hidden
-            .iter()
-            .map(|(name, fields)| ((*name).to_owned(), *fields))
-            .collect();
-        assert_eq!(
-            self.over_hidden, expected,
-            "the plans above {FIELD_BUDGET} fields under the costliest pending deletions"
+            self.over.join("\n")
         );
     }
 }
@@ -341,7 +342,7 @@ fn trace_plans_fit_one_request() {
             budget.plan("fact_page", fact_page(s, hour(), &c, caller, table, &ids));
         }
     }
-    budget.finish(&[]);
+    budget.finish("fields_trace_plans");
 }
 
 #[test]
@@ -434,7 +435,7 @@ fn span_and_search_plans_fit_one_request() {
             span_bodies(s, &c, caller, trace(0), span(0), T0),
         );
     }
-    budget.finish(&[]);
+    budget.finish("fields_span_and_search_plans");
 }
 
 #[test]
@@ -507,7 +508,7 @@ fn session_user_and_value_plans_fit_one_request() {
             }
         }
     }
-    budget.finish(&[]);
+    budget.finish("fields_session_user_and_value_plans");
 }
 
 /// A metrics query at the caps of its source: the most measures and dimensions, every filter field of the source
@@ -606,12 +607,13 @@ fn metrics_plans_fit_one_request() {
             );
         }
     }
-    budget.finish(&[]);
+    budget.finish("fields_metrics_plans");
 }
 
 /// How many MCP servers per capture class the selection names. A project's servers have no documented cap; the
-/// automatic capture-source selection names every server present in the window, per class.
-const MCP_SERVERS_PER_CLASS: usize = 64;
+/// automatic capture-source selection names every server present in the window, per class, and a class of more
+/// than `MAX_LIST` servers names them in several lists.
+const MCP_SERVERS_PER_CLASS: usize = 1_000;
 
 fn mcp_selection(choice: SourceChoice) -> McpSelection {
     let mut presence = Vec::new();
@@ -798,7 +800,7 @@ fn mcp_plans_fit_one_request() {
             );
         }
     }
-    budget.finish(&[]);
+    budget.finish("fields_mcp_plans");
 }
 
 #[test]
@@ -832,7 +834,7 @@ fn export_plans_fit_one_request() {
     for table in FactTable::ALL {
         budget.plan("export_facts", export_facts(s, hour(), &c, table, &ids));
     }
-    budget.finish(&[]);
+    budget.finish("fields_export_plans");
 }
 
 #[test]
@@ -924,7 +926,7 @@ fn lifecycle_plans_fit_one_request() {
             assert!(statement.fields(&lookup) <= FIELD_BUDGET);
         }
     }
-    budget.finish(&[]);
+    budget.finish("fields_lifecycle_plans");
 }
 
 /// A day partition, of the tables partitioned by day.
@@ -978,8 +980,8 @@ proptest! {
         prop_assert!(budget.over.is_empty(), "{:?}", budget.over);
     }
 
-    /// A trace list filter fits at any spread of its members within TRACE_LIST_MAX_VALUES, sizes of one more
-    /// than a power of two included, which padding nearly doubles.
+    /// A trace list filter fits at any spread of its members within TRACE_LIST_MAX_VALUES, under the most pending
+    /// deletions a read carries.
     #[test]
     fn trace_list_filters_within_their_cap_fit_one_request(
         text in prop::array::uniform5(prop::sample::select(vec![0usize, 1, 2, 3, 5, 9, 17, 33, 64, 65, 100])),
@@ -998,7 +1000,8 @@ proptest! {
         };
         let plan = filtered_trace_list(project(), hour(), &clamp(), Caller::Agent, request, &filter)
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .hiding(&worst_hidden());
         let fields = render::read_fields(&plan).unwrap();
         prop_assert!(fields <= FIELD_BUDGET, "{fields} fields for {text:?}, {tags} tags, {metadata} entries");
     }
