@@ -6,10 +6,11 @@
 //! (`crates/crucible/tests/sqliso_api.rs`).
 
 use axum::http::{Method, StatusCode};
+use crucible_auth::roles::ProjectPermission;
 use crucible_control::KeyScope;
 use serde_json::json;
 
-use crate::identity::{As, PASSWORD, call, platform_with, session};
+use crate::identity::{As, PASSWORD, call, key_refusal, platform_with, session};
 use crate::world::World;
 use crate::{api, get, key, other_key, path, run, send};
 
@@ -81,33 +82,25 @@ fn without_a_workspace_the_permission_is_checked_first_and_then_the_reason_is_gi
                 reply.pretty()
             );
         }
+        // A key from the keys file is told the scope it lacks, and which setting gives keys other scopes.
+        let (run_sql, saved, edit) = (
+            ProjectPermission::RunSql,
+            ProjectPermission::RunSavedQuery,
+            ProjectPermission::EditContent,
+        );
         for (method, rest, permission) in [
-            (Method::POST, "/sql/run".to_owned(), "run_sql"),
-            (Method::POST, "/sql/export".to_owned(), "run_sql"),
-            (Method::DELETE, format!("/sql/runs/{id}"), "run_saved_query"),
-            (
-                Method::POST,
-                format!("/sql/saved-queries/{id}/run"),
-                "run_saved_query",
-            ),
-            (
-                Method::POST,
-                "/sql/saved-queries".to_owned(),
-                "edit_content",
-            ),
-            (
-                Method::DELETE,
-                format!("/sql/saved-queries/{id}"),
-                "edit_content",
-            ),
+            (Method::POST, "/sql/run".to_owned(), run_sql),
+            (Method::POST, "/sql/export".to_owned(), run_sql),
+            (Method::DELETE, format!("/sql/runs/{id}"), saved),
+            (Method::POST, format!("/sql/saved-queries/{id}/run"), saved),
+            (Method::POST, "/sql/saved-queries".to_owned(), edit),
+            (Method::DELETE, format!("/sql/saved-queries/{id}"), edit),
         ] {
             let reply = send(&api, method.clone(), &path(1, &rest), Some(&key())).await;
             reply.assert_problem(403, "forbidden");
-            assert!(
-                reply.body["detail"]
-                    .as_str()
-                    .unwrap()
-                    .contains(&format!("`{permission}`")),
+            assert_eq!(
+                reply.body["detail"],
+                key_refusal(permission, false),
                 "{method} {rest}: {}",
                 reply.pretty()
             );
@@ -264,23 +257,29 @@ fn roles_and_key_scopes_decide_who_runs_and_who_saves() {
         .await;
         reply.assert_problem(403, "forbidden");
 
-        // A key without the `sql` scope reads and nothing else; with it, it runs ad hoc and saved queries.
-        // No key saves: `edit_content` is never a key's.
-        post(&p.key, "/sql/run", &run_body)
-            .await
-            .assert_problem(403, "forbidden");
-        post(&p.key, &saved_run, &window)
-            .await
-            .assert_problem(403, "forbidden");
+        // A key without the `sql` scope reads and nothing else, and is told the scope it lacks; with it, it runs
+        // ad hoc and saved queries. No key saves: `edit_content` is never a key's.
+        for (rest, body) in [("/sql/run", &run_body), (saved_run.as_str(), &window)] {
+            let reply = post(&p.key, rest, body).await;
+            reply.assert_problem(403, "forbidden");
+            assert_eq!(
+                reply.body["detail"],
+                key_refusal(ProjectPermission::RunSql, true),
+                "{rest}"
+            );
+        }
         let reply = post(&sql_key, "/sql/run", &run_body).await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
         let reply = post(&sql_key, "/sql/export", &export_body).await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
         let reply = post(&sql_key, &saved_run, &window).await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
-        post(&sql_key, "/sql/saved-queries", &saved_body)
-            .await
-            .assert_problem(403, "forbidden");
+        let reply = post(&sql_key, "/sql/saved-queries", &saved_body).await;
+        reply.assert_problem(403, "forbidden");
+        assert_eq!(
+            reply.body["detail"],
+            key_refusal(ProjectPermission::EditContent, true)
+        );
 
         // The history names who ran what. An admin sees everyone's runs, the user's and the key's; a key sees
         // its own.

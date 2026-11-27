@@ -4,6 +4,11 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- A REST request whose API key lacks the scope that the route needs gets 403 `forbidden` with a message that names
+  the missing scope, lists the scopes the key has, and gives the `crucible admin create-key --scopes` command and the
+  `"scopes"` field of the API keys endpoint that make a key with it; a key on a route that no key may use is told to
+  sign in. In 0.1.3 both read "this needs the `<permission>` permission on the project; ask a project admin", which
+  stays the message for signed-in people.
 - With `clickhouse.cluster` set, a start refuses tables created for a single server on any replica that answers,
   before any statement runs on the cluster, and names the replica, its tables and the fix. In 0.1.3 the check read
   only the replica that `clickhouse.url` names, and the `ON CLUSTER` statements left another replica's

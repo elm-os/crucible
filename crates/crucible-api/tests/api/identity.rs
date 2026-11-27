@@ -9,6 +9,7 @@ use axum::http::{Method, Request, StatusCode, header};
 use crucible_api::{Access, StaticProjectSettings};
 use crucible_auth::csrf::Origins;
 use crucible_auth::password::HashCost;
+use crucible_auth::roles::ProjectPermission;
 use crucible_auth::service::{Identity, IdentityConfig, SessionVerdict};
 use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer};
 use crucible_control::{JsonDoc, OrgRole, Project, ProjectRole, Repos as _};
@@ -396,6 +397,37 @@ fn refused(reply: &Reply, status: u16) -> bool {
     reply.status.as_u16() == status
 }
 
+/// What a key with the scopes of a new key is told on a route whose permission it lacks (contract 1.7): the
+/// scope it lacks, the scopes it has and how to make a key with it, or that no key has the permission. Without
+/// a control plane (`control_plane` false) the key comes from the keys file, and both say which setting adds one.
+pub(crate) fn key_refusal(permission: ProjectPermission, control_plane: bool) -> String {
+    let role = if permission.min_role() == Some(ProjectRole::Admin) {
+        "a project admin"
+    } else {
+        "a project member or admin"
+    };
+    let name = permission.name();
+    match (permission.key_scope(), control_plane) {
+        (Some(scope), true) => format!(
+            "this key lacks the `{scope}` scope (it has: ingest, read, write); a project admin can make a key \
+             that has it with `crucible admin create-key --project <project> --scopes ingest,read,write,{scope}`, \
+             or with \"scopes\" in POST /api/v1/projects/{{project_id}}/api-keys"
+        ),
+        (Some(scope), false) => format!(
+            "this key lacks the `{scope}` scope (it has: ingest, read, write); a key from the keys file always \
+             has these, so set postgres.url (CRUCIBLE_POSTGRES_URL) for keys from the control plane and make one \
+             with `crucible admin create-key --project <project> --scopes ingest,read,write,{scope}`"
+        ),
+        (None, true) => format!(
+            "API keys never have the `{name}` permission that this needs; sign in as {role} to do this"
+        ),
+        (None, false) => format!(
+            "API keys never have the `{name}` permission that this needs; sign in as {role} to do this, which \
+             needs a control plane: set postgres.url (CRUCIBLE_POSTGRES_URL)"
+        ),
+    }
+}
+
 #[test]
 fn every_route_refuses_callers_without_its_permission() {
     run(|env| async move {
@@ -456,6 +488,14 @@ fn every_route_refuses_callers_without_its_permission() {
                         "{label}: {:#}",
                         as_viewer.body
                     );
+                    // A person without the role is told the permission and whom to ask.
+                    if !allowed {
+                        let role = format!(
+                            "this needs the `{}` permission on the project; ask a project admin",
+                            permission.name()
+                        );
+                        assert_eq!(as_viewer.body["detail"], role, "{label}");
+                    }
                     // The key has the scopes of a new key: ingest, read and write.
                     let key_allowed = permission
                         .key_scope()
@@ -466,6 +506,11 @@ fn every_route_refuses_callers_without_its_permission() {
                         "{label}: {:#}",
                         as_key.body
                     );
+                    if !key_allowed {
+                        assert_eq!(as_key.body["code"], "forbidden", "{label}");
+                        let says = key_refusal(permission, true);
+                        assert_eq!(as_key.body["detail"], says, "{label}");
+                    }
                 }
             }
         }

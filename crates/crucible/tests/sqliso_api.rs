@@ -469,7 +469,10 @@ async fn the_sql_workspace_holds_through_the_api() {
         "{body:#}"
     );
     assert!(
-        body["detail"].as_str().unwrap().contains("`run_sql`"),
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("this key lacks the `sql` scope (it has: read); "),
         "{body:#}"
     );
 

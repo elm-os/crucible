@@ -169,6 +169,67 @@ fn keys_verify_by_secret_and_by_pair_with_their_scopes() {
     });
 }
 
+/// For every set of scopes and every scope it lacks, the refusal names the scope, lists the set in the order of
+/// contract 11.3, and gives the command that makes a key with the set and the scope; from the keys file it names
+/// the setting that adds keys with other scopes.
+#[test]
+fn a_scope_gap_says_what_the_key_has_and_how_to_make_a_key_with_the_scope() {
+    let gap = ScopeGap {
+        needed: KeyScope::Sql,
+        has: Scopes::DEFAULT,
+    };
+    assert_eq!(
+        gap.to_string(),
+        "this key lacks the `sql` scope (it has: ingest, read, write); a project admin can make a key that has it \
+         with `crucible admin create-key --project <project> --scopes ingest,read,write,sql`, or with \"scopes\" \
+         in POST /api/v1/projects/{project_id}/api-keys"
+    );
+    assert_eq!(
+        gap.from_keys_file(),
+        "this key lacks the `sql` scope (it has: ingest, read, write); a key from the keys file always has these, \
+         so set postgres.url (CRUCIBLE_POSTGRES_URL) for keys from the control plane and make one with `crucible \
+         admin create-key --project <project> --scopes ingest,read,write,sql`"
+    );
+    assert_eq!(Scopes::default().to_string(), "none");
+    for bits in 0..32u8 {
+        let has: Vec<KeyScope> = KeyScope::ALL
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| bits & (1 << i) != 0)
+            .map(|(_, scope)| *scope)
+            .collect();
+        // The input order does not matter.
+        let scopes = Scopes::of(&has.iter().rev().copied().collect::<Vec<_>>());
+        assert_eq!(scopes.iter().collect::<Vec<_>>(), has);
+        for &needed in KeyScope::ALL.iter().filter(|scope| !has.contains(scope)) {
+            let said = ScopeGap {
+                needed,
+                has: scopes,
+            }
+            .to_string();
+            let listed = if has.is_empty() {
+                "none".to_owned()
+            } else {
+                has.iter()
+                    .map(KeyScope::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let prefix = format!("this key lacks the `{needed}` scope (it has: {listed}); ");
+            assert!(said.starts_with(&prefix), "{said}");
+            let wanted: Vec<&str> = KeyScope::ALL
+                .iter()
+                .filter(|scope| has.contains(scope) || **scope == needed)
+                .map(KeyScope::as_str)
+                .collect();
+            assert!(
+                said.contains(&format!("--scopes {}`", wanted.join(","))),
+                "{said}"
+            );
+        }
+    }
+}
+
 #[test]
 fn versions_decide_and_expiry_and_revocation_apply_locally() {
     crate::testing::sim(2, async |env| {

@@ -14,6 +14,7 @@
 //!   successful poll makes every secret-key request 503. Before the first snapshot nothing is accepted.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
@@ -96,6 +97,91 @@ impl Scopes {
     /// Whether `scope` is in the set.
     pub const fn has(self, scope: KeyScope) -> bool {
         self.0 & Self::bit(scope) != 0
+    }
+
+    /// The set with `scope` added.
+    pub const fn with(self, scope: KeyScope) -> Self {
+        Self(self.0 | Self::bit(scope))
+    }
+
+    /// The scopes in the set, in the order of contract 11.3.
+    pub fn iter(self) -> impl Iterator<Item = KeyScope> {
+        KeyScope::ALL
+            .iter()
+            .copied()
+            .filter(move |scope| self.has(*scope))
+    }
+
+    /// Writes the scopes separated by `separator`, or `none` for the empty set.
+    fn join(self, f: &mut fmt::Formatter<'_>, separator: &str) -> fmt::Result {
+        let mut scopes = self.iter();
+        let Some(first) = scopes.next() else {
+            return f.write_str("none");
+        };
+        write!(f, "{first}")?;
+        scopes.try_for_each(|scope| write!(f, "{separator}{scope}"))
+    }
+}
+
+/// `ingest, read, write`.
+impl fmt::Display for Scopes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.join(f, ", ")
+    }
+}
+
+/// A valid key that lacks the scope a request needs (contract 11.3). Its `Display` is the refusal, which says
+/// what the key has and how to get a key with the scope (contract 1.7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScopeGap {
+    /// The scope the request needs.
+    pub needed: KeyScope,
+    /// The scopes the key has.
+    pub has: Scopes,
+}
+
+impl ScopeGap {
+    /// The refusal for a key from the keys file, which always has the scopes of a new key: a key with another
+    /// scope comes from the control plane.
+    pub fn from_keys_file(self) -> String {
+        format!(
+            "{}; a key from the keys file always has these, so set postgres.url (CRUCIBLE_POSTGRES_URL) for keys \
+             from the control plane and make one with {}",
+            self.lacks(),
+            self.create_key()
+        )
+    }
+
+    /// `this key lacks the `sql` scope (it has: ingest, read, write)`.
+    fn lacks(self) -> impl fmt::Display {
+        fmt::from_fn(move |f| {
+            write!(
+                f,
+                "this key lacks the `{}` scope (it has: {})",
+                self.needed, self.has
+            )
+        })
+    }
+
+    /// The command that makes a key with the key's scopes and the one it lacks.
+    fn create_key(self) -> impl fmt::Display {
+        fmt::from_fn(move |f| {
+            f.write_str("`crucible admin create-key --project <project> --scopes ")?;
+            self.has.with(self.needed).join(f, ",")?;
+            f.write_str("`")
+        })
+    }
+}
+
+impl fmt::Display for ScopeGap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}; a project admin can make a key that has it with {}, or with \"scopes\" in POST \
+             /api/v1/projects/{{project_id}}/api-keys",
+            self.lacks(),
+            self.create_key()
+        )
     }
 }
 

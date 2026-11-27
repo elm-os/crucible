@@ -26,7 +26,8 @@ use base64::engine::general_purpose::STANDARD;
 use crucible_api_types::ProblemCode;
 use crucible_auth::roles::{Denied, OrgPermission, ProjectPermission};
 use crucible_auth::service::{Identity, SessionPrincipal, SessionVerdict};
-use crucible_auth::{KeyGrant, KeyVerdict, KeyVerifier, Scopes, csrf};
+use crucible_auth::{KeyGrant, KeyVerdict, KeyVerifier, ScopeGap, Scopes, csrf};
+use crucible_control::ProjectRole;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_export::Exports;
@@ -369,10 +370,7 @@ impl<P: Permission> Scoped<P> {
             Denied::TooLow => ApiError::new(
                 request_id,
                 ProblemCode::Forbidden,
-                format!(
-                    "this needs the `{}` permission on the project; ask a project admin",
-                    P::PERMISSION.name()
-                ),
+                too_low(&principal, P::PERMISSION, state.identity.is_some()),
             ),
         })?;
         Ok(Self {
@@ -382,6 +380,44 @@ impl<P: Permission> Scoped<P> {
             path,
             permission: PhantomData,
         })
+    }
+}
+
+/// Why `principal` may not do what `permission` allows on a project it sees (contracts 1.7 and 11.6). A person
+/// is told the permission and whom to ask. A key is told the scope it lacks, the scopes it has and how to make a
+/// key with it, or that no key has the permission; without a control plane (`control_plane` false) its keys come
+/// from the keys file, and the message names the setting that adds one.
+fn too_low(principal: &Principal, permission: ProjectPermission, control_plane: bool) -> String {
+    let Principal::Key(grant) = principal else {
+        return format!(
+            "this needs the `{}` permission on the project; ask a project admin",
+            permission.name()
+        );
+    };
+    if let Some(needed) = permission.key_scope() {
+        let gap = ScopeGap {
+            needed,
+            has: grant.scopes,
+        };
+        return if control_plane {
+            gap.to_string()
+        } else {
+            gap.from_keys_file()
+        };
+    }
+    let role = if permission.min_role() == Some(ProjectRole::Admin) {
+        "a project admin"
+    } else {
+        "a project member or admin"
+    };
+    let sign_in = format!(
+        "API keys never have the `{}` permission that this needs; sign in as {role} to do this",
+        permission.name()
+    );
+    if control_plane {
+        sign_in
+    } else {
+        format!("{sign_in}, which needs a control plane: set postgres.url (CRUCIBLE_POSTGRES_URL)")
     }
 }
 
