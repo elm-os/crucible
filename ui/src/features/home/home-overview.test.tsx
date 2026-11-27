@@ -552,6 +552,8 @@ describe("the set-up card's states", () => {
     const trace = step("Send your first trace");
     expect(within(trace).getByText("This section couldn't load.")).toBeTruthy();
     expect(within(trace).getByText("req-1")).toBeTruthy();
+    expect(within(trace).getByText(/give your administrator this code/)).toBeTruthy();
+    expect(within(trace).queryByText(/Reference/)).toBeNull();
     expect(within(section("Set up")).queryByText("raw server title")).toBeNull();
     // The tiles don't depend on it.
     expect(await within(section("Traces")).findByText("1")).toBeTruthy();

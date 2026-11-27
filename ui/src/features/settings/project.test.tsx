@@ -291,7 +291,7 @@ describe("renaming", () => {
     await rename("Payments");
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Someone renamed this project since the page loaded.");
-    expect(alert.textContent).toContain("req-7");
+    expect(alert.textContent).not.toContain("req-7");
     expect(nameField().value).toBe("Checkout EU");
     expect(requests(`GET ${LIST}`)).toHaveLength(2);
     expect(sessionName(PROJECT_A)).toBe("Checkout EU");
@@ -333,7 +333,7 @@ describe("renaming", () => {
     await rename("Payments");
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Only project admins rename a project.");
-    expect(alert.textContent).toContain("req-7");
+    expect(alert.textContent).not.toContain("req-7");
     expect(screen.queryByText(SERVER_TEXT)).toBeNull();
     expect(sessionName(PROJECT_A)).toBe("Checkout");
   });

@@ -510,7 +510,7 @@ test.describe("alerts: channels", () => {
       dialog.getByText(/cloud metadata address, which Crucible never calls/),
     ).toBeVisible();
     await expect(dialog.getByText("Crucible won't call that address.")).toBeVisible();
-    await expect(dialog.getByText("req-ssrf")).toBeVisible();
+    await expect(dialog.getByText("req-ssrf")).toHaveCount(0);
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
     await expectAccessible(page, "channel refused");
   });

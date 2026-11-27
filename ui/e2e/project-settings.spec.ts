@@ -128,7 +128,7 @@ test.describe("settings: project", () => {
 
     const alert = region.getByRole("alert");
     await expect(alert).toContainText("Someone renamed this project since the page loaded.");
-    await expect(alert).toContainText("req-stale");
+    await expect(alert).not.toContainText("req-stale");
     await expect(region.getByLabel("Project name")).toHaveValue("Checkout EU");
     await expect(projectMenu(page)).toHaveText("Checkout EU");
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
@@ -185,7 +185,7 @@ test.describe("settings: project", () => {
     await region.getByRole("button", { name: "Rename" }).click();
     await expect(name).toHaveAttribute("aria-invalid", "true");
     await expect(region.getByText("Use 1 to 200 characters.")).toBeVisible();
-    await expect(region.getByRole("alert")).toContainText("req-name");
+    await expect(region.getByRole("alert")).not.toContainText("req-name");
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
     await expectAccessible(page, "project name refused");
   });

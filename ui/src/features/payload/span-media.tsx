@@ -147,11 +147,16 @@ function NotStored({ contentType }: { contentType: string }) {
 
 function MediaItem({ project, media }: { project: string; media: Media }) {
   const [broken, setBroken] = useState(false);
+  const shownInline = (disposition: string | undefined) =>
+    disposition === "inline" && kindOf(media.content_type) !== "file";
   const item = useQuery({
     queryKey: [project, "media", media.id],
     enabled: media.state === "uploaded",
     staleTime: LINK_FRESH_MS,
     queryFn: ({ signal }) => getMedia(project, media.id, signal),
+    // Only a download link renews while shown: a new address would restart inline audio or video.
+    refetchInterval: (query) =>
+      shownInline(query.state.data?.disposition) ? false : LINK_FRESH_MS,
   });
   const phase = useLoadingPhase(item.isPending);
   if (media.state !== "uploaded") {

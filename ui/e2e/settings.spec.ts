@@ -181,7 +181,7 @@ test.describe("settings: members", () => {
     const link = `${new URL(page.url()).origin}/invite/?token=tok-1`;
     const shown = page.getByRole("dialog", { name: "Send this link to barbara@example.com" });
     await expect(shown.getByText(link)).toBeVisible();
-    await expect(shown).toContainText("doesn't send email yet");
+    await expect(shown).toContainText("doesn't email invitations");
     await expectAccessible(page, "invitation link");
     expect(posts[0]?.postDataJSON()).toEqual({ email: "barbara@example.com", org_role: "viewer" });
     expect(posts[0]?.headers()["x-crucible-csrf"]).toBe(CSRF);

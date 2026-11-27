@@ -4,6 +4,7 @@ import { Button } from "@ui-sdk/react/button";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
+import { ErrorCode } from "@/components/error-code";
 import { AlertIcon, CheckIcon, TodoIcon, UnsetIcon } from "@/components/icons";
 import { SectionFrame, useLoadingPhase } from "@/components/section";
 import { scopedHref } from "@/components/shell/nav";
@@ -156,11 +157,7 @@ function Unknown({
           Check again
         </Button>
       ) : null}
-      {error?.requestId ? (
-        <span>
-          Reference <span className="font-mono select-all">{error.requestId}</span>
-        </span>
-      ) : null}
+      <ErrorCode code={error?.reference ?? null} label={title} />
     </div>
   );
 }

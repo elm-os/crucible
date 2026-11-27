@@ -29,7 +29,7 @@ import type { DeletionState } from "@/api/generated/DeletionState";
 import type { SessionProject } from "@/api/generated/SessionProject";
 import { DialogBody } from "@/components/dialog-body";
 import { EmptyState } from "@/components/empty-state";
-import { type CopyByCode, FormAlert, failureCopy } from "@/components/form-alert";
+import { type CopyByCode, FormAlert, failureCopy, focusField } from "@/components/form-alert";
 import { AlertIcon, CheckIcon, TodoIcon } from "@/components/icons";
 import { Section } from "@/components/section";
 import { formatCount, formatTime } from "@/lib/format";
@@ -179,10 +179,10 @@ const DELETE_COPY: CopyByCode = {
     title: "Your role can't delete this.",
     detail: "Members delete traces. Deleting by user or session needs a project admin.",
   },
+  // The server stored the request and retries its first step itself; the same key makes a resend safe.
   ingest_unavailable: {
-    title: "The request is recorded, and this server couldn't log it yet.",
-    detail:
-      "It retries on its own within seconds. Delete again to check: nothing is deleted twice.",
+    title: "Your request is saved, and the deletion starts within seconds.",
+    detail: "Press Delete data again to check that it started. Nothing is deleted twice.",
   },
 };
 
@@ -240,12 +240,17 @@ function DeleteDataForm({ project, onDone }: { project: SessionProject; onDone: 
     event.preventDefault();
     setChecked(true);
     if (kind === "trace") {
-      if (parsed.ids.length === 0 || parsed.invalid !== null || tooMany) return;
+      if (parsed.ids.length === 0 || parsed.invalid !== null || tooMany) {
+        focusField(event.currentTarget, "trace_ids");
+        return;
+      }
       create.mutate({ kind, trace_ids: parsed.ids });
     } else if (subject.trim() !== "") {
       create.mutate(
         kind === "user" ? { kind, user_id: subject.trim() } : { kind, session_id: subject.trim() },
       );
+    } else {
+      focusField(event.currentTarget, "subject");
     }
   };
 
@@ -337,10 +342,7 @@ function DeleteDataForm({ project, onDone }: { project: SessionProject; onDone: 
           )}
         </DialogBody>
         {failure ? (
-          <FormAlert
-            copy={failureCopy(failure, "Couldn't request the deletion.", DELETE_COPY)}
-            requestId={failure.requestId}
-          />
+          <FormAlert copy={failureCopy(failure, "Couldn't request the deletion.", DELETE_COPY)} />
         ) : null}
         <div className="flex justify-end gap-2">
           <DialogClose>Cancel</DialogClose>

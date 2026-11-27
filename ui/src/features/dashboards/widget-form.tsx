@@ -245,8 +245,8 @@ export function WidgetForm({
           copy={{
             title: "The measures couldn't load.",
             detail: "A widget's query is built from them. Try again in a moment.",
+            reference: asUiError(schemaQuery.error).reference,
           }}
-          requestId={asUiError(schemaQuery.error).requestId}
           action={<Button onClick={() => schemaQuery.refetch()}>Retry the measures</Button>}
         />
       ) : (

@@ -143,7 +143,7 @@ test.describe("settings: retention", () => {
     const alert = region.getByRole("alert");
     await expect(alert).toContainText("These settings changed since the page loaded.");
     await expect(alert).toContainText("Enter your change again, then save.");
-    await expect(alert).toContainText("req-stale");
+    await expect(alert).not.toContainText("req-stale");
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
     await expectAccessible(page, "retention reloaded after someone else's change");
 

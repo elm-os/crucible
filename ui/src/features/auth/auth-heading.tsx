@@ -18,7 +18,7 @@ export function AuthHeading({
     if (focus) heading.current?.focus();
   }, [focus]);
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col items-center gap-2 text-center">
       <h1
         ref={heading}
         tabIndex={focus ? -1 : undefined}
@@ -26,7 +26,7 @@ export function AuthHeading({
       >
         {title}
       </h1>
-      {children ? <p className="text-body text-ink-soft">{children}</p> : null}
+      {children ? <p className="text-body text-balance text-ink-soft">{children}</p> : null}
     </div>
   );
 }

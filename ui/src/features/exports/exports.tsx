@@ -145,7 +145,8 @@ function StateCell({ item }: { item: Export }) {
         <div className="flex flex-col">
           <StatusLabel status="error" label="Failed" />
           <span className="max-w-72 text-label text-ink-soft">
-            {FAILURES[item.error_code ?? ""] ?? "Something went wrong on the server. Export again."}
+            {FAILURES[item.error_code ?? ""] ??
+              "The export failed on the server. Export again, or ask an administrator to check the server log."}
           </span>
         </div>
       );
@@ -219,6 +220,8 @@ function ExportsTable({ exports }: { exports: Export[] }) {
                 {item.state === "ready" ? formatBytes(item.bytes) : ""}
               </td>
               <td className="text-end">
+                {/* Shown only while the file is ready. A file that expires in the meantime fails as a
+                    download, which the browser reports itself; the page shows no server text. */}
                 {item.download_path ? (
                   <a href={item.download_path} download className="text-data">
                     Download{" "}
@@ -360,7 +363,6 @@ function CreateExportDialog({ project }: { project: SessionProject }) {
                 "Couldn't start the export.",
                 rateLimitCopy(failure.retryAfterS),
               )}
-              requestId={failure.requestId}
             />
           ) : null}
           <div className="flex justify-end gap-2">

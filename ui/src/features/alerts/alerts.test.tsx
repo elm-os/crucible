@@ -343,7 +343,9 @@ describe("channels", () => {
       steps: [{ ref: refOf("Send test to On call"), action: "press" }],
     });
     expect(sent.ok, sent.error?.message).toBe(true);
-    expect((await screen.findByRole("alert")).textContent).toContain("The receiver failed");
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "The receiver ran into an error of its own.",
+    );
   });
 
   test("rotating the secret needs a person, and the new secret is hidden from agents", async () => {

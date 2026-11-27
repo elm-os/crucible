@@ -43,8 +43,8 @@ function RequestReset() {
     return (
       <div className="flex flex-col gap-4">
         <AuthHeading title="Request received" focus>
-          When this server sends email, a reset link will arrive at {request.variables.email}. Until
-          then, ask an administrator to run this command and send you the link it prints:
+          Crucible doesn&apos;t email reset links. Ask an administrator to run this command and send
+          you the link it prints:
         </AuthHeading>
         <AdminCommand email={request.variables.email} />
         <Link href="/login" className="self-start text-data">
@@ -62,8 +62,8 @@ function RequestReset() {
   return (
     <>
       <AuthHeading title="Reset your password">
-        Crucible doesn&apos;t send email yet. An administrator can make a reset link for you by
-        running this command on the server:
+        Crucible doesn&apos;t email reset links. An administrator makes one for you by running this
+        command on the server:
       </AuthHeading>
       <AdminCommand email="<your email>" />
       <form
@@ -79,12 +79,7 @@ function RequestReset() {
           <FieldError match="valueMissing">Enter your email address.</FieldError>
           <FieldError match="typeMismatch">Enter an email address like ada@example.com.</FieldError>
         </Field>
-        {failure ? (
-          <FormAlert
-            copy={failureCopy(failure, "Couldn't send the request.")}
-            requestId={failure.requestId}
-          />
-        ) : null}
+        {failure ? <FormAlert copy={failureCopy(failure, "Couldn't send the request.")} /> : null}
         <Button
           type="submit"
           data-variant="solid"
@@ -140,10 +135,7 @@ function ChooseNewPassword({ token }: { token: string }) {
           invalid={fieldFailed(failure, "new_password")}
         />
         {failure ? (
-          <FormAlert
-            copy={failureCopy(failure, "Couldn't change your password.", RESET_COPY)}
-            requestId={failure.requestId}
-          />
+          <FormAlert copy={failureCopy(failure, "Couldn't change your password.", RESET_COPY)} />
         ) : null}
         <Button
           type="submit"
