@@ -2,7 +2,7 @@ name: bans
 
 # Proves that the determinism bans are live: every disallowed method and type in clippy.toml is planted in
 # tools/ban-selftest and must be reported by clippy, and the allow-attribute guard of ci-rust.yml must flag
-# a fixture that switches a determinism lint off outside the allowlist.
+# a fixture that switches a determinism lint off outside the allowlist, and stop when its search fails.
 
 on:
   push:

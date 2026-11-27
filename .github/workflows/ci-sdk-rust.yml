@@ -82,3 +82,29 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         run: cargo build --workspace --all-targets --all-features --locked
+
+  # The oldest Rust the crate supports. Keep RUSTUP_TOOLCHAIN, rust-version in sdk/rust/Cargo.toml and the minimum
+  # that sdk/rust/README.md names the same.
+  minimum-rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    env:
+      # Takes precedence over sdk/rust/rust-toolchain.toml for every cargo and rustc call of the job.
+      RUSTUP_TOOLCHAIN: "1.95.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (Rust 1.95.0)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Every feature an application can turn on, without the test hooks of test-support.
+      - name: Build
+        run: cargo build -p crucible-sdk --features mcp,mcp-client --locked
+      - name: Tests
+        run: cargo test --workspace --all-features --locked

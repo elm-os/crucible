@@ -4,7 +4,8 @@
 bans   Runs clippy on tools/ban-selftest with the root clippy.toml and fails unless every disallowed
        method and type listed there is planted in src/lib.rs and reported on its planted line.
 guard  Extracts the allow-attribute guard from .github/workflows/ci-rust.yml and fails unless it flags a
-       fixture that switches off a determinism lint outside the allowlist (and passes the controls).
+       fixture that switches off a determinism lint outside the allowlist (and passes the controls), and stops
+       when its search fails.
 
 Run from anywhere: `python3 tools/ban-selftest/check.py [bans|guard]` (both when no argument is given).
 """
@@ -145,17 +146,18 @@ def guard_script():
     return script
 
 
-def run_guard(script, files):
-    """Runs the guard in a scratch tree holding `files` ({relative path: content}); returns (code, output)."""
+def run_guard(script, files, directories=("crates", "sdk")):
+    """Runs the guard in a scratch tree holding `files` ({relative path: content}) and `directories`; returns
+    (code, output). It runs under `bash -e`, as the runner runs a step that names no shell."""
     with tempfile.TemporaryDirectory() as scratch:
         for relative, content in files.items():
             target = Path(scratch) / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8", newline="\n")
-        for directory in ("crates", "sdk"):
+        for directory in directories:
             (Path(scratch) / directory).mkdir(exist_ok=True)
         run = subprocess.run(
-            [shutil.which("bash") or "bash", "-eo", "pipefail", "-c", script],
+            [shutil.which("bash") or "bash", "-e", "-c", script],
             cwd=scratch,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -184,7 +186,12 @@ def check_guard():
         if not must_fail and code != 0:
             fail(f"guard flagged a permitted tree: {description}\n{output}")
         print(f"  guard {'flags ' if must_fail else 'passes'}  {description}")
-    print(f"ban-selftest: guard ok: {len(cases)} cases")
+    # A search that fails must stop the step rather than pass as finding nothing: with sdk/ missing, grep exits 2.
+    code, output = run_guard(script, {"crates/crucible-wal/src/lib.rs": clean}, directories=("crates",))
+    if code == 0 or "grep: sdk:" not in output or "outside the allowlist" in output:
+        fail(f"guard did not stop when its search failed (exit {code})\n{output}")
+    print("  guard stops   when its search fails")
+    print(f"ban-selftest: guard ok: {len(cases) + 1} cases")
 
 
 def main():

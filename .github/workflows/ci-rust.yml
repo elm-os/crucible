@@ -39,14 +39,17 @@ jobs:
       - name: Allow-attribute guard
         run: |
           # Only allowlisted files may switch off the determinism lints (directly, via a lint group, or via
-          # `warnings`), with either `allow` or `expect`.
-          bad=$(grep -rlnP --include='*.rs' '(allow|expect)\([^)]*(clippy::(disallowed_(methods|types|macros)|style|all)\b|\bwarnings\b)' crates sdk 2>/dev/null \
-            | grep -vE '^crates/(crucible-env-prod|crucible-sim|crucible-config|crucible)/|^crates/crucible-auth/src/scope\.rs$|^crates/crucible-shipper/src/probe\.rs$|/benches/|/src/main\.rs$' || true)
+          # `warnings`), with either `allow` or `expect`. Each grep exits 1 when it selects nothing, which passes;
+          # an error (exit 2) stops the step.
+          found=$(grep -rlnP --include='*.rs' '(allow|expect)\([^)]*(clippy::(disallowed_(methods|types|macros)|style|all)\b|\bwarnings\b)' crates sdk) || [ $? -eq 1 ]
+          bad=$(grep -vE '^crates/(crucible-env-prod|crucible-sim|crucible-config|crucible)/|^crates/crucible-auth/src/scope\.rs$|^crates/crucible-shipper/src/probe\.rs$|/benches/|/src/main\.rs$' <<<"$found") || [ $? -eq 1 ]
           if [ -n "$bad" ]; then echo "disallowed-lint allows outside the allowlist:"; echo "$bad"; exit 1; fi
       - name: Release builds carry no test-only features
         run: |
           # A workspace build unifies test-only features (test-mutants, test-support); the shipped binary must not.
-          if cargo tree -p crucible -e normal,build,features --target all --locked | grep -E 'feature "(test-mutants|test-support)"'; then
+          # cargo tree runs on its own line, so its failure fails the step; grep finding nothing is the pass.
+          tree=$(cargo tree -p crucible -e normal,build,features --target all --locked)
+          if grep -E 'feature "(test-mutants|test-support)"' <<<"$tree"; then
             echo "test-only features reach the crucible binary"; exit 1
           fi
       - name: Tests

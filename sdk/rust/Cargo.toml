@@ -2,6 +2,7 @@
 name = "crucible-sdk"
 version = "0.1.3"
 edition = "2024"
+rust-version = "1.95"
 description = "Crucible SDK for Rust: agent tracing helpers and MCP server and client instrumentation over OpenTelemetry."
 license = "MIT"
 repository = "https://github.com/elm-os/crucible"
