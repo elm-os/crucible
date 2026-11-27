@@ -597,7 +597,8 @@ null for a span that has not reached ClickHouse.
 
 The trace and span lists take these filters as query parameters. Repeating a parameter matches any of its values;
 different parameters must all hold; each takes at most 100 values. The trace list takes at most 256 values across
-all its filters; more answers 422 `validation_failed` with `too_many_values`.
+all its filters; more answers 422 `validation_failed` with `too_many_values`. A single value longer than 131,072
+bytes answers 422 `query_too_broad`.
 
 | Filter | Matches |
 |---|---|

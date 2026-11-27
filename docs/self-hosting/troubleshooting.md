@@ -111,6 +111,7 @@ limit, shows no code.
 | 404 `not_found` for a project you can see in the UI | The key belongs to another project: each key reads only its own |
 | 403 ``this needs the `manage` permission on the project; ask a project admin`` (or another permission) | The role or the key's scopes do not allow it ([security](security.md#api-keys-and-roles)) |
 | 422 `query_too_broad`: `the window is longer than the project's maximum of 30 days` | Ask for a window of at most 30 days |
+| 422 `query_too_broad` for a read with a very long filter value, and the server log warns `a read was not sent and fails as query_too_broad` | One value of the read, such as a filter value, is longer than 131,072 bytes, ClickHouse's default `http_max_field_value_size`, so Crucible does not send it. Narrow the filter to shorter values |
 | 400 `cursor_invalid` | The cursor expired (after 24 hours) or belongs to another query: start again from the first page |
 | An export of 129 spans or more stays `queued`, with Crucible 0.1.3 | Some of 0.1.3's export statements carry more fields than ClickHouse's default `http_max_fields` of 1,000. Set `http_max_fields` (for example 100000) in ClickHouse's default profile, in a file under `users.d`, and restart ClickHouse (`SYSTEM RELOAD CONFIG` is not enough); the exports complete on their next attempt, with no Crucible restart |
 | 428 `precondition_required` or 412 `precondition_failed` | Read the resource again and send its `ETag` in `If-Match` |
