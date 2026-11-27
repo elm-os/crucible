@@ -17,6 +17,7 @@ import { type ReactNode, useState } from "react";
 import type { UiError } from "@/api/errors";
 import type { SqlResult } from "@/api/generated/SqlResult";
 import { EmptyState } from "@/components/empty-state";
+import { ErrorCode } from "@/components/error-code";
 import { AlertIcon, UnsetIcon } from "@/components/icons";
 import { ConnectTrigger } from "@/components/shell/connect-dialog";
 import { formatCount, formatDuration } from "@/lib/format";
@@ -96,20 +97,16 @@ export function SqlErrorCard({
           {onGoTo ? <Button onClick={() => onGoTo(line, column)}>Go to line {line}</Button> : null}
         </div>
       ) : null}
-      {error.action === "sign_in" || children || error.requestId !== null ? (
+      {error.action === "sign_in" || children ? (
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
           {error.kind === "signed_out" ? (
             <Link href={loginHref(currentPath()) as Route}>Sign in</Link>
           ) : null}
           {error.kind === "unauthenticated" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
           {children}
-          {error.requestId !== null ? (
-            <p className="text-label text-ink-soft">
-              Reference <span className="font-mono select-all">{error.requestId}</span>
-            </p>
-          ) : null}
         </div>
       ) : null}
+      <ErrorCode code={error.reference} />
     </div>
   );
 }

@@ -55,12 +55,7 @@ export function ConfirmDialog<Row>({
                 const error = close.error ? asUiError(close.error) : null;
                 return (
                   <div className="flex flex-col gap-3">
-                    {error ? (
-                      <FormAlert
-                        copy={failureCopy(error, failed, copy)}
-                        requestId={error.requestId}
-                      />
-                    ) : null}
+                    {error ? <FormAlert copy={failureCopy(error, failed, copy)} /> : null}
                     <div className="flex justify-end gap-2">
                       <AlertDialogClose>Cancel</AlertDialogClose>
                       <button {...props}>{close.pending ? pending : confirm}</button>

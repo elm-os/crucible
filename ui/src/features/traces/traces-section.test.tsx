@@ -96,7 +96,7 @@ describe("with no backend, the section shows a designed error, never a blank or 
     renderSection();
     expect(await screen.findByText("Couldn't reach Crucible.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry recent traces" })).toBeTruthy();
-    expect(screen.queryByText(/Reference/)).toBeNull();
+    expect(screen.queryByText(/administrator this code/)).toBeNull();
     expect(screen.queryByText(/Failed to fetch/)).toBeNull();
   });
 
@@ -104,7 +104,7 @@ describe("with no backend, the section shows a designed error, never a blank or 
     fetchMock.mockResolvedValue(html(404));
     renderSection();
     expect(await screen.findByText("This section couldn't load.")).toBeTruthy();
-    expect(screen.getByText("Nothing was changed. Try again in a moment.")).toBeTruthy();
+    expect(screen.getByText("Try again in a moment.")).toBeTruthy();
     expect(screen.queryByText(/nginx/)).toBeNull();
     expect(screen.queryByText(/No traces/)).toBeNull();
   });
@@ -116,11 +116,15 @@ describe("with no backend, the section shows a designed error, never a blank or 
     expect(screen.queryByText(/No traces/)).toBeNull();
   });
 
-  test("a proxy answers 502 with a request id, which is shown as the reference", async () => {
+  test("a proxy answers 502 with a request id, which is shown for an administrator", async () => {
     fetchMock.mockResolvedValue(html(502, { "x-request-id": "0193a5b2-7c1d-7e4f" }));
     renderSection();
     expect(await screen.findByText("0193a5b2-7c1d-7e4f")).toBeTruthy();
-    expect(screen.getByText(/Reference/)).toBeTruthy();
+    expect(
+      screen.getByText(/If this keeps happening, give your administrator this code/),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
+    expect(screen.queryByText(/Reference/)).toBeNull();
   });
 
   test("retry refetches only this section", async () => {

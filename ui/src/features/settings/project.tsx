@@ -242,10 +242,7 @@ function RenameForm({ project }: { project: Project }) {
         <FieldError match={fieldFailed(failure, "name")}>Use 1 to 200 characters.</FieldError>
       </Field>
       {failure ? (
-        <FormAlert
-          copy={failureCopy(failure, "Couldn't rename the project.", RENAME_COPY)}
-          requestId={failure.requestId}
-        />
+        <FormAlert copy={failureCopy(failure, "Couldn't rename the project.", RENAME_COPY)} />
       ) : null}
       <div className="flex flex-wrap items-center gap-3">
         <Button

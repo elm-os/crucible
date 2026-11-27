@@ -42,12 +42,24 @@ describe("sqlErrorFrom", () => {
     ["forbidden", 403, "Your role can't do this."],
     ["conflict", 409, "The run was cancelled."],
     ["precondition_failed", 412, "This saved query changed since you opened it."],
-    ["control_plane_unavailable", 503, "Saved queries and history are unavailable right now."],
   ])("%s has its own title and shows the server's fix", (code, status, title) => {
     const error = sqlErrorFrom(failure(status, { code, detail: FIX }));
     expect(error.title).toBe(title);
     expect(error.detail).toBe(FIX);
     expect(error.code).toBe(code);
+    expect(error.reference).toBeNull();
+  });
+
+  test("a database outage keeps the page's own words, and gives the code for an administrator", () => {
+    const error = sqlErrorFrom(
+      failure(503, {
+        code: "control_plane_unavailable",
+        detail: "The control plane database did not answer. Try again shortly.",
+      }),
+    );
+    expect(error.title).toBe("Saved queries and history are unavailable right now.");
+    expect(error.detail).toBe("Crucible can't reach its database. Try again shortly.");
+    expect(error.reference).toBe("req-1");
   });
 
   test("a code without a fix sentence falls back to the page's own", () => {

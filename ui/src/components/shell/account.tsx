@@ -3,7 +3,8 @@
 import { Button } from "@ui-sdk/react/button";
 import { useState } from "react";
 import { logout } from "@/api/client";
-import { asUiError } from "@/api/errors";
+import { asUiError, type UiError } from "@/api/errors";
+import { failureCopy } from "@/components/form-alert";
 import { AlertIcon } from "@/components/icons";
 import { useAuth } from "@/lib/auth";
 import { loadPage } from "@/lib/navigate";
@@ -16,16 +17,17 @@ export function ConnectControl() {
 
 export function AccountControls() {
   const auth = useAuth();
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<UiError | null>(null);
   if (auth.mode !== "session") return null;
 
   const signOut = async () => {
-    setFailed(false);
+    setFailure(null);
     try {
       await logout();
     } catch (error) {
       // A session that had already ended sent the browser to sign in on its own.
-      if (asUiError(error).kind !== "signed_out") setFailed(true);
+      const failed = asUiError(error);
+      if (failed.kind !== "signed_out") setFailure(failed);
       return;
     }
     loadPage("/login/");
@@ -37,10 +39,11 @@ export function AccountControls() {
       <Button onClick={signOut} className="text-data">
         Sign out
       </Button>
-      {failed ? (
+      {failure ? (
         <p role="alert" className="flex items-center gap-1.5 text-label">
           <AlertIcon className="shrink-0" />
-          Couldn&apos;t sign out. Check your connection, then try again.
+          {/* The header has room for one line: the words, without a code. */}
+          Couldn&apos;t sign out. {failureCopy(failure, "Couldn't sign out.").detail}
         </p>
       ) : null}
     </div>

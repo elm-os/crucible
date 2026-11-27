@@ -40,7 +40,13 @@ import type { AuthProviderList } from "@/api/generated/AuthProviderList";
 import type { AuthProviderPatch } from "@/api/generated/AuthProviderPatch";
 import type { ProviderKind } from "@/api/generated/ProviderKind";
 import { EmptyState } from "@/components/empty-state";
-import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
+import {
+  type CopyByCode,
+  FormAlert,
+  failureCopy,
+  fieldFailed,
+  focusField,
+} from "@/components/form-alert";
 import { AlertIcon, CheckIcon, UnsetIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
 import { useAuth } from "@/lib/auth";
@@ -406,10 +412,7 @@ function ProviderActions({ provider, remove }: { provider: AuthProvider; remove:
         {remove}
       </div>
       {failure ? (
-        <FormAlert
-          copy={failureCopy(failure, "Couldn't change the provider.", CHANGE_COPY)}
-          requestId={failure.requestId}
-        />
+        <FormAlert copy={failureCopy(failure, "Couldn't change the provider.", CHANGE_COPY)} />
       ) : null}
     </div>
   );
@@ -483,7 +486,11 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (domains === "invalid" || !changed || save.isPending) return;
+    if (!changed || save.isPending) return;
+    if (domains === "invalid") {
+      focusField(event.currentTarget, "allowed_domains");
+      return;
+    }
     save.mutate(patch);
   };
 
@@ -600,10 +607,7 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
             refused={fieldFailed(failure, "allowed_domains")}
           />
           {failure ? (
-            <FormAlert
-              copy={failureCopy(failure, "Couldn't save the provider.", EDIT_COPY)}
-              requestId={failure.requestId}
-            />
+            <FormAlert copy={failureCopy(failure, "Couldn't save the provider.", EDIT_COPY)} />
           ) : null}
           <div className="flex justify-end gap-2">
             <DialogClose>Cancel</DialogClose>
@@ -733,7 +737,6 @@ function ReplaceSecretDialog({ provider }: { provider: AuthProvider }) {
               {failure ? (
                 <FormAlert
                   copy={failureCopy(failure, "Couldn't replace the secret.", CHANGE_COPY)}
-                  requestId={failure.requestId}
                 />
               ) : null}
               <div className="flex justify-end gap-2">
@@ -772,7 +775,11 @@ function AddProviderDialog() {
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (domains === "invalid" || create.isPending) return;
+    if (create.isPending) return;
+    if (domains === "invalid") {
+      focusField(event.currentTarget, "allowed_domains");
+      return;
+    }
     const form = new FormData(event.currentTarget);
     const field = (name: string) => String(form.get(name) ?? "").trim();
     const scopes = scopesOf(field("scopes"));
@@ -933,10 +940,7 @@ function AddProviderDialog() {
                 refused={fieldFailed(failure, "allowed_domains")}
               />
               {failure ? (
-                <FormAlert
-                  copy={failureCopy(failure, "Couldn't add the provider.", ADD_COPY)}
-                  requestId={failure.requestId}
-                />
+                <FormAlert copy={failureCopy(failure, "Couldn't add the provider.", ADD_COPY)} />
               ) : null}
               <div className="flex justify-end gap-2">
                 <DialogClose>Cancel</DialogClose>

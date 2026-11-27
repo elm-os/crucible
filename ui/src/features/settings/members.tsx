@@ -250,7 +250,6 @@ function RoleSelect({ member }: { member: OrgMember }) {
       {failure ? (
         <FormAlert
           copy={failureCopy(failure, `Couldn't change the role of ${member.name}.`, GONE)}
-          requestId={failure.requestId}
         />
       ) : null}
     </div>
@@ -471,7 +470,6 @@ function InviteDialog() {
               {failure ? (
                 <FormAlert
                   copy={failureCopy(failure, "Couldn't create the invitation.", INVITE_COPY)}
-                  requestId={failure.requestId}
                 />
               ) : null}
               <div className="flex justify-end gap-2">
@@ -499,8 +497,8 @@ function InvitationLink({ created }: { created: InvitationCreated }) {
       <div className="flex flex-col gap-2">
         <DialogTitle>Send this link to {created.invitation.email}</DialogTitle>
         <DialogDescription>
-          Crucible doesn&apos;t send email yet, so send the link yourself. It shows only now: copy
-          it before you close this. It works until {formatTime(created.invitation.expires_at)}.
+          Crucible doesn&apos;t email invitations, so send the link yourself. It shows only now:
+          copy it before you close this. It works until {formatTime(created.invitation.expires_at)}.
         </DialogDescription>
       </div>
       <ShowOnce

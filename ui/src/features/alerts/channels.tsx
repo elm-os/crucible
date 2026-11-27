@@ -322,7 +322,6 @@ function ChannelActions({
               detail: "A channel takes 6 tests a minute. Wait a minute, then send another.",
             },
           })}
-          requestId={testError.requestId}
         />
       ) : null}
       {!test.isSuccess && channel.last_test?.at ? (
@@ -332,10 +331,7 @@ function ChannelActions({
         </p>
       ) : null}
       {failure ? (
-        <FormAlert
-          copy={failureCopy(failure, "Couldn't change the channel.", CHANGED)}
-          requestId={failure.requestId}
-        />
+        <FormAlert copy={failureCopy(failure, "Couldn't change the channel.", CHANGED)} />
       ) : null}
       {rotate.isSuccess && rotate.data.signing_secret ? (
         <div className="flex w-full max-w-xl flex-col gap-2">
@@ -456,8 +452,8 @@ function CreateChannelDialog({ project }: { project: SessionProject }) {
                     Enter 1 to 20 email addresses, like team@example.com.
                   </FieldError>
                   <FieldError match={noMail === true}>
-                    This server has no mail server yet. Ask an operator to set smtp.host and
-                    smtp.from, then create the channel.
+                    This server has no mail server. Ask an operator to set smtp.host and smtp.from,
+                    then create the channel.
                   </FieldError>
                 </Field>
               ) : (
@@ -488,10 +484,7 @@ function CreateChannelDialog({ project }: { project: SessionProject }) {
                 </Field>
               )}
               {failure ? (
-                <FormAlert
-                  copy={failureCopy(failure, "Couldn't create the channel.", SAVE_COPY)}
-                  requestId={failure.requestId}
-                />
+                <FormAlert copy={failureCopy(failure, "Couldn't create the channel.", SAVE_COPY)} />
               ) : null}
               <div className="flex justify-end gap-2">
                 <DialogClose>Cancel</DialogClose>

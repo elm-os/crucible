@@ -22,7 +22,13 @@ import type { AlertRule } from "@/api/generated/AlertRule";
 import type { SessionProject } from "@/api/generated/SessionProject";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy } from "@/components/form-alert";
-import { ErrorCard, Section, SectionFrame, useLoadingPhase } from "@/components/section";
+import {
+  ErrorCard,
+  RefreshFailed,
+  Section,
+  SectionFrame,
+  useLoadingPhase,
+} from "@/components/section";
 import { scopedHref } from "@/components/shell/nav";
 import { ConfirmDialog } from "@/features/settings/confirm-dialog";
 import { RowsSkeleton } from "@/features/settings/rows-skeleton";
@@ -157,10 +163,7 @@ function RuleActions({ project, rule }: { project: SessionProject; rule: AlertRu
         </AlertDialogTrigger>
       </div>
       {failure ? (
-        <FormAlert
-          copy={failureCopy(failure, "Couldn't change the rule.", CHANGED)}
-          requestId={failure.requestId}
-        />
+        <FormAlert copy={failureCopy(failure, "Couldn't change the rule.", CHANGED)} />
       ) : null}
       <ConfirmDialog
         controller={remove}
@@ -215,8 +218,9 @@ function RuleSummary({ rule }: { rule: AlertRule }) {
       </div>
       {rule.eval_failures >= 5 ? (
         <output data-notice className="text-data">
-          The last {rule.eval_failures} checks couldn&apos;t read the data, so the state may be
-          stale. The telemetry store may be down.
+          The last {rule.eval_failures} checks couldn&apos;t read the data, so the state may be out
+          of date. If this lasts, ask an administrator to check that Crucible can reach its
+          database.
         </output>
       ) : null}
       <dl className="grid gap-x-8 gap-y-2 text-data sm:grid-cols-2">
@@ -387,10 +391,7 @@ function HistorySection({ project, rule }: { project: string; rule: AlertRule })
           ))}
         </Timeline>
         {moreFailure ? (
-          <FormAlert
-            copy={failureCopy(moreFailure, "Couldn't load older history.")}
-            requestId={moreFailure.requestId}
-          />
+          <FormAlert copy={failureCopy(moreFailure, "Couldn't load older history.")} />
         ) : null}
         {query.hasNextPage ? (
           <Button
@@ -406,6 +407,14 @@ function HistorySection({ project, rule }: { project: string; rule: AlertRule })
   }
   return (
     <SectionFrame title="History" busy={query.isPending}>
+      {query.isRefetchError ? (
+        <RefreshFailed
+          error={asUiError(query.error)}
+          updatedAt={query.dataUpdatedAt}
+          label="history"
+          onRetry={() => query.refetch()}
+        />
+      ) : null}
       {body}
     </SectionFrame>
   );

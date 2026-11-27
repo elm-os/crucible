@@ -203,7 +203,7 @@ describe("retention", () => {
     // The reloaded settings start a new form, and the reason it reloaded stays with it.
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("These settings changed since the page loaded.");
-    expect(alert.textContent).toContain("req-9");
+    expect(alert.textContent).not.toContain("req-9");
 
     await act(() => fill("Keep data for", "90"));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());

@@ -237,7 +237,7 @@ describe("members", () => {
     });
     expect(result.ok, result.error?.message).toBe(true);
     expect((await screen.findByRole("alert")).textContent).toContain("Your role can't do this.");
-    expect(screen.getByRole("alert").textContent).toContain("req-9");
+    expect(screen.getByRole("alert").textContent).not.toContain("req-9");
     expect(agent.snapshot().find((entry) => entry.label === "Role for Grace Hopper")?.value).toBe(
       "member",
     );

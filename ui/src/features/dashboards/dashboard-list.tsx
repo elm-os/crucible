@@ -151,10 +151,7 @@ export function DuplicateButton({
         {duplicate.isPending ? "Duplicating" : "Duplicate"}
       </Button>
       {error ? (
-        <FormAlert
-          copy={failureCopy(error, "The dashboard couldn't be duplicated.")}
-          requestId={error.requestId}
-        />
+        <FormAlert copy={failureCopy(error, "The dashboard couldn't be duplicated.")} />
       ) : null}
     </div>
   );
@@ -200,12 +197,7 @@ function NewDashboardForm({ project }: { project: string }) {
         <FieldError match="valueMissing">Enter a name, like Agent health.</FieldError>
         <FieldError match="patternMismatch">Enter a name, like Agent health.</FieldError>
       </Field>
-      {error ? (
-        <FormAlert
-          copy={failureCopy(error, "The dashboard couldn't be created.")}
-          requestId={error.requestId}
-        />
-      ) : null}
+      {error ? <FormAlert copy={failureCopy(error, "The dashboard couldn't be created.")} /> : null}
       <div className="flex justify-end">
         <Button type="submit" data-variant="solid" disabled={create.isPending}>
           {create.isPending ? "Creating" : "Create"}

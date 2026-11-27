@@ -101,7 +101,6 @@ export function SetupForm() {
         {failure ? (
           <FormAlert
             copy={failureCopy(failure, "Couldn't set up Crucible.", SETUP_COPY)}
-            requestId={failure.requestId}
             action={failure.code === "conflict" ? <Link href="/login">Sign in</Link> : null}
           />
         ) : null}

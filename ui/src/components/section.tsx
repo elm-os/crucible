@@ -7,6 +7,7 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useId, useState } from "react";
 import { asUiError, type UiError } from "@/api/errors";
 import { currentPath, loginHref } from "@/lib/next-path";
+import { ErrorCode } from "./error-code";
 import { AlertIcon } from "./icons";
 import { ConnectTrigger } from "./shell/connect-dialog";
 
@@ -174,13 +175,13 @@ export function ErrorCard({
           <Link href={loginHref(currentPath()) as Route}>Sign in</Link>
         ) : null}
         {error.kind === "unauthenticated" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
-        <Reference id={error.requestId} />
       </div>
+      <ErrorCode code={error.reference} />
     </div>
   );
 }
 
-function RefreshFailed({
+export function RefreshFailed({
   error,
   updatedAt,
   label,
@@ -192,25 +193,15 @@ function RefreshFailed({
   onRetry: () => Promise<unknown>;
 }) {
   return (
-    <div
-      data-error={error.kind}
-      className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-label text-ink-soft"
-    >
-      <span className="flex items-center gap-1.5">
-        <AlertIcon className="shrink-0" />
-        Couldn&apos;t refresh. Showing data from {updatedFormat.format(updatedAt)}.
-      </span>
-      <Button onClick={onRetry}>Retry {label}</Button>
-      <Reference id={error.requestId} />
+    <div data-error={error.kind} className="mb-3 flex flex-col items-start gap-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-label text-ink-soft">
+        <span className="flex items-center gap-1.5">
+          <AlertIcon className="shrink-0" />
+          Couldn&apos;t refresh. Showing data from {updatedFormat.format(updatedAt)}.
+        </span>
+        <Button onClick={onRetry}>Retry {label}</Button>
+      </div>
+      <ErrorCode code={error.reference} />
     </div>
-  );
-}
-
-function Reference({ id }: { id: string | null }) {
-  if (id === null) return null;
-  return (
-    <p className="text-label text-ink-soft">
-      Reference <span className="font-mono select-all">{id}</span>
-    </p>
   );
 }

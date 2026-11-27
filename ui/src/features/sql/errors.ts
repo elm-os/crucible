@@ -2,8 +2,10 @@ import { fromHttpFailure, type HttpFailure, UiError } from "@/api/errors";
 
 interface Copy {
   title: string;
-  /** Shown when the server sent no fix sentence. */
+  /** Shown when the server sent no fix sentence, or always when `own` is set. */
   fix: string;
+  /** The page's fix replaces the server's, whose sentence names internals. */
+  own?: boolean;
 }
 
 // The workspace writes `detail` as the sentence that says how to fix the request (contract 12.3), so
@@ -59,7 +61,8 @@ const COPY: Record<string, Copy> = {
   },
   control_plane_unavailable: {
     title: "Saved queries and history are unavailable right now.",
-    fix: "The control plane database did not answer. Try again shortly.",
+    fix: "Crucible can't reach its database. Try again shortly.",
+    own: true,
   },
 };
 
@@ -67,7 +70,7 @@ const COPY: Record<string, Copy> = {
 const UNAVAILABLE: Record<string, Copy> = {
   isolation_probe_failed: {
     title: "The SQL workspace is switched off.",
-    fix: "Its isolation self-check failed on this ClickHouse server, so Crucible will not run queries here. An operator should read the health page, run crucible migrate and check the server's access configuration.",
+    fix: "Its isolation self-check failed on this ClickHouse server, so Crucible runs no queries here. An operator should read the health page, run crucible migrate and check the server's access configuration.",
   },
   not_configured: {
     title: "The SQL workspace is not set up on this server.",
@@ -122,7 +125,7 @@ export class SqlError extends UiError {
       this.detail = notice.detail;
     } else {
       this.title = copy.title;
-      this.detail = serverFix ?? copy.fix;
+      this.detail = (copy.own ? null : serverFix) ?? copy.fix;
     }
   }
 }

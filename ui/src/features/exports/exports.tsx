@@ -218,6 +218,8 @@ function ExportsTable({ exports }: { exports: Export[] }) {
                 {item.state === "ready" ? formatBytes(item.bytes) : ""}
               </td>
               <td className="text-end">
+                {/* Shown only while the file is ready. A file that expires in the meantime fails as a
+                    download, which the browser reports itself; the page shows no server text. */}
                 {item.download_path ? (
                   <a href={item.download_path} download className="text-data">
                     Download{" "}
@@ -349,7 +351,6 @@ function CreateExportDialog({ project }: { project: SessionProject }) {
                 "Couldn't start the export.",
                 rateLimitCopy(failure.retryAfterS),
               )}
-              requestId={failure.requestId}
             />
           ) : null}
           <div className="flex justify-end gap-2">

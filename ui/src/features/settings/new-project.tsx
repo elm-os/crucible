@@ -154,10 +154,7 @@ function NewProjectForm({ onCreated }: { onCreated: (project: Project) => void }
           </FieldError>
         </Field>
         {failure ? (
-          <FormAlert
-            copy={failureCopy(failure, "Couldn't create the project.", PROJECT_COPY)}
-            requestId={failure.requestId}
-          />
+          <FormAlert copy={failureCopy(failure, "Couldn't create the project.", PROJECT_COPY)} />
         ) : null}
         <div className="flex justify-end gap-2">
           <DialogClose>Cancel</DialogClose>

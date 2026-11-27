@@ -105,12 +105,13 @@ describe("password sign-in", () => {
     await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/"));
   });
 
+  // Only the database being down is unexpected, so only it gives the code an administrator needs.
   test.each([
-    [401, "invalid_credentials", "That email and password don't match an account."],
-    [429, "rate_limited", "Too many attempts."],
-    [403, "origin_invalid", "Crucible refused a request from this address."],
-    [503, "control_plane_unavailable", "Crucible can't reach its database."],
-  ])("a %i %s says why, in the page's own words", async (status, code, title) => {
+    [401, "invalid_credentials", "That email and password don't match an account.", false],
+    [429, "rate_limited", "Too many attempts.", false],
+    [403, "origin_invalid", "Crucible refused a request from this address.", false],
+    [503, "control_plane_unavailable", "Crucible can't reach its database.", true],
+  ])("a %i %s says why, in the page's own words", async (status, code, title, unexpected) => {
     fetchMock.mockResolvedValueOnce(json(options()));
     renderLogin();
     await screen.findByLabelText("Email");
@@ -118,10 +119,32 @@ describe("password sign-in", () => {
     await signInAs("ada@example.com", "wrong password here");
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(title);
-    expect(alert.textContent).toContain("req-7");
     expect(alert.textContent).not.toContain(SERVER_TEXT);
+    expect(alert.textContent).not.toContain("Reference");
+    if (unexpected) {
+      expect(alert.textContent).toContain(
+        "If this keeps happening, give your administrator this code:",
+      );
+      expect(alert.textContent).toContain("req-7");
+    } else {
+      expect(alert.textContent).not.toContain("req-7");
+      expect(alert.textContent).not.toContain("administrator this code");
+    }
     if (code === "rate_limited") expect(alert.textContent).toContain("Wait 30 seconds");
     expect(loadPage).not.toHaveBeenCalled();
+  });
+
+  test("a wrong password says so in plain words, with no code", async () => {
+    fetchMock.mockResolvedValueOnce(json(options()));
+    renderLogin();
+    await screen.findByLabelText("Email");
+    fetchMock.mockResolvedValueOnce(problem(401, "invalid_credentials"));
+    await signInAs("ada@example.com", "wrong password here");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "That email and password don't match an account.Check them and try again.",
+    );
+    expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
   });
 });
 
