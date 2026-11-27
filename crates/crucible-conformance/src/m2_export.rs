@@ -7,7 +7,7 @@
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
-use crucible_env::{QueryError, TelemetryStore as _};
+use crucible_env::QueryError;
 use crucible_plan::test_support::query_plan;
 use crucible_plan::{
     EXPORT_LOOKUP_SPANS, ExportKey, ExportSelection, FactTable, Literal, MAX_LIST, Node,
@@ -513,7 +513,11 @@ pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
     )?;
     let over = query_plan(scope, window, QueryClass::Export, Node::Scan(scan));
     let over_fields = render::read_fields(&over)?;
-    let refused = ctx.store.execute(over).await.err();
+    // The store model refuses it too.
+    let refused = rows(ctx, over)
+        .await
+        .err()
+        .and_then(|error| error.downcast::<QueryError>().ok());
     same(
         &format!("a scan of {over_fields} fields"),
         &refused,

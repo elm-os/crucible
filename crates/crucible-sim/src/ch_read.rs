@@ -15,7 +15,9 @@
 //!   server's `UUID` order (second half first), `sumMap` without zero sums, `argMax` that skips null arguments,
 //!   the semi-join id cap, the per-series fill of a zero-filled time series, the keyset of a grouped list and
 //!   the order, keyset, arrival bounds and snippets of a text search. Distinct counts are exact.
-//! - **Guardrails.** A read runs under the limits its plan carries (contract 8.4) and is refused as a server
+//! - **Guardrails.** A read whose request the store would not send, because ClickHouse refuses it at its default
+//!   limits (`crucible_store_clickhouse::render::read_oversize`), is refused as `query_too_broad`, as the store
+//!   refuses it. A read runs under the limits its plan carries (contract 8.4) and is refused as a server
 //!   refuses it: `query_too_broad` above the rows or the bytes to read, `query_timeout` above the execution
 //!   time, `query_memory_exceeded` above the memory. The model has no parts index, so each figure is an upper
 //!   bound of what a server can reach: rows and bytes read are those of every row that ever landed in the
@@ -1805,6 +1807,13 @@ impl<'a> Interp<'a> {
 /// Runs a plan over what the store holds, under the limits the plan carries. Every row is checked against
 /// `plan.output()`.
 pub(crate) fn interpret(side: &ReadSide, plan: &QueryPlan) -> Result<Answer, QueryError> {
+    // The store does not send a read whose request ClickHouse refuses at its default limits (too many fields, or a
+    // field too long) and fails it as too broad; so does the model, by the same rendering.
+    let oversize = crucible_store_clickhouse::render::read_oversize(plan)
+        .map_err(|error| QueryError::Internal(error.to_string()))?;
+    if oversize.is_some() {
+        return Err(QueryError::TooBroad);
+    }
     let limits = plan.limits();
     // What the read scans is known before it runs, as it is to a server, which refuses on its estimate.
     let (rows, bytes) = plan

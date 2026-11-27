@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
-use crucible_env::{QueryError, TelemetryStore as _};
+use crucible_env::QueryError;
 use crucible_plan::test_support::query_plan;
 use crucible_plan::{
     Caller, Filter, Hidden, HiddenSelector, Literal, MAX_FILTER_VALUES, MAX_LIST, McpRead,
@@ -480,7 +480,11 @@ pub(crate) async fn long_values(ctx: &Ctx) -> Result<String> {
         .collect();
     same("the spans of a list of 104 KB", &found, &expected)?;
     let long = by_user(vec![Literal::String("u".repeat(render::FIELD_VALUE_LIMIT))])?;
-    let refused = ctx.store.execute(long).await.err();
+    // The store model refuses it too.
+    let refused = rows(ctx, long)
+        .await
+        .err()
+        .and_then(|error| error.downcast::<QueryError>().ok());
     same(
         "a value longer than a field holds",
         &refused,
