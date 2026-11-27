@@ -3,18 +3,19 @@
 import { Button } from "@ui-sdk/react/button";
 import { useState } from "react";
 
-// Beside an unexpected failure only: the request id that finds it in the server log. The browser has no
-// clipboard API on plain-HTTP origins, so the code also selects with one click and the button says when
-// copying fails. `label` names what failed, so several codes on one page keep buttons of their own.
+// Beside an unexpected failure only: the id of its line in the server log. Plain-HTTP origins have no
+// clipboard API, so the code also selects with one click; `label` keeps several codes' buttons apart.
 export function ErrorCode({ code, label }: { code: string | null; label?: string }) {
-  const [copied, setCopied] = useState<boolean | null>(null);
+  // The last copy's outcome belongs to the code it copied: a new failure's code starts without one.
+  const [copied, setCopied] = useState<{ code: string; ok: boolean } | null>(null);
   if (code === null) return null;
+  const outcome = copied?.code === code ? copied.ok : null;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      setCopied(true);
+      setCopied({ code, ok: true });
     } catch {
-      setCopied(false);
+      setCopied({ code, ok: false });
     }
   };
   return (
@@ -27,9 +28,9 @@ export function ErrorCode({ code, label }: { code: string | null; label?: string
         <Button onClick={copy} aria-label={label ? `Copy code for ${label}` : undefined}>
           Copy code
         </Button>
-        <output>{copied ? "Copied." : ""}</output>
+        <output>{outcome ? "Copied." : ""}</output>
       </div>
-      {copied === false ? (
+      {outcome === false ? (
         <p role="alert">Couldn&apos;t copy here. Select the code and copy it yourself.</p>
       ) : null}
     </div>

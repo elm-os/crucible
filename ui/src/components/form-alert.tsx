@@ -51,9 +51,8 @@ function waitCopy(seconds: number | null): string {
   return `Wait ${seconds} ${seconds === 1 ? "second" : "seconds"}, then try again.`;
 }
 
-// What a failed form says: the form's own copy for the codes it expects, then copy every form shares, then
-// words for the kind of failure. Server text never reaches the page, and only an unexpected failure brings
-// its reference.
+// What a failed form says: its own copy for the codes it expects, then the shared copy, then words for the
+// kind of failure. Server text never reaches the page; only an unexpected failure brings its reference.
 export function failureCopy(error: UiError, failed: string, byCode: CopyByCode = {}): Copy {
   return { ...words(error, failed, byCode), reference: error.reference };
 }

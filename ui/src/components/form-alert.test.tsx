@@ -4,6 +4,7 @@ import { Input } from "@ui-sdk/react/input";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { fromHttpFailure, networkError, type UiError } from "@/api/errors";
 import type { ProblemBody } from "@/api/types";
+import { ErrorCode } from "./error-code";
 import { FormAlert, failureCopy } from "./form-alert";
 
 const ID = "01a216d5-f11d-794a-9801-5490863d6314";
@@ -127,6 +128,23 @@ describe("the alert", () => {
     await act(async () => screen.getByRole("button", { name: "Copy code" }).click());
     expect(writeText).toHaveBeenCalledWith(ID);
     expect(screen.getByText("Copied.")).toBeTruthy();
+  });
+
+  test("a new failure's code doesn't inherit the last one's Copied", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: async () => {} } });
+    const { rerender } = render(<ErrorCode code="code-1" />);
+    await act(async () => screen.getByRole("button", { name: "Copy code" }).click());
+    expect(screen.getByText("Copied.")).toBeTruthy();
+    rerender(<ErrorCode code="code-2" />);
+    expect(screen.getByText("code-2")).toBeTruthy();
+    expect(screen.queryByText("Copied.")).toBeNull();
+  });
+
+  test("a button named for what failed keeps several codes apart", () => {
+    render(<ErrorCode code="code-1" label="recent traces" />);
+    expect(screen.getByRole("button", { name: "Copy code for recent traces" }).textContent).toBe(
+      "Copy code",
+    );
   });
 
   test("a browser that can't copy says to select the code instead", async () => {

@@ -101,10 +101,8 @@ const COPY: Record<UiErrorKind, Copy> = {
   },
 };
 
-// Codes of contract 12.3 for outcomes a person can understand or fix from the message alone: a wrong
-// password, a field to correct, a change someone else made, a role, a guardrail, an expired link or a
-// setting. The others (server faults, and codes that mean this page sent a malformed request) and any
-// code this page doesn't know are unexpected.
+// Codes of contract 12.3 for outcomes a person can act on from the message alone. Server faults, codes that
+// mean this page sent a malformed request, and codes this page doesn't know are unexpected.
 const UNDERSTOOD = new Set([
   "unauthenticated",
   "invalid_credentials",
