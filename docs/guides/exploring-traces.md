@@ -44,8 +44,12 @@ the spans list filters by both.
 
 ## The trace page
 
-Choosing a trace opens its page: the trace's name, start, duration, span count, tokens and cost, and three views of
-its spans.
+Choosing a trace opens its page. Its header is titled with the trace name when one is set, else the head span's name, as
+in the trace list; when the two differ, a line names the head span: **Root span**, or **First span** while the root span
+has not arrived. The header shows the start, duration, cost, tokens and span count, the same numbers as the trace list,
+then the user and the session, each a link to its page, the environment and the release, each when set. The cost and
+tokens leave out a span whose child spans report usage, so an agent span that repeats its run's totals counts once. For
+a trace with more than 5,000 spans they still cover the whole trace. Below the header are three views of its spans.
 
 - **The tree and timeline.** Each span on one row under its parent, with its type and a bar for its duration on
   the trace's timeline. A trace with more than 5,000 spans opens with its root spans and their direct children, and
@@ -54,7 +58,8 @@ its spans.
   timeline.
 - **Span details.** Choosing a span opens its overview (status, level, model, tokens, cost, duration, its parent and
   child spans, its id) and its input, output, attributes and events. Model conversations show as messages by role
-  (system, developer, user, assistant, tool); other JSON as a tree; text as text. The **Media** tab shows the
+  (system, developer, user, assistant, tool); other JSON as a tree; text as text, labelled as cut at the size limit
+  only when the span reports the input or output cut. The **Media** tab shows the
   images, audio, video and files the span references, when the server has object storage
   ([media](media.md#in-the-span-panel)).
 
