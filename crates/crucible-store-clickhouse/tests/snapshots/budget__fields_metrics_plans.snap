@@ -1,0 +1,10 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+metrics_other                      63       63
+metrics_ranking                    19       19
+metrics_series                     63       63
+metrics_series of traces           20       26
+metrics_totals                     19       19

@@ -3,7 +3,10 @@
 //! - Every value is a server-side parameter `{pN:Type}`; no value is formatted into the SQL text. The statement is
 //!   sent with client-side binding disabled.
 //! - Identifiers (tables, columns, functions) come only from the schema and from this module.
-//! - The SQL text depends on the plan's shape and on list arity only; lists are padded to a power of two.
+//! - A value list (`In`, `HasAny`, the keys of a lookup, the values and instants that pending deletions hide) is
+//!   one array parameter, split into several only where its text would pass [`FIELD_VALUE_BYTES`]. The SQL text
+//!   depends on the plan's shape and on the number of those arrays only, never on a list's length. The token
+//!   lists of a text search are padded to a power of two, one parameter per token.
 //! - Every table reference carries `project_id = {scope}` and the window predicates, both added here: a plan
 //!   cannot name `project_id`, and the window is the plan's.
 //! - No statement contains `FINAL`. Aggregating tables are read through key-column grouping.
@@ -20,6 +23,11 @@
 //! | `Time` | `{pN:DateTime64(6, 'UTC')}` or `{pN:DateTime('UTC')}` | Unix seconds, with six fraction digits for the former |
 //! | `Date` | `{pN:Date}` | `YYYY-MM-DD` |
 //! | `Enum` | `{pN:String}` | the variant's name, which the server converts to the column's enum |
+//!
+//! In an array parameter (`{pN:Array(T)}`, or `Array(Tuple(...))` for the keys of a lookup) each element has the
+//! quoted form the server reads inside an array: a string, a UUID, a date or a time in single quotes, with
+//! backslash, quote, tab, line feed, carriage return and NUL escaped once; the bytes of a `FixedString` as
+//! `\xHH` escapes in quotes, of type `FixedString(N)`; a number as it is; an enum's name as a `String`.
 //!
 //! # Window predicates
 //!
@@ -61,6 +69,15 @@ use crucible_schema::{ColumnRef, DATABASE, Ident, PROJECT_ID, TableDef, Ty, tabl
 /// spare.
 pub const FIELD_BUDGET: usize = 950;
 
+/// The longest text of one array parameter: a value list whose text would be longer is bound as several arrays,
+/// each at most this long. ClickHouse refuses a field longer than its `http_max_field_value_size` before the
+/// statement starts.
+pub const FIELD_VALUE_BYTES: usize = 100 * 1_024;
+
+/// ClickHouse's default `http_max_field_value_size`: the store refuses a statement with a longer field (a value, or
+/// the text of a statement with values, which travel as form parts) before it sends it.
+pub const FIELD_VALUE_LIMIT: usize = 131_072;
+
 /// The byte cap of one `metadata_kv` item (contract 3.1).
 const METADATA_KV_CAP: usize = 1_024;
 /// The shortest needle the `ngrams(3)` text index of `name` can serve.
@@ -93,6 +110,39 @@ impl Statement {
     pub fn fields(&self, settings: &[(&str, String)]) -> usize {
         3 + self.params.len() + self.settings.len() + settings.len()
     }
+
+    /// Why ClickHouse, at its default limits, would refuse the request that sends the statement with `settings`
+    /// before the statement starts; `None` when it would not. The store does not send such a statement.
+    pub fn oversize(&self, settings: &[(&str, String)]) -> Option<Oversize> {
+        let fields = self.fields(settings);
+        // A statement with bound values travels as form parts, its text one of them; without any, the text is the
+        // request body, which the field size does not limit.
+        let text = (!self.params.is_empty()).then_some(self.sql.len());
+        let longest = self
+            .params
+            .iter()
+            .map(|param| param.value.len())
+            .chain(text)
+            .max()
+            .unwrap_or_default();
+        if fields > FIELD_BUDGET {
+            Some(Oversize::Fields(fields))
+        } else if longest > FIELD_VALUE_LIMIT {
+            Some(Oversize::Value(longest))
+        } else {
+            None
+        }
+    }
+}
+
+/// What makes a request too large for ClickHouse's default limits ([`Statement::oversize`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Oversize {
+    /// The request would carry this many fields, more than [`FIELD_BUDGET`].
+    Fields(usize),
+    /// A field (a value, or the text of a statement with values) would be this many bytes long, more than
+    /// [`FIELD_VALUE_LIMIT`].
+    Value(usize),
 }
 
 impl fmt::Display for Statement {
@@ -159,6 +209,109 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+/// `text` as a quoted element of an array parameter: in single quotes, with one layer of escapes.
+fn quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            other => out.push(other),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// `bytes` as a quoted element of an array parameter of a `FixedString` type: one `\xHH` escape per byte.
+fn quoted_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 4 + 2);
+    out.push('\'');
+    for byte in bytes {
+        // Writing to a String cannot fail.
+        let _ = write!(out, "\\x{byte:02x}");
+    }
+    out.push('\'');
+    out
+}
+
+/// The element type of a list bound for a column of type `ty`.
+fn element_type(ty: &Ty) -> Result<String, RenderError> {
+    let scalar = ty.scalar();
+    Ok(match scalar {
+        Ty::String | Ty::LowCardinalityString | Ty::Enum8(_) => "String".to_owned(),
+        Ty::Float32 | Ty::Float64 => "Float64".to_owned(),
+        Ty::Uuid
+        | Ty::FixedString(_)
+        | Ty::UInt8
+        | Ty::UInt16
+        | Ty::UInt32
+        | Ty::UInt64
+        | Ty::Int32
+        | Ty::Int64
+        | Ty::Date
+        | Ty::DateTime
+        | Ty::DateTime64 => scalar.to_string(),
+        other => return Err(RenderError::Literal(other.to_string())),
+    })
+}
+
+/// A literal as an element of a list of [`element_type`]`(ty)`, in the quoted form of the module documentation.
+fn element(ty: &Ty, literal: &Literal) -> Result<String, RenderError> {
+    let scalar = ty.scalar();
+    Ok(match (literal, scalar) {
+        (Literal::Uuid(v), Ty::Uuid) => quoted(&v.to_string()),
+        (Literal::Bytes(v), Ty::FixedString(_)) => quoted_bytes(v),
+        (Literal::String(v), Ty::String | Ty::LowCardinalityString) => quoted(v),
+        (Literal::UInt(v), Ty::UInt8 | Ty::UInt16 | Ty::UInt32 | Ty::UInt64) => v.to_string(),
+        (Literal::Int(v), Ty::Int32 | Ty::Int64) => v.to_string(),
+        (Literal::Float(v), Ty::Float32 | Ty::Float64) => float(*v),
+        // A `DateTime64` element must be quoted: 26.3 does not read an unquoted one with a fraction.
+        (Literal::Time(v), Ty::DateTime64) => quoted(&micros(*v)),
+        (Literal::Time(v), Ty::DateTime) => quoted(&seconds(*v)),
+        (Literal::Date(v), Ty::Date) => quoted(&v.to_string()),
+        (Literal::Enum(v), Ty::Enum8(kind)) => {
+            let variants = kind.variants();
+            let (name, _) = variants
+                .iter()
+                .find(|(_, value)| value == v)
+                .ok_or_else(|| RenderError::Literal(ty.to_string()))?;
+            quoted(name)
+        }
+        _ => return Err(RenderError::Literal(ty.to_string())),
+    })
+}
+
+/// The runs a list of elements of these text lengths is split into: as few as keep the text of each run's array
+/// (its elements, their commas and its brackets) within [`FIELD_VALUE_BYTES`]. An element too long for a run of
+/// its own fits no array; the store refuses its statement ([`Statement::oversize`]).
+fn runs(lens: &[usize]) -> Vec<std::ops::Range<usize>> {
+    let mut runs = Vec::new();
+    let (mut start, mut bytes) = (0, 2);
+    for (at, len) in lens.iter().enumerate() {
+        if at > start && bytes + 1 + len > FIELD_VALUE_BYTES {
+            runs.push(start..at);
+            (start, bytes) = (at, 2);
+        }
+        bytes += len + usize::from(at > start);
+    }
+    runs.push(start..lens.len());
+    runs
+}
+
+/// The disjunction of one or more conditions.
+fn any(mut parts: Vec<String>) -> String {
+    match parts.len() {
+        1 => parts.swap_remove(0),
+        _ => format!("({})", parts.join(" OR ")),
+    }
 }
 
 fn float(value: f64) -> String {
@@ -276,13 +429,37 @@ impl Binder {
         })
     }
 
-    /// A list padded to a power of two (contract 8.3), each element bound as `ty`.
+    /// A list padded to a power of two, each element bound as `ty`: the tokens of a text search.
     fn list(&mut self, ty: &Ty, values: &[Literal]) -> Result<String, RenderError> {
         let items = pad_in_list(values)
             .iter()
             .map(|v| self.literal(ty, v))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(items.join(", "))
+    }
+
+    /// Binds `items`, the texts of the elements of one list of type `element`, as array parameters, one per run
+    /// ([`runs`]): their placeholders.
+    fn arrays(&mut self, element: &str, items: &[String]) -> Vec<String> {
+        let lens: Vec<usize> = items.iter().map(String::len).collect();
+        runs(&lens)
+            .into_iter()
+            .map(|run| {
+                self.bind(
+                    format_args!("Array({element})"),
+                    format!("[{}]", items[run].join(",")),
+                )
+            })
+            .collect()
+    }
+
+    /// `values` for a column of type `ty`, bound as array parameters: their placeholders.
+    fn values(&mut self, ty: &Ty, values: &[Literal]) -> Result<Vec<String>, RenderError> {
+        let items = values
+            .iter()
+            .map(|value| element(ty, value))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.arrays(&element_type(ty)?, &items))
     }
 }
 
@@ -340,7 +517,11 @@ fn pred(b: &mut Binder, p: &Pred) -> Result<String, RenderError> {
         }
         Pred::In(column, values) => {
             b.longest_in = b.longest_in.max(values.len());
-            format!("{} IN ({})", column.name(), b.list(column.ty(), values)?)
+            let lists = b.values(column.ty(), values)?;
+            any(lists
+                .iter()
+                .map(|list| format!("{} IN {list}", column.name()))
+                .collect())
         }
         Pred::StartsWith(column, prefix) => {
             format!("startsWith({}, {})", column.name(), b.string(prefix))
@@ -350,7 +531,58 @@ fn pred(b: &mut Binder, p: &Pred) -> Result<String, RenderError> {
                 Ty::Array(element) => *element,
                 other => return Err(RenderError::Literal(other.to_string())),
             };
-            format!("hasAny({}, [{}])", column.name(), b.list(element, values)?)
+            let lists = b.values(element, values)?;
+            any(lists
+                .iter()
+                .map(|list| format!("hasAny({}, {list})", column.name()))
+                .collect())
+        }
+        // The rows whose value is listed and that arrived before its instant: the instant is looked up at the
+        // value's position, for the rows the set test lets through.
+        Pred::ArrivedBefore {
+            column,
+            received_at,
+            before,
+        } => {
+            b.longest_in = b.longest_in.max(before.len());
+            let mut latest: Vec<(&Literal, Timestamp)> = Vec::with_capacity(before.len());
+            for (value, at) in before {
+                match latest.iter_mut().find(|(held, _)| *held == value) {
+                    Some((_, held)) => *held = (*held).max(*at),
+                    None => latest.push((value, *at)),
+                }
+            }
+            let values = latest
+                .iter()
+                .map(|(value, _)| element(column.ty(), value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let instants: Vec<String> = latest.iter().map(|(_, at)| quoted(&micros(*at))).collect();
+            let lens: Vec<usize> = values
+                .iter()
+                .zip(&instants)
+                .map(|(value, at)| value.len().max(at.len()))
+                .collect();
+            let (value_type, (name, arrived)) = (
+                element_type(column.ty())?,
+                (column.name(), received_at.name()),
+            );
+            let parts = runs(&lens)
+                .into_iter()
+                .map(|run| {
+                    let listed = b.bind(
+                        format_args!("Array({value_type})"),
+                        format!("[{}]", values[run.clone()].join(",")),
+                    );
+                    let at = b.bind(
+                        format_args!("Array({})", Ty::DateTime64),
+                        format!("[{}]", instants[run].join(",")),
+                    );
+                    format!(
+                        "({name} IN {listed} AND {arrived} < arrayElement({at}, indexOf({listed}, {name})))"
+                    )
+                })
+                .collect();
+            any(parts)
         }
         Pred::MetadataEq { key, value } => {
             let item = format!("{key}={value}");
@@ -466,35 +698,43 @@ fn limit(b: &mut Binder, sql: &mut String, limit: Option<u32>) {
     }
 }
 
-/// Equality of `columns` with one of `keys`, the key list padded to a power of two.
+/// Equality of `columns` with one of `keys`: the keys are one array parameter (several for a long list), of
+/// tuples when the key has more than one column.
 fn key_in(
     b: &mut Binder,
     columns: &[ColumnRef],
     keys: &[Vec<Literal>],
 ) -> Result<String, RenderError> {
-    let mut padded: Vec<&Vec<Literal>> = keys.iter().collect();
-    if let Some(last) = keys.last() {
-        padded.resize(crucible_plan::padded_in_len(keys.len()), last);
-    }
-    let tuples = padded
-        .into_iter()
+    let types = columns
+        .iter()
+        .map(|column| element_type(column.ty()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let items = keys
+        .iter()
         .map(|key| {
             let values = columns
                 .iter()
                 .zip(key)
-                .map(|(column, value)| b.literal(column.ty(), value))
+                .map(|(column, value)| element(column.ty(), value))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(match values.as_slice() {
                 [one] => one.clone(),
-                many => format!("({})", many.join(", ")),
+                many => format!("({})", many.join(",")),
             })
         })
         .collect::<Result<Vec<_>, RenderError>>()?;
-    let left = match columns {
-        [one] => one.name().to_owned(),
-        many => format!("({})", names(many)),
+    let (left, element) = match (columns, types.as_slice()) {
+        ([one], [ty]) => (one.name().to_owned(), ty.clone()),
+        (many, types) => (
+            format!("({})", names(many)),
+            format!("Tuple({})", types.join(", ")),
+        ),
     };
-    Ok(format!("{left} IN ({})", tuples.join(", ")))
+    let lists = b.arrays(&element, &items);
+    Ok(any(lists
+        .iter()
+        .map(|list| format!("{left} IN {list}"))
+        .collect()))
 }
 
 /// The arrival bounds of a read of a plain table.
@@ -1037,12 +1277,31 @@ pub fn class_settings(limits: ClassLimits) -> Vec<(&'static str, String)> {
 /// [`FIELD_BUDGET`] before it sends it.
 pub fn read_fields(plan: &QueryPlan) -> Result<usize, RenderError> {
     let settings = class_settings(plan.limits());
-    let mut fields = self::plan(plan)?.fields(&settings);
+    Ok(read_statements(plan)?
+        .iter()
+        .map(|statement| statement.fields(&settings))
+        .max()
+        .unwrap_or_default())
+}
+
+/// Why the store would not send the read of `plan` ([`Statement::oversize`] with its class settings), on one
+/// server or, for a plan read on every replica, on a cluster; `None` when it sends it. The store model refuses the
+/// same reads.
+pub fn read_oversize(plan: &QueryPlan) -> Result<Option<Oversize>, RenderError> {
+    let settings = class_settings(plan.limits());
+    Ok(read_statements(plan)?
+        .iter()
+        .find_map(|statement| statement.oversize(&settings)))
+}
+
+/// The statements that read `plan`: on one server and, for a plan read on every replica, on a cluster.
+fn read_statements(plan: &QueryPlan) -> Result<Vec<Statement>, RenderError> {
+    let mut statements = vec![self::plan(plan)?];
     if plan.every_replica() {
         let cluster = Ident::new("cluster").map_err(|_| RenderError::Set)?;
-        fields = fields.max(plan_on_replicas(plan, &cluster)?.fields(&settings));
+        statements.push(plan_on_replicas(plan, &cluster)?);
     }
-    Ok(fields)
+    Ok(statements)
 }
 
 /// A short name of a plan for logs: its root node, the table that node reads and its class, such as

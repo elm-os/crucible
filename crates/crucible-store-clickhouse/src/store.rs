@@ -713,17 +713,16 @@ impl ClickHouseStore {
     }
 
     /// A query as `identity` with an explicit query id, its bound values and its settings. A statement whose
-    /// request would carry more than [`render::FIELD_BUDGET`] fields is not sent: the server would refuse it
-    /// before it starts.
+    /// request would carry more than [`render::FIELD_BUDGET`] fields, or a field longer than
+    /// [`render::FIELD_VALUE_LIMIT`], is not sent: the server would refuse it before it starts.
     fn query(
         &self,
         identity: ServiceIdentity,
         statement: &Statement,
         settings: &[(&str, String)],
     ) -> Result<(Uuid, clickhouse::query::Query), Failure> {
-        let fields = statement.fields(settings);
-        if fields > render::FIELD_BUDGET {
-            return Err(Failure::OverBudget { fields });
+        if let Some(oversize) = statement.oversize(settings) {
+            return Err(Failure::OverBudget(oversize));
         }
         Ok(self.query_past_budget(identity, statement, settings))
     }
@@ -1568,15 +1567,13 @@ impl TelemetryStore for ClickHouseStore {
         .map_err(|error| QueryError::Internal(error.to_string()))?;
         let limits = plan.limits();
         let settings = render::class_settings(limits);
-        let fields = statement.fields(&settings);
-        if fields > render::FIELD_BUDGET {
+        if let Some(oversize) = statement.oversize(&settings) {
             tracing::warn!(
                 plan = %render::describe(&plan),
-                fields,
-                budget = render::FIELD_BUDGET,
-                "a read was not sent and fails as query_too_broad: its request would carry more fields than the \
-                 store's budget, which keeps every request under ClickHouse's default http_max_fields of 1,000; \
-                 a narrower filter makes the read smaller"
+                reason = %crate::codes::over_budget(oversize),
+                "a read was not sent and fails as query_too_broad: ClickHouse would refuse its request at its \
+                 default http_max_fields of 1,000 or http_max_field_value_size of 131,072 bytes; a narrower filter \
+                 makes the read smaller"
             );
             return Err(QueryError::TooBroad);
         }
@@ -1619,13 +1616,12 @@ impl TelemetryStore for ClickHouseStore {
         if replicated {
             settings.push((INACTIVE_REPLICAS.0, INACTIVE_REPLICAS.1.to_owned()));
         }
-        let fields = statement.fields(&settings);
-        if fields > render::FIELD_BUDGET {
+        if let Some(oversize) = statement.oversize(&settings) {
             return Err(StoreError::Internal(format!(
                 "the delete in partition {} of {} was not sent: {}",
                 plan.partition(),
                 plan.table().name(),
-                crate::codes::over_budget(fields)
+                crate::codes::over_budget(oversize)
             )));
         }
         match self.change(&statement, &settings).await {

@@ -5,13 +5,18 @@
 //! for a user deletion, `session_id` for a session deletion, and only rows received before the request where
 //! the table records an arrival time. A table without the selector's column is reached through the traces
 //! that the span tables no longer show.
+//!
+//! The deletions a plan carries become one condition per kind of selector: the traces, the users and the
+//! sessions they name, each with the latest instant of the deletions that name it ([`Pred::ArrivedBefore`]),
+//! or by key alone on a table without an arrival time. The renderer binds each condition's values and instants
+//! as two array parameters.
 
 use crucible_records::{TableId, Timestamp, TraceId};
 
-use crate::endpoints::{lifecycle_column, trace_id_in};
+use crate::endpoints::lifecycle_column;
 use crate::literal::Literal;
 use crate::plan::QueryPlan;
-use crate::pred::{CmpOp, Pred};
+use crate::pred::Pred;
 
 /// What a pending deletion selects.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -49,41 +54,64 @@ impl Hidden {
                 HiddenSelector::Session(session) => !session.is_empty() && session == session_id,
             }
     }
+}
 
-    /// The rows of `table_id` the deletion hides, or `None` when the table lacks the selector's column.
-    fn selected(&self, table_id: TableId) -> Option<Pred> {
-        let selected = match &self.selector {
-            HiddenSelector::Traces(ids) if !ids.is_empty() => {
-                trace_id_in(lifecycle_column(table_id, "trace_id")?, ids)
-            }
-            HiddenSelector::User(user) if !user.is_empty() => Pred::Cmp(
-                lifecycle_column(table_id, "user_id")?,
-                CmpOp::Eq,
-                Literal::from(user.as_str()),
-            ),
-            HiddenSelector::Session(session) if !session.is_empty() => Pred::Cmp(
-                lifecycle_column(table_id, "session_id")?,
-                CmpOp::Eq,
-                Literal::from(session.as_str()),
-            ),
-            _ => return None,
-        };
-        // The tables merged by key carry no arrival time: their rows are hidden by key, as they are deleted.
-        Some(match lifecycle_column(table_id, "received_at") {
-            Some(received_at) => Pred::And(vec![
-                selected,
-                Pred::Cmp(received_at, CmpOp::Lt, Literal::Time(self.requested_at)),
-            ]),
-            None => selected,
-        })
+/// Adds `value` with `instant` to `entries`, or moves its instant to `instant` when that is later.
+fn latest(entries: &mut Vec<(Literal, Timestamp)>, value: Literal, instant: Timestamp) {
+    match entries.iter_mut().find(|(held, _)| *held == value) {
+        Some((_, at)) => *at = (*at).max(instant),
+        None => entries.push((value, instant)),
     }
+}
+
+/// The rows of `table_id` that the deletions of `hidden` select: one condition per kind of selector the table
+/// has a column for. The tables merged by key carry no arrival time: their rows are hidden by key, as they are
+/// deleted.
+fn selected(table_id: TableId, hidden: &[Hidden]) -> Vec<Pred> {
+    let (mut traces, mut users, mut sessions) = (Vec::new(), Vec::new(), Vec::new());
+    for pending in hidden {
+        let at = pending.requested_at;
+        match &pending.selector {
+            HiddenSelector::Traces(ids) => {
+                for id in ids {
+                    latest(&mut traces, Literal::from(*id), at);
+                }
+            }
+            HiddenSelector::User(user) if !user.is_empty() => {
+                latest(&mut users, Literal::from(user.as_str()), at);
+            }
+            HiddenSelector::Session(session) if !session.is_empty() => {
+                latest(&mut sessions, Literal::from(session.as_str()), at);
+            }
+            HiddenSelector::User(_) | HiddenSelector::Session(_) => {}
+        }
+    }
+    let received_at = lifecycle_column(table_id, "received_at");
+    [
+        ("trace_id", traces),
+        ("user_id", users),
+        ("session_id", sessions),
+    ]
+    .into_iter()
+    .filter(|(_, before)| !before.is_empty())
+    .filter_map(|(name, before)| {
+        let column = lifecycle_column(table_id, name)?;
+        Some(match received_at {
+            Some(received_at) => Pred::ArrivedBefore {
+                column,
+                received_at,
+                before,
+            },
+            None => Pred::In(column, before.into_iter().map(|(value, _)| value).collect()),
+        })
+    })
+    .collect()
 }
 
 /// Narrows `pred` to the rows of `table_id` that no deletion of `hidden` selects.
 pub(crate) fn keep(table_id: TableId, pred: &mut Pred, hidden: &[Hidden]) {
-    let hides: Vec<Pred> = hidden
-        .iter()
-        .filter_map(|h| h.selected(table_id))
+    let hides: Vec<Pred> = selected(table_id, hidden)
+        .into_iter()
         .filter(|hide| hide.check(table_id).is_ok())
         .map(|hide| Pred::Not(Box::new(hide)))
         .collect();
@@ -99,9 +127,8 @@ pub(crate) fn keep(table_id: TableId, pred: &mut Pred, hidden: &[Hidden]) {
     *pred = Pred::And(all);
 }
 
-/// The most trace ids the pending deletions of a project add to one scan. Every id is a parameter of the
-/// statement, a plan can hold two scans beside its own lists, and a ClickHouse server refuses a request with
-/// more than 1,000 parameters.
+/// The most trace ids the pending deletions of a project add to one scan (contract 13.6). The ids and their
+/// instants are two array parameters of the statement, whatever their number.
 pub const HIDDEN_TRACE_IDS: usize = 128;
 /// The most pending deletions by user or session that one scan carries.
 pub const HIDDEN_REQUESTS: usize = 32;
@@ -156,6 +183,7 @@ mod tests {
 
     use super::*;
     use crate::class::QueryClass;
+    use crate::endpoints::trace_id_in;
     use crate::node::{Aggregate, Measure, Node, Scan};
 
     fn plan(root: Node) -> QueryPlan {
@@ -182,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scan_keeps_its_predicate_and_gains_one_term_per_deletion_its_table_can_express() {
+    fn a_scan_keeps_its_predicate_and_gains_one_term_per_kind_of_deletion_its_table_can_express() {
         let own = Pred::eq(SpanCoreCol::Name, "root");
         let scan = Scan::new(TableId::SpanCore, [SpanCoreCol::SpanId], own.clone()).unwrap();
         let plan = plan(Node::Scan(scan)).hiding(&hidden());
@@ -194,7 +222,53 @@ mod tests {
         };
         assert_eq!(terms.len(), 3);
         assert_eq!(terms[0], own);
-        assert!(terms[1..].iter().all(|term| matches!(term, Pred::Not(_))));
+        assert!(terms[1..].iter().all(|term| matches!(
+            term,
+            Pred::Not(hide) if matches!(**hide, Pred::ArrivedBefore { .. })
+        )));
+    }
+
+    #[test]
+    fn the_deletions_of_one_kind_become_one_list_with_the_latest_instant_of_each_value() {
+        let (a, b) = (TraceId::from_bytes([1; 16]), TraceId::from_bytes([2; 16]));
+        let at = Timestamp::from_micros;
+        let pending = |selector: HiddenSelector, micros: i64| Hidden {
+            selector,
+            requested_at: at(micros),
+        };
+        let hidden = [
+            pending(HiddenSelector::Traces(vec![a, b]), 10),
+            pending(HiddenSelector::Traces(vec![a]), 30),
+            pending(HiddenSelector::User("ada".to_owned()), 20),
+            pending(HiddenSelector::User(String::new()), 40),
+            pending(HiddenSelector::Session("s-1".to_owned()), 5),
+            pending(HiddenSelector::Traces(vec![b]), 1),
+        ];
+        let column = |name: &str| lifecycle_column(TableId::SpanCore, name).unwrap();
+        let before = |column, before| Pred::ArrivedBefore {
+            column,
+            received_at: lifecycle_column(TableId::SpanCore, "received_at").unwrap(),
+            before,
+        };
+        assert_eq!(
+            selected(TableId::SpanCore, &hidden),
+            [
+                before(
+                    column("trace_id"),
+                    vec![(Literal::from(a), at(30)), (Literal::from(b), at(10))]
+                ),
+                before(column("user_id"), vec![(Literal::from("ada"), at(20))]),
+                before(column("session_id"), vec![(Literal::from("s-1"), at(5))]),
+            ]
+        );
+        // A table merged by key has no arrival time and no user or session column.
+        assert_eq!(
+            selected(TableId::TraceStats, &hidden),
+            [Pred::In(
+                TraceStatsCol::TraceId.column_ref(),
+                vec![Literal::from(a), Literal::from(b)]
+            )]
+        );
     }
 
     #[test]
@@ -246,18 +320,14 @@ mod tests {
             panic!("a list above the chunk is a disjunction");
         };
         assert!(matches!(&lists[1], Pred::In(_, list) if list.len() == 1));
-        // The longest request a project can have still makes a plan the table accepts.
+        // The longest request a project can have still makes a predicate the table accepts.
         let longest = Hidden {
             selector: HiddenSelector::Traces(ids(10_000)),
             requested_at: Timestamp::from_micros(50),
         };
-        assert!(
-            longest
-                .selected(TableId::SpanCore)
-                .unwrap()
-                .check(TableId::SpanCore)
-                .is_ok()
-        );
+        let hides = selected(TableId::SpanCore, &within_budget(&[longest]));
+        assert_eq!(hides.len(), 1);
+        assert!(hides[0].check(TableId::SpanCore).is_ok());
     }
 
     #[test]

@@ -2,12 +2,9 @@
 source: crates/crucible-store-clickhouse/tests/render.rs
 expression: rendered(&counts)
 ---
-SELECT user_id, uniqCombined64(session_id) AS m0 FROM crucible.trace_heads WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND (user_id IN ({p3:String}, {p4:String}, {p5:String}, {p6:String}) AND session_id != {p7:String}) GROUP BY user_id
+SELECT user_id, uniqCombined64(session_id) AS m0 FROM crucible.trace_heads WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND (user_id IN {p3:Array(String)} AND session_id != {p4:String}) GROUP BY user_id
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime64(6, 'UTC') = "1794907800.000000"
 p2: DateTime64(6, 'UTC') = "1794911400.000001"
-p3: String = "user-1"
-p4: String = "user-2"
-p5: String = "user-3"
-p6: String = "user-3"
-p7: String = ""
+p3: Array(String) = "['user-1','user-2','user-3']"
+p4: String = ""

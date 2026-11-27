@@ -1,0 +1,30 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+mcp_client_versions                28       32
+mcp_clients                        41       41
+mcp_compare_tools                  45       45
+mcp_deploys                        15       15
+mcp_error_breakdown                29       33
+mcp_error_classes                  41       41
+mcp_inventory                      16       16
+mcp_metrics_other                 128      128
+mcp_metrics_ranking                42       42
+mcp_metrics_series                126      126
+mcp_metrics_totals                 41       41
+mcp_operation                      17       17
+mcp_operation_chain                23       27
+mcp_operation_content              22       22
+mcp_operation_peers                22       26
+mcp_operations                     40       44
+mcp_presence                       23       23
+mcp_servers                        41       41
+mcp_session_errors                 29       33
+mcp_sessions                       29       33
+mcp_tool_clients                   45       45
+mcp_tool_series                    46       46
+mcp_tools                          43       43
+mcp_user_errors                    30       34
+mcp_users                          30       34

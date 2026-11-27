@@ -2,13 +2,12 @@
 source: crates/crucible-store-clickhouse/tests/render_mcp.rs
 expression: "rendered(&live(mcp_error_classes(s, w, &c, caller, &read)))"
 ---
-SELECT method, target_name, error_class, caller_fault, sum(count) AS m0 FROM crucible.mcp_tool_rollup WHERE project_id = {p0:UUID} AND minute >= {p1:DateTime('UTC')} AND minute <= {p2:DateTime('UTC')} AND (side = {p3:String} AND ((server_name IN ({p4:String}) AND capture_source IN ({p5:String})) OR (server_name IN ({p6:String}) AND capture_source IN ({p7:String}, {p8:String})))) GROUP BY method, target_name, error_class, caller_fault
+SELECT method, target_name, error_class, caller_fault, sum(count) AS m0 FROM crucible.mcp_tool_rollup WHERE project_id = {p0:UUID} AND minute >= {p1:DateTime('UTC')} AND minute <= {p2:DateTime('UTC')} AND (side = {p3:String} AND ((server_name IN {p4:Array(String)} AND capture_source IN {p5:Array(String)}) OR (server_name IN {p6:Array(String)} AND capture_source IN {p7:Array(String)}))) GROUP BY method, target_name, error_class, caller_fault
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime('UTC') = "1794907800"
 p2: DateTime('UTC') = "1794911340"
 p3: String = "server"
-p4: String = "files"
-p5: String = "sdk"
-p6: String = "db"
-p7: String = "proxy_stdio"
-p8: String = "proxy_http"
+p4: Array(String) = "['files']"
+p5: Array(String) = "['sdk']"
+p6: Array(String) = "['db']"
+p7: Array(String) = "['proxy_stdio','proxy_http']"

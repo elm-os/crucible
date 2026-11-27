@@ -2,7 +2,7 @@
 source: crates/crucible-store-clickhouse/tests/render.rs
 expression: rendered(&next.hits)
 ---
-SELECT start_minute, trace_hash, span_id, multiSearchFirstPositionCaseInsensitive(input, [{p9:String}]) AS s0, substring(input, if(s0 > {p10:UInt64}, s0 - {p10:UInt64}, 1), {p11:UInt64}), multiSearchFirstPositionCaseInsensitive(output, [{p9:String}]) AS s1, substring(output, if(s1 > {p10:UInt64}, s1 - {p10:UInt64}, 1), {p11:UInt64}) FROM crucible.span_payload WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND received_at <= {p12:DateTime64(6, 'UTC')} AND (hasAllTokens(input, [{p5:String}, {p6:String}, {p7:String}, {p8:String}]) OR hasAllTokens(output, [{p5:String}, {p6:String}, {p7:String}, {p8:String}])) AND (user_id IN ({p13:String}) AND has(metadata_kv, {p14:String})) AND (start_minute, trace_hash, span_id) < ({p15:DateTime('UTC')}, {p16:UInt32}, unhex({p17:String})) ORDER BY start_minute DESC, trace_hash DESC, span_id DESC LIMIT {p18:UInt64}
+SELECT start_minute, trace_hash, span_id, multiSearchFirstPositionCaseInsensitive(input, [{p9:String}]) AS s0, substring(input, if(s0 > {p10:UInt64}, s0 - {p10:UInt64}, 1), {p11:UInt64}), multiSearchFirstPositionCaseInsensitive(output, [{p9:String}]) AS s1, substring(output, if(s1 > {p10:UInt64}, s1 - {p10:UInt64}, 1), {p11:UInt64}) FROM crucible.span_payload WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND received_at <= {p12:DateTime64(6, 'UTC')} AND (hasAllTokens(input, [{p5:String}, {p6:String}, {p7:String}, {p8:String}]) OR hasAllTokens(output, [{p5:String}, {p6:String}, {p7:String}, {p8:String}])) AND (user_id IN {p13:Array(String)} AND has(metadata_kv, {p14:String})) AND (start_minute, trace_hash, span_id) < ({p15:DateTime('UTC')}, {p16:UInt32}, unhex({p17:String})) ORDER BY start_minute DESC, trace_hash DESC, span_id DESC LIMIT {p18:UInt64}
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime64(6, 'UTC') = "1794907800.000000"
 p2: DateTime64(6, 'UTC') = "1794911400.000001"
@@ -16,7 +16,7 @@ p9: String = "rate limit exceeded"
 p10: UInt64 = "80"
 p11: UInt64 = "240"
 p12: DateTime64(6, 'UTC') = "1794911400.000000"
-p13: String = "u1"
+p13: Array(String) = "['u1']"
 p14: String = "tenant=acme"
 p15: DateTime('UTC') = "1794907800"
 p16: UInt32 = "1524766824"

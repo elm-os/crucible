@@ -1555,6 +1555,7 @@ dependencies = [
  "crucible-records",
  "crucible-schema",
  "crucible-shipper",
+ "crucible-store-clickhouse",
  "crucible-wal",
  "crucible-wal-codec",
  "futures",

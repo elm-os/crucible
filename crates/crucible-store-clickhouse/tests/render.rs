@@ -566,6 +566,148 @@ fn m2_sessions() {
     insta::assert_snapshot!("m2_session_detail", rendered(&detail));
 }
 
+/// Pending deletions are one condition per kind of selector, each with one array of values and one of instants;
+/// a value named twice is bound once, with its later instant. A table merged by key hides by key alone.
+#[test]
+fn pending_deletions_hide_with_one_array_of_values_and_one_of_instants() {
+    let at = |seconds: i64| T0.saturating_add_micros(seconds * 1_000_000);
+    let pending = |selector: crucible_plan::HiddenSelector, seconds: i64| crucible_plan::Hidden {
+        selector,
+        requested_at: at(seconds),
+    };
+    let hidden = [
+        pending(
+            crucible_plan::HiddenSelector::Traces(vec![trace(), TraceId::from_bytes([0xb2; 16])]),
+            10,
+        ),
+        pending(crucible_plan::HiddenSelector::Traces(vec![trace()]), 30),
+        pending(
+            crucible_plan::HiddenSelector::User("it's ada".to_owned()),
+            20,
+        ),
+        pending(crucible_plan::HiddenSelector::Session("s-1".to_owned()), 40),
+    ];
+    let scan = Scan::new(
+        TableId::SpanCore,
+        [SpanCoreCol::SpanId],
+        Pred::eq(SpanCoreCol::Name, "root"),
+    )
+    .unwrap();
+    insta::assert_snapshot!(
+        "hiding_pending_deletions",
+        rendered(&plan(QueryClass::List, Node::Scan(scan)).hiding(&hidden))
+    );
+    let stats = Aggregate::new(
+        TableId::TraceStats,
+        Pred::all(),
+        [TraceStatsCol::TraceId],
+        vec![Measure::Min(TraceStatsCol::MinStart.column_ref())],
+    )
+    .unwrap();
+    insta::assert_snapshot!(
+        "hiding_pending_deletions_by_key",
+        rendered(&plan(QueryClass::List, Node::Aggregate(stats)).hiding(&hidden))
+    );
+}
+
+proptest! {
+    /// A value list is one array parameter, split into several only where its text would pass
+    /// `FIELD_VALUE_BYTES`: each array holds the next values of the list in order, none could take the first value
+    /// of the next, and the SQL text depends on the number of arrays only.
+    #[test]
+    fn a_value_list_is_one_array_split_only_where_its_text_passes_the_field_size(
+        lens in prop::collection::vec(1usize..2_000, 1..=crucible_plan::MAX_LIST),
+    ) {
+        let values: Vec<String> = lens.iter().enumerate().map(|(n, len)| format!("{n:0>len$}")).collect();
+        let literals = values.iter().map(|v| Literal::String(v.clone())).collect();
+        let scan = Scan::new(
+            TableId::SpanCore,
+            [SpanCoreCol::SpanId],
+            Pred::In(SpanCoreCol::UserId.column_ref(), literals),
+        )
+        .unwrap();
+        let statement = render::plan(&plan(QueryClass::List, Node::Scan(scan))).unwrap();
+        let arrays: Vec<&str> = statement
+            .params
+            .iter()
+            .filter(|param| param.ty == "Array(String)")
+            .map(|param| param.value.as_str())
+            .collect();
+        let inner: Vec<&str> = arrays
+            .iter()
+            .map(|array| array.strip_prefix('[').and_then(|a| a.strip_suffix(']')).unwrap())
+            .collect();
+        let quoted: Vec<String> = values.iter().map(|v| format!("'{v}'")).collect();
+        prop_assert_eq!(inner.join(","), quoted.join(","));
+        prop_assert!(arrays.iter().all(|array| array.len() <= render::FIELD_VALUE_BYTES));
+        for pair in inner.windows(2) {
+            let first_of_next = pair[1].split(',').next().unwrap();
+            prop_assert!(pair[0].len() + 2 + 1 + first_of_next.len() > render::FIELD_VALUE_BYTES);
+        }
+        let (text, _) = strip_placeholders(&statement);
+        prop_assert_eq!(text.matches("user_id IN ?").count(), arrays.len());
+    }
+}
+
+/// The store keeps back a statement whose request ClickHouse refuses at its default limits: more fields than the
+/// budget, or a field longer than `http_max_field_value_size`.
+#[test]
+fn a_statement_too_large_for_the_server_is_oversize() {
+    let by_user = |values: Vec<Literal>| {
+        let scan = Scan::new(
+            TableId::SpanCore,
+            [SpanCoreCol::SpanId],
+            Pred::In(SpanCoreCol::UserId.column_ref(), values),
+        )
+        .unwrap();
+        render::plan(&plan(QueryClass::List, Node::Scan(scan))).unwrap()
+    };
+    // A value of one element, its quotes and the array's brackets: a single value is never split.
+    let fits = by_user(vec![Literal::String(
+        "u".repeat(render::FIELD_VALUE_LIMIT - 4),
+    )]);
+    assert_eq!(fits.oversize(&[]), None);
+    let long = by_user(vec![Literal::String("u".repeat(render::FIELD_VALUE_LIMIT))]);
+    assert_eq!(
+        long.oversize(&[]),
+        Some(render::Oversize::Value(render::FIELD_VALUE_LIMIT + 4))
+    );
+    let one_by_one = (0..=render::FIELD_BUDGET as u64)
+        .map(|n| {
+            Pred::eq(
+                SpanCoreCol::SpanId,
+                Literal::from(SpanId::from_bytes(n.to_be_bytes())),
+            )
+        })
+        .collect();
+    let scan = Scan::new(
+        TableId::SpanCore,
+        [SpanCoreCol::SpanId],
+        Pred::Or(one_by_one),
+    )
+    .unwrap();
+    let many = render::plan(&plan(QueryClass::List, Node::Scan(scan))).unwrap();
+    assert!(
+        matches!(many.oversize(&[]), Some(render::Oversize::Fields(fields)) if fields > render::FIELD_BUDGET)
+    );
+    // The text of a statement with bound values is a form part too; without any, it is the request body, which
+    // the field size does not limit.
+    let text = |params: Vec<render::Param>| Statement {
+        sql: format!("SELECT 1 /* {} */", "x".repeat(render::FIELD_VALUE_LIMIT)),
+        params,
+        settings: Vec::new(),
+    };
+    let bound = render::Param {
+        ty: "UInt8".to_owned(),
+        value: "1".to_owned(),
+    };
+    assert!(matches!(
+        text(vec![bound]).oversize(&[]),
+        Some(render::Oversize::Value(_))
+    ));
+    assert_eq!(text(Vec::new()).oversize(&[]), None);
+}
+
 /// A search's core lookup of the most hits it names, under the largest list filter the core rows test (every
 /// member at its 100 values, padded to 128) and the most pending deletions a read carries, stays within the
 /// 1,000 values and settings of one ClickHouse request, with room for the statement's settings; so do the hits

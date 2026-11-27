@@ -1,0 +1,20 @@
+---
+source: crates/crucible-store-clickhouse/tests/budget.rs
+expression: self.table()
+---
+plan                            built   hidden
+child_counts                       19       25
+fact_page                          18       22
+fact_rows of a session             18       22
+fact_rows of a span                19       23
+fact_rows of a trace tree          18       22
+fact_rows of traces                18       22
+filtered_trace_list               452      464
+span_children                      22       28
+spans_of_parents                   20       26
+trace_list                         19       25
+trace_list since                   17       23
+trace_page_stats                   15       16
+trace_roots                        20       26
+trace_spans                        19       25
+trace_time_bounds                  15       16

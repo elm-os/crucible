@@ -4,17 +4,16 @@
 //! produce and which never name `project_id`; the renderer adds `project_id = {scope}` to every table reference
 //! itself. Values are typed [`Literal`]s.
 
-use crucible_records::TableId;
+use crucible_records::{TableId, Timestamp};
 use crucible_schema::{ColumnRef, IndexKind, Ty, table};
 
 use crate::error::PlanError;
 use crate::literal::Literal;
 use crate::node::Aggregate;
 
-/// The longest `In` or `HasAny` list a plan may hold. Each value of a list is a bound value of the plan's statement
-/// and the renderer pads a list to the next power of two, while a ClickHouse request carries at most 1,000 values
-/// (`http_max_fields`); 512 leaves room for the project, the window, the rows that pending deletions hide and the
-/// settings. A longer list is read in chunks of this length, one statement each.
+/// The longest `In` or `HasAny` list a plan may hold. The renderer binds a list as one array parameter (several
+/// when its text would pass about 100 KB), so its length does not count against the 1,000 fields of a ClickHouse
+/// request; a longer list is read in chunks of this length, one statement each, or split into several lists.
 pub const MAX_LIST: usize = 512;
 
 /// A comparison operator.
@@ -60,6 +59,17 @@ pub enum Pred {
     },
     /// A text match on the table's `name` column, served by its text index.
     TextMatch(String),
+    /// A column equal to one of the values in a row that arrived before that value's instant: the rows that
+    /// pending deletions hide (contract 13.4), as one list of values and one of instants. A value listed twice
+    /// counts with its later instant.
+    ArrivedBefore {
+        /// The column the values are compared with.
+        column: ColumnRef,
+        /// The table's arrival time, a `DateTime64` column.
+        received_at: ColumnRef,
+        /// The values, each with the instant before which its rows arrived.
+        before: Vec<(Literal, Timestamp)>,
+    },
     /// A column whose value is among the ids an aggregate produces, its first group dimension, read over the
     /// plan's project and window like every table reference: a semi-join (contract 8.1) that can be negated and
     /// combined, which a filter by a fact needs (contract 3.8). Like [`crate::SemiJoin`], a set above
@@ -165,6 +175,19 @@ impl Pred {
                     _ => Err(PlanError::SemiJoin),
                 }
             }
+            Self::ArrivedBefore {
+                column,
+                received_at,
+                before,
+            } => {
+                own(column)?;
+                own(received_at)?;
+                if *received_at.ty() != Ty::DateTime64 {
+                    return Err(PlanError::UnsupportedPred(received_at.name()));
+                }
+                let values: Vec<Literal> = before.iter().map(|(value, _)| value.clone()).collect();
+                list(column, column.ty(), &values)
+            }
         }
     }
 
@@ -180,6 +203,11 @@ impl Pred {
             | Self::InSet(column, _) => column.name() == name,
             Self::MetadataEq { .. } => name == "metadata_kv",
             Self::TextMatch(_) => name == "name",
+            Self::ArrivedBefore {
+                column,
+                received_at,
+                ..
+            } => column.name() == name || received_at.name() == name,
         }
     }
 

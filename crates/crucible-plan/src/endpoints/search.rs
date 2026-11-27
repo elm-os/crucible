@@ -22,9 +22,7 @@ pub type SearchKey = (Timestamp, u32, SpanId);
 
 /// The most hits one search returns.
 pub const SEARCH_MAX_LIMIT: u32 = 200;
-/// The most hits one core lookup ([`search_spans`]) names. Its three key lists then take at most 192 of the
-/// 1,000 values and settings one ClickHouse request holds, which leaves room for the largest list filter the
-/// core rows test and for the pending deletions a read carries; a larger page takes several lookups.
+/// The most hits one core lookup ([`search_spans`]) names; a larger page takes several lookups.
 pub const SEARCH_SPANS_PER_LOOKUP: usize = 64;
 /// The snippet of each searched string field: it starts this many bytes before the first token found.
 pub const SEARCH_SNIPPET: Snippet = Snippet {

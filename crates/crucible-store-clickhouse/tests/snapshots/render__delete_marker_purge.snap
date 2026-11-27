@@ -2,9 +2,8 @@
 source: crates/crucible-store-clickhouse/tests/render.rs
 expression: "render::delete(&purge).unwrap().to_string()"
 ---
-DELETE FROM crucible.span_metrics IN PARTITION ID {p0:String} WHERE project_id = {p1:UUID} AND marker_at < {p2:DateTime64(6, 'UTC')} AND NOT (marker_batch_seq IN ({p3:UInt64}, {p4:UInt64}))
+DELETE FROM crucible.span_metrics IN PARTITION ID {p0:String} WHERE project_id = {p1:UUID} AND marker_at < {p2:DateTime64(6, 'UTC')} AND NOT (marker_batch_seq IN {p3:Array(UInt64)})
 p0: String = "202611"
 p1: UUID = "00000000-0000-0000-0000-000000000000"
 p2: DateTime64(6, 'UTC') = "1794907800.000000"
-p3: UInt64 = "5"
-p4: UInt64 = "9"
+p3: Array(UInt64) = "[5,9]"

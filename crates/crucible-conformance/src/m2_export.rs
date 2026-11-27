@@ -7,12 +7,12 @@
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
-use crucible_env::{QueryError, TelemetryStore as _};
+use crucible_env::QueryError;
 use crucible_plan::test_support::query_plan;
 use crucible_plan::{
     EXPORT_LOOKUP_SPANS, ExportKey, ExportSelection, FactTable, Literal, MAX_LIST, Node,
-    PointLookup, QueryClass, RetentionClamp, Row, Value, export_facts, export_mcp_content,
-    export_mcp_ops, export_payloads, export_spans, export_ties,
+    PointLookup, Pred, QueryClass, RetentionClamp, Row, Scan, Value, export_facts,
+    export_mcp_content, export_mcp_ops, export_payloads, export_spans, export_ties,
 };
 use crucible_records::{McpSide, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{Column, RetentionSettings, SpanCoreCol, SpanPayloadCol};
@@ -467,8 +467,8 @@ pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
         || format!("one plan took {} traces, above {MAX_LIST}", named.len()),
     )?;
 
-    // A statement above the field budget is refused before it is sent, as too broad; the server would refuse
-    // it before the query starts.
+    // Twice the keys one export lookup names are one array parameter, and the lookup returns the payload row of
+    // each; 0.1.3 sent their 1,024 values as as many fields, which ClickHouse refused.
     let keys: Vec<Vec<Literal>> = (0..2 * EXPORT_LOOKUP_SPANS)
         .map(|n| {
             let (trace, span, start) = large_span(n);
@@ -491,19 +491,44 @@ pub(crate) async fn large(ctx: &Ctx) -> Result<String> {
         keys,
         [SpanPayloadCol::SpanId],
     )?;
-    let over = query_plan(scope, window, QueryClass::Export, Node::PointLookup(lookup));
-    let fields = render::read_fields(&over)?;
-    let refused = ctx.store.execute(over).await.err();
+    let doubled = query_plan(scope, window, QueryClass::Export, Node::PointLookup(lookup));
+    let fields = render::read_fields(&doubled)?;
+    let found = rows(ctx, doubled)
+        .await
+        .context("a lookup of twice the spans of an export lookup")?;
     same(
-        &format!("a lookup of {fields} fields"),
+        &format!("the payload rows of a lookup of {fields} fields"),
+        &found.len(),
+        &(2 * EXPORT_LOOKUP_SPANS),
+    )?;
+    // A statement above the field budget is refused before it is sent, as too broad; the server would refuse
+    // it before the query starts. Each comparison is a bound value of its own.
+    let one_by_one = (0..1_000)
+        .map(|n| Pred::eq(SpanPayloadCol::SpanId, Literal::from(large_span(n).1)))
+        .collect();
+    let scan = Scan::new(
+        TableId::SpanPayload,
+        [SpanPayloadCol::SpanId],
+        Pred::Or(one_by_one),
+    )?;
+    let over = query_plan(scope, window, QueryClass::Export, Node::Scan(scan));
+    let over_fields = render::read_fields(&over)?;
+    // The store model refuses it too.
+    let refused = rows(ctx, over)
+        .await
+        .err()
+        .and_then(|error| error.downcast::<QueryError>().ok());
+    same(
+        &format!("a scan of {over_fields} fields"),
         &refused,
         &Some(QueryError::TooBroad),
     )?;
     Ok(format!(
         "{exported} spans in {pages} pages of at most {PAGE}, with payload lookups of at most \
-         {EXPORT_LOOKUP_SPANS} spans; {} named traces in plans of at most {MAX_LIST}; a lookup of {fields} \
-         fields refused before it was sent",
-        named.len()
+         {EXPORT_LOOKUP_SPANS} spans; {} named traces in plans of at most {MAX_LIST}; a lookup of {} spans in \
+         {fields} fields; a scan of {over_fields} fields refused before it was sent",
+        named.len(),
+        2 * EXPORT_LOOKUP_SPANS
     ))
 }
 

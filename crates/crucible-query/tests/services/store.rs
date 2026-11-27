@@ -301,6 +301,14 @@ fn holds(pred: &Pred, row: &StoredRow) -> bool {
                 other => panic!("metadata_kv is {other:?}"),
             }
         }
+        Pred::ArrivedBefore {
+            column,
+            received_at,
+            before,
+        } => before.iter().any(|(value, at)| {
+            compare(cell(row, column), &literal(value)).is_eq()
+                && compare(cell(row, received_at), &Value::Time(*at)).is_lt()
+        }),
         Pred::InSet(..) => panic!("a set is resolved to its ids before rows are tested"),
     }
 }

@@ -3,6 +3,8 @@
 
 use crucible_env::{InsertError, QueryError, RetryReason, StoreError};
 
+use crate::render::Oversize;
+
 /// The class of an insert that the server refused with a known code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum InsertCodeClass {
@@ -86,9 +88,9 @@ pub const TOO_MANY_FIELDS_MESSAGE: &str = "Too many form fields";
 /// A failed statement, before it is mapped to the error type of its method.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Failure {
-    /// The store did not send the statement: its request would carry `fields` fields, above
-    /// [`crate::render::FIELD_BUDGET`].
-    OverBudget { fields: usize },
+    /// The store did not send the statement: ClickHouse would refuse its request at its default limits
+    /// ([`crate::render::Statement::oversize`]).
+    OverBudget(Oversize),
     /// The server answered with an exception.
     Server { code: u32, message: String },
     /// The connection could not be opened, so no byte of the request was sent.
@@ -175,9 +177,9 @@ impl Failure {
                 code: None,
                 message,
             },
-            Self::OverBudget { fields } => InsertError::UnknownOutcome {
+            Self::OverBudget(oversize) => InsertError::UnknownOutcome {
                 code: None,
-                message: over_budget(fields),
+                message: over_budget(oversize),
             },
             Self::Timeout | Self::NoAnswer => InsertError::UnknownOutcome {
                 code: None,
@@ -194,7 +196,7 @@ impl Failure {
             Self::NoAnswer => QueryError::Unavailable(NO_ANSWER.to_owned()),
             Self::Client(message) => QueryError::Internal(message),
             // Too many values for one request: `query_too_broad`, as for too many ids (contract 12.3).
-            Self::OverBudget { .. } => QueryError::TooBroad,
+            Self::OverBudget(_) => QueryError::TooBroad,
         }
     }
 
@@ -205,18 +207,25 @@ impl Failure {
             Self::Timeout => StoreError::Unavailable("the statement deadline passed".to_owned()),
             Self::NoAnswer => StoreError::Unavailable(NO_ANSWER.to_owned()),
             Self::Client(message) => StoreError::Internal(message),
-            Self::OverBudget { fields } => StoreError::Internal(over_budget(fields)),
+            Self::OverBudget(oversize) => StoreError::Internal(over_budget(oversize)),
         }
     }
 }
 
 /// What a statement the store did not send because of its size reports.
-pub(crate) fn over_budget(fields: usize) -> String {
-    format!(
-        "the statement was not sent: its request would carry {fields} fields, above the store's budget of {}, \
-         and ClickHouse refuses more than its http_max_fields (default 1,000)",
-        crate::render::FIELD_BUDGET
-    )
+pub(crate) fn over_budget(oversize: Oversize) -> String {
+    match oversize {
+        Oversize::Fields(fields) => format!(
+            "the statement was not sent: its request would carry {fields} fields, above the store's budget of \
+             {}, and ClickHouse refuses more than its http_max_fields (default 1,000)",
+            crate::render::FIELD_BUDGET
+        ),
+        Oversize::Value(bytes) => format!(
+            "the statement was not sent: one of its fields would be {bytes} bytes long, and ClickHouse refuses a \
+             field longer than its http_max_field_value_size (default {})",
+            crate::render::FIELD_VALUE_LIMIT
+        ),
+    }
 }
 
 /// Whether a server refused a request for carrying more fields than its `http_max_fields`.
@@ -370,11 +379,18 @@ mod tests {
     /// A statement the store keeps back for its size fails as too broad, and says why.
     #[test]
     fn a_statement_above_the_budget_is_too_broad() {
-        let kept = Failure::OverBudget { fields: 1_031 };
+        let kept = Failure::OverBudget(Oversize::Fields(1_031));
         assert_eq!(kept.clone().into_query(), QueryError::TooBroad);
         assert!(
             matches!(kept.into_store(), StoreError::Internal(message) if message.contains("1031 fields"))
         );
+        let long = Failure::OverBudget(Oversize::Value(140_000));
+        assert_eq!(long.clone().into_query(), QueryError::TooBroad);
+        assert!(matches!(
+            long.into_store(),
+            StoreError::Internal(message) if message.contains("140000 bytes")
+                && message.contains("http_max_field_value_size")
+        ));
     }
 
     #[test]

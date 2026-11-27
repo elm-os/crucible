@@ -16,6 +16,8 @@ crucible-wal-codec = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
 crucible-plan = { workspace = true, features = ["test-support"] }
+# The store model refuses the reads the store does not send, by the store's own renderer (contract 2.6).
+crucible-store-clickhouse = { workspace = true }
 crucible-shipper = { workspace = true, features = ["test-mutants"] }
 crucible-recent = { workspace = true, features = ["test-mutants"] }
 crucible-query = { workspace = true }

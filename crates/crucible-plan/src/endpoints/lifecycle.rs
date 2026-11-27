@@ -23,9 +23,7 @@ use crate::pred::{CmpOp, Pred};
 /// The most traces one page of [`deletion_traces`] returns.
 pub const DELETION_TRACES_PAGE: u32 = 500;
 
-/// The most trace ids one `IN` list of a lifecycle predicate holds. Every id is a parameter of its statement
-/// (the renderer pads a list to the next power of two), and a ClickHouse server refuses a request with more
-/// than 1,000 parameters, or with a statement text above 128 KiB.
+/// The most trace ids one `IN` list of a lifecycle predicate holds.
 pub const TRACE_ID_LIST_CHUNK: usize = 500;
 
 /// `column IN (ids)` for a list of any length: one `IN` list per

@@ -2,12 +2,11 @@
 source: crates/crucible-store-clickhouse/tests/render.rs
 expression: rendered(&live(rows))
 ---
-SELECT target_kind, trace_id, span_id, session_id, key, version, fact_id, retracted, author_kind, author_id, created_at, value FROM crucible.fact_flags WHERE project_id = {p0:UUID} AND target_time >= {p1:DateTime64(6, 'UTC')} AND target_time < {p2:DateTime64(6, 'UTC')} AND target_day >= {p3:Date} AND target_day <= {p4:Date} AND (target_kind = {p5:String} AND trace_id IN (unhex({p6:String}), unhex({p7:String})))
+SELECT target_kind, trace_id, span_id, session_id, key, version, fact_id, retracted, author_kind, author_id, created_at, value FROM crucible.fact_flags WHERE project_id = {p0:UUID} AND target_time >= {p1:DateTime64(6, 'UTC')} AND target_time < {p2:DateTime64(6, 'UTC')} AND target_day >= {p3:Date} AND target_day <= {p4:Date} AND (target_kind = {p5:String} AND trace_id IN {p6:Array(FixedString(16))})
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime64(6, 'UTC') = "1794907800.000000"
 p2: DateTime64(6, 'UTC') = "1794911400.000001"
 p3: Date = "2026-11-17"
 p4: Date = "2026-11-17"
 p5: String = "trace"
-p6: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-p7: String = "07070707070707070707070707070707"
+p6: Array(FixedString(16)) = "['\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1','\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07']"

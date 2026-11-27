@@ -27,7 +27,7 @@ use crate::error::PlanError;
 use crate::literal::Literal;
 use crate::node::{AggOutput, Aggregate, Direction, Measure, Node, Step};
 use crate::plan::QueryPlan;
-use crate::pred::Pred;
+use crate::pred::{MAX_LIST, Pred};
 use crate::registry::METRICS_MAX_BUCKETS;
 
 /// The method of a tool call: the rows the tool endpoints read.
@@ -246,10 +246,16 @@ impl McpSelection {
                     .map(|s| Literal::String(s.server_name.clone()))
                     .collect();
                 (!names.is_empty()).then(|| {
-                    Pred::And(vec![
-                        Pred::In(server, names),
-                        Pred::In(source, class.literals()),
-                    ])
+                    // A list holds at most MAX_LIST values, so a larger selection names its servers in several.
+                    let mut lists: Vec<Pred> = names
+                        .chunks(MAX_LIST)
+                        .map(|chunk| Pred::In(server, chunk.to_vec()))
+                        .collect();
+                    let servers = match lists.len() {
+                        1 => lists.swap_remove(0),
+                        _ => Pred::Or(lists),
+                    };
+                    Pred::And(vec![servers, Pred::In(source, class.literals())])
                 })
             })
             .collect();
@@ -436,6 +442,37 @@ mod tests {
             proxied.pred(server, source),
             Some(Pred::In(source, enums(CaptureClass::Proxy)))
         );
+    }
+
+    #[test]
+    fn a_class_of_more_servers_than_a_list_holds_names_them_in_several_lists() {
+        let server = McpToolRollupCol::ServerName.column_ref();
+        let source = McpToolRollupCol::CaptureSource.column_ref();
+        let names: Vec<String> = (0..1_000).map(|n| format!("server-{n:04}")).collect();
+        let rows = names.iter().map(|name| (name.clone(), CaptureSource::Sdk));
+        let pred = McpSelection::select(SourceChoice::Auto, rows)
+            .pred(server, source)
+            .unwrap();
+        let Pred::And(parts) = &pred else {
+            panic!("one class is a conjunction: {pred:?}");
+        };
+        let Pred::Or(lists) = &parts[0] else {
+            panic!("1,000 servers are several lists: {pred:?}");
+        };
+        let listed: Vec<String> = lists
+            .iter()
+            .flat_map(|list| match list {
+                Pred::In(_, values) => values.clone(),
+                other => panic!("{other:?}"),
+            })
+            .map(|value| match value {
+                Literal::String(name) => name,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(lists.len(), 2);
+        assert_eq!(listed, names);
+        assert!(pred.check(McpToolRollupCol::TABLE).is_ok());
     }
 
     #[test]

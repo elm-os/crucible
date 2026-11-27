@@ -2,17 +2,10 @@
 source: crates/crucible-store-clickhouse/tests/render.rs
 expression: rendered(&live(payloads))
 ---
-SELECT start_minute, trace_hash, span_id, trace_id, start_time, user_id, session_id, input, output, system_instructions, attributes, resource_attributes, events, links, tool_definitions, tool_calls, model_parameters, trace_metadata, metadata_keys, metadata_values, metadata_kv, usage_provided_keys, cost_provided_keys, usage_provided_values, cost_provided_values, trace_state, truncated_fields, wal_epoch, batch_seq, lsn, received_at FROM crucible.span_payload WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (start_minute, trace_hash, span_id, trace_id) IN (({p5:DateTime('UTC')}, {p6:UInt32}, unhex({p7:String}), unhex({p8:String})), ({p9:DateTime('UTC')}, {p10:UInt32}, unhex({p11:String}), unhex({p12:String})))
+SELECT start_minute, trace_hash, span_id, trace_id, start_time, user_id, session_id, input, output, system_instructions, attributes, resource_attributes, events, links, tool_definitions, tool_calls, model_parameters, trace_metadata, metadata_keys, metadata_values, metadata_kv, usage_provided_keys, cost_provided_keys, usage_provided_values, cost_provided_values, trace_state, truncated_fields, wal_epoch, batch_seq, lsn, received_at FROM crucible.span_payload WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (start_minute, trace_hash, span_id, trace_id) IN {p5:Array(Tuple(DateTime('UTC'), UInt32, FixedString(8), FixedString(16)))}
 p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
 p1: DateTime64(6, 'UTC') = "1794907800.000000"
 p2: DateTime64(6, 'UTC') = "1794907890.000001"
 p3: DateTime('UTC') = "1794907800"
 p4: DateTime('UTC') = "1794907860"
-p5: DateTime('UTC') = "1794907800"
-p6: UInt32 = "1524766824"
-p7: String = "0101010101010101"
-p8: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-p9: DateTime('UTC') = "1794907860"
-p10: UInt32 = "2105592435"
-p11: String = "0202020202020202"
-p12: String = "07070707070707070707070707070707"
+p5: Array(Tuple(DateTime('UTC'), UInt32, FixedString(8), FixedString(16))) = "[('1794907800',1524766824,'\\x01\\x01\\x01\\x01\\x01\\x01\\x01\\x01','\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1\\xa1'),('1794907860',2105592435,'\\x02\\x02\\x02\\x02\\x02\\x02\\x02\\x02','\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07\\x07')]"
