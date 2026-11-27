@@ -19,6 +19,32 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The docs at a release's tag install that release: the release pull request writes the new version into every
   install command in the README, the docs and the SDK READMEs, and the SDK release workflow fails while one names
   another version. At the tags v0.1.1 to v0.1.3 the install commands name the previous release.
+- The TypeScript SDK's MCP wrapper records the tools that a `tools/list` result names (each tool's name and input and
+  output schemas, as `crucible.mcp.tools`), so for servers on the TypeScript SDK MCP > Tools shows each tool's schema
+  hash and the Unused tab lists the listed tools that nobody called. In 0.1.3 the tab stayed empty for them.
+- The TypeScript SDK classifies calls that the MCP SDK refuses before the tool's handler runs: arguments that fail the
+  tool's input schema are `validation` errors and "Tool <name> not found" is `not_found`, both caller faults with
+  JSON-RPC code -32602, so they leave tool error rates unless caller faults are included. In 0.1.3 refused arguments
+  counted as tool failures (`tool_execution`) and an unknown tool as invalid arguments.
+- The Python SDK classifies the same refusals from mcp 2.3, which answers them with `isError` results: "Unknown tool:
+  <name>" is `not_found` and arguments that fail the tool's input model are `validation`, both caller faults with
+  JSON-RPC code -32602.
+- MCP tool errors recorded by the TypeScript SDK carry a message: the text of the result's first text block, which
+  holds a thrown error's message, scrubbed and cut at 2 KiB as the Go and Rust SDKs and the proxy send it. MCP >
+  Errors groups them by it and the Operation page shows it, where 0.1.3 showed "No message".
+- MCP tool errors recorded by the Python SDK carry a message too: the text of the result's first text block, scrubbed
+  and cut at 2 KiB. mcp keeps a raised exception's own text on the server, so the error of a tool that raised reads
+  "Error executing tool <name>".
+- The Python SDK cuts the error messages of MCP spans at 2 KiB on a character boundary, as the TypeScript, Go and
+  Rust SDKs and the proxy do. 0.1.3 cut them at 8,192 characters.
+- The TypeScript SDK emits one process warning (code `CRUCIBLE_EXPORT`) when an export first fails, naming the traces
+  URL, the HTTP status and Crucible's message, for example the 401 for a key the server does not accept, or the
+  connection error; later failures count in `stats().failed` without another warning.
+- The Go SDK logs one line through the standard `log` package when an export first fails, with the traces URL, the
+  HTTP status and Crucible's message, or the connection error; later failures count in `CurrentStats().ExportFailed`.
+- The Rust SDK logs one `tracing` warning when an export first fails, with the traces URL and the exporter's error,
+  which names the HTTP status; later failures count in `stats().failed`. In 0.1.3 the Go and Rust SDKs said nothing
+  when exports on the background interval failed.
 - `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
   status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
   its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's

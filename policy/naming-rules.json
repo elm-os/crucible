@@ -1,5 +1,5 @@
 {
-  "$comment": "Rules for tools/policy/policy.mjs. Crucible may name other products for integration, compatibility, migration and comparison, but no text may say or imply that Crucible copied, cloned, ported or remade another product or its features. This file and the checker's fixtures are exempt from scanning because they must contain the phrases.",
+  "$comment": "Rules for tools/policy/policy.mjs. Crucible may name other products for integration, compatibility, migration and comparison, but no text may say or imply that Crucible copied, cloned, ported or remade another product or its features. This file and the checker's fixtures are exempt from scanning because they must contain the phrases. commit_authors and commit_committers are the only identities a commit checked by `commits` may carry, and a line matching co_author_patterns is refused in commit messages and pull request bodies, with or without a waiver: GitHub credits every commit author and every co-author trailer of a pull request as a contributor when it is squash-merged.",
   "vendors": [
     "langfuse",
     "braintrust",
@@ -80,6 +80,16 @@
     "^(co-authored-by|signed-off-by)\\s*:.*noreply@(anthropic|openai)\\.com",
     "\\b(generated|created|written|authored)\\s+(with|by|using)\\s+\\[?(claude|claude code|chatgpt|copilot|codex|cursor|gemini|devin|windsurf)\\b",
     "claude\\.com/claude-code"
+  ],
+  "commit_authors": [
+    "Aakash Harish <166097779+00-Aakash-00@users.noreply.github.com>"
+  ],
+  "commit_committers": [
+    "Aakash Harish <166097779+00-Aakash-00@users.noreply.github.com>",
+    "GitHub <noreply@github.com>"
+  ],
+  "co_author_patterns": [
+    "^\\s*co-authored-by\\s*:"
   ],
   "waiver_marker": "naming-ok:"
 }

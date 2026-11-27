@@ -89,13 +89,40 @@ export function putImplementation(
   put(attributes, `${prefix}.version`, info?.version);
 }
 
+/** The text of the first text block of a tool result. */
+export function firstText(result: Fields): string | undefined {
+  if (!Array.isArray(result.content)) {
+    return undefined;
+  }
+  for (const block of result.content) {
+    const item = fields(block);
+    if (item?.type === "text") {
+      return text(item.text);
+    }
+  }
+  return undefined;
+}
+
 /** Error message cap (contract 3.5 `error_message`). */
 const ERROR_MESSAGE_BYTES = 2_048;
+
+/** Room past the cap that scrubbing sees, so a secret that straddles the cap is still matched whole. */
+const SCRUB_MARGIN = 1_024;
+
+/**
+ * An error message as Crucible stores it (contract 3.5 `error_message`): scrubbed with the shared rules, then cut
+ * at 2 KiB on a character boundary. Only the part the cut can keep, and the margin after it, is scrubbed.
+ */
+function errorMessage(message: string): string {
+  return cutUtf8(scrub(message.slice(0, ERROR_MESSAGE_BYTES + SCRUB_MARGIN)), ERROR_MESSAGE_BYTES);
+}
 
 /**
  * Records the evidence a JSON-RPC response carries for the error taxonomy (contract 9.2): the code of an error
  * response, `tool_error` for a result with `isError`, and the SDK annotations that refine them. Crucible's
- * classifier derives the class from this evidence. Returns the result of a result response.
+ * classifier derives the class from this evidence. The status message is the error's message, or the text of the
+ * first text block of a result with `isError`, which holds a thrown error's message. Returns the result of a
+ * result response.
  */
 export function applyResponse(
   span: Span,
@@ -113,7 +140,7 @@ export function applyResponse(
     }
     span.setStatus({
       code: SpanStatusCode.ERROR,
-      message: cutUtf8(scrub(text(error.message) ?? ""), ERROR_MESSAGE_BYTES),
+      message: errorMessage(text(error.message) ?? ""),
     });
     return undefined;
   }
@@ -128,7 +155,7 @@ export function applyResponse(
     if (annotations?.subclass !== undefined) {
       span.setAttribute("crucible.mcp.error.subclass", annotations.subclass);
     }
-    span.setStatus({ code: SpanStatusCode.ERROR });
+    span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage(firstText(result) ?? "") });
   }
   span.setAttribute(
     "crucible.mcp.result_type",
