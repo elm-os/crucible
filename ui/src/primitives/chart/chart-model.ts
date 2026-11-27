@@ -22,7 +22,8 @@ export interface ChartSeries {
   points: ChartPoint[];
 }
 
-export type ChartForm = "line" | "bar" | "area";
+/** Lines, bars, lines over a wash, or ranges: one mark per bucket from its lowest to its highest series. */
+export type ChartForm = "line" | "bar" | "area" | "range";
 
 // Two of the four series colors are neutral, so every series also has its own dash and marker.
 export const MAX_SERIES = 4;
@@ -90,8 +91,8 @@ export function chartModel(
   const first = times[0] ?? 0;
   const last = times.at(-1) ?? first;
   const width = times.length > 1 ? (last - first) / (times.length - 1) : 60_000;
-  // Bars sit inside their bucket, so the axis runs to the end of the last one.
-  const end = form === "bar" ? last + width : Math.max(last, first + 1);
+  // Bars and ranges sit inside their bucket, so the axis runs to the end of the last one.
+  const end = form === "bar" || form === "range" ? last + width : Math.max(last, first + 1);
   const x = scaleUtc()
     .domain([new Date(first), new Date(end)])
     .range([layout.left, layout.width - layout.right]);

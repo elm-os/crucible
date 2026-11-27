@@ -117,6 +117,7 @@ export function ToolDetail() {
         {(tool) => (
           <TimeSeriesChart
             title="Latency percentiles"
+            form="range"
             family
             step={stepMs(tool.granularity)}
             format={(v) => formatDuration(v)}

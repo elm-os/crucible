@@ -99,16 +99,13 @@ export function TimeSeriesChart({
   const xTicks = placeTimeTicks(model, plotWidth, span, width);
   const baseline = model.y(0);
   const at = active === null ? null : (times[active] ?? null);
+  const banded = form === "bar" || form === "range";
   const x =
-    at === null
-      ? null
-      : form === "bar"
-        ? model.x(new Date(at)) + model.step / 2
-        : model.x(new Date(at));
+    at === null ? null : banded ? model.x(new Date(at)) + model.step / 2 : model.x(new Date(at));
 
   const point = (event: PointerEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const position = event.clientX - rect.left - (form === "bar" ? model.step / 2 : 0);
+    const position = event.clientX - rect.left - (banded ? model.step / 2 : 0);
     setActive(nearestBucket(model, position));
   };
   return (
@@ -197,7 +194,7 @@ export function TimeSeriesChart({
                   {t.label}
                 </text>
               ))}
-              {form === "bar" && x !== null ? (
+              {banded && x !== null ? (
                 <rect
                   data-active-band
                   x={model.x(new Date(at ?? 0))}
@@ -209,6 +206,8 @@ export function TimeSeriesChart({
               ) : null}
               {form === "bar" ? (
                 <Bars model={model} series={shown} family={family} />
+              ) : form === "range" ? (
+                <Ranges model={model} series={shown} />
               ) : (
                 <Lines model={model} series={shown} family={family} />
               )}
@@ -227,7 +226,7 @@ export function TimeSeriesChart({
                     strokeDasharray="3 3"
                   />
                 ))}
-              {x !== null && form !== "bar" ? (
+              {x !== null && !banded ? (
                 <>
                   <line
                     data-crosshair
@@ -265,7 +264,7 @@ export function TimeSeriesChart({
               <p className="text-label text-ink-soft">{rangeLabel(at, bucket)}</p>
               {shown.map((s, slot) => (
                 <p key={s.id} className="flex items-center gap-2 whitespace-nowrap">
-                  <LineKey style={seriesStyle(slot, family)} form={form} />
+                  <LineKey style={seriesStyle(slot, family)} form={form} slot={slot} />
                   <span className="text-data font-medium tabular-nums">
                     {valueText(valuesAt(shown, at)[slot] ?? null, format)}
                   </span>
@@ -324,6 +323,54 @@ function Bars({
                 />
               );
             })}
+          </g>
+        );
+      })}
+    </>
+  );
+}
+
+// One mark per bucket: a faint bar from the lowest to the highest series (p50 to p99), and each series' marker on it.
+// Busy buckets read as a band and sparse ones as single marks, where a line would zigzag between lone values.
+function Ranges({
+  model,
+  series,
+}: {
+  model: ReturnType<typeof chartModel>;
+  series: ChartSeries[];
+}) {
+  const width = Math.max(2, Math.min(6, (model.step - BAR_GAP) / 2));
+  return (
+    <>
+      {model.times.map((t) => {
+        const values = valuesAt(series, t);
+        const present = values.filter((v): v is number => v !== null);
+        if (present.length === 0) return null;
+        const cx = model.x(new Date(t)) + model.step / 2;
+        return (
+          <g key={t} data-range={t}>
+            <line
+              x1={cx}
+              x2={cx}
+              y1={model.y(Math.min(...present))}
+              y2={model.y(Math.max(...present))}
+              stroke="var(--color-series-1)"
+              strokeOpacity={0.3}
+              strokeWidth={width}
+              strokeLinecap="round"
+            />
+            {values.map((v, slot) =>
+              v === null ? null : (
+                <path
+                  key={series[slot]?.id ?? slot}
+                  d={markerPath(slot, 36)}
+                  transform={`translate(${cx},${model.y(v)})`}
+                  fill="var(--color-series-1)"
+                  stroke="var(--color-warm-sand)"
+                  strokeWidth={1.5}
+                />
+              ),
+            )}
           </g>
         );
       })}
@@ -445,7 +492,22 @@ function describe(t: number, series: ChartSeries[], format: (value: number) => s
   return `${bucketFormat.format(t)}: ${values}`;
 }
 
-function LineKey({ style, form }: { style: SeriesStyle; form: ChartForm }) {
+function LineKey({
+  style,
+  form,
+  slot = 0,
+}: {
+  style: SeriesStyle;
+  form: ChartForm;
+  slot?: number;
+}) {
+  if (form === "range") {
+    return (
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
+        <path d={markerPath(slot, 36)} transform="translate(6,6)" fill="var(--color-series-1)" />
+      </svg>
+    );
+  }
   return form === "bar" ? (
     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" className="shrink-0">
       <rect width="10" height="10" rx="2" fill={style.color} />
@@ -481,7 +543,7 @@ function Legend({
         const style = seriesStyle(slot, family);
         return (
           <li key={s.id} className="flex items-center gap-1.5" data-marker={style.marker}>
-            <LineKey style={style} form={form} />
+            <LineKey style={style} form={form} slot={slot} />
             {s.label}
           </li>
         );
