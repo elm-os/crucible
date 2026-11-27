@@ -1,5 +1,7 @@
 import { AxeBuilder } from "@axe-core/playwright";
 import { test as base, expect, type Page, type Request, type Route } from "@playwright/test";
+import type { DataBounds } from "../src/api/generated/DataBounds";
+import type { OrgMember } from "../src/api/generated/OrgMember";
 import type { SavedQuery } from "../src/api/generated/SavedQuery";
 import type { SessionInfo } from "../src/api/generated/SessionInfo";
 import type { SessionItem } from "../src/api/generated/SessionItem";
@@ -274,6 +276,29 @@ export function measuresOf(route: Route): string[] {
   const body = route.request().postDataJSON() as { measures: { measure: string }[] };
   return body.measures.map((m) => m.measure);
 }
+
+export const BOUNDS_PATH = new RegExp(`/projects/${PROJECT}/data-bounds$`);
+
+const seenRange = (seen = false) =>
+  seen
+    ? { first: "2026-11-17T13:00:00.000000Z", last: "2026-11-17T13:55:00.000000Z" }
+    : { first: null, last: null };
+
+// The first and last minute with data, null where there is none: a project nobody has sent anything to
+// unless a kind of data is marked seen.
+export function dataBounds(
+  fields: { spans?: boolean; client?: boolean; server?: boolean } = {},
+): DataBounds {
+  return {
+    spans: seenRange(fields.spans),
+    mcp: { client: seenRange(fields.client), server: seenRange(fields.server) },
+    retention_horizon: null,
+    max_window_days: 30,
+    server_time: AS_OF,
+    meta: { as_of: AS_OF, partial: false, consistency: "strong" },
+  };
+}
+
 export const CHILDREN_PATH = new RegExp(`/projects/${PROJECT}/traces/${TRACE}/spans$`);
 export const LIST_PATH = new RegExp(`/projects/${PROJECT}/traces$`);
 export const PROVIDERS_PATH = /\/api\/v1\/auth\/providers$/;
@@ -348,12 +373,23 @@ export function projectList(session: SessionInfo = sessionInfo()) {
 }
 
 // The server has a control plane, and this browser holds a session. Signed in, Crucible opens on home, whose
-// tiles and charts read metrics: they get an empty answer unless a test sets its own. Settings opens on the
-// project page, which reads the project list.
+// tiles and charts read metrics: they get an empty answer unless a test sets its own. Its set-up steps read
+// a new project: no data, no keys and the signed-in user as the only member. Settings opens on the project
+// page, which reads the project list.
 export function signedIn(api: Api, session: SessionInfo = sessionInfo()): void {
+  const self: OrgMember = {
+    user_id: session.user.id,
+    email: session.user.email,
+    name: session.user.name,
+    role: session.org.role,
+    status: "active",
+  };
   api.on(PROVIDERS_PATH, json(signInOptions()));
   api.on(SESSION_PATH, json(session));
   api.on(/\/projects\/[^/]+\/metrics\/query$/, json(metrics([])));
+  api.on(/\/projects\/[^/]+\/data-bounds$/, json(dataBounds()));
+  api.on(/\/projects\/[^/]+\/api-keys$/, json({ data: [] }));
+  api.on(/\/api\/v1\/org\/members$/, json({ data: [self] }));
   api.on(PROJECTS_PATH, json(projectList(session)));
 }
 

@@ -16,28 +16,52 @@ On a branch from `main`:
      crucible-dev:1 cargo update --workspace --offline
    ```
 
-   Then give the four SDKs the same version. The script writes it into each SDK's manifest, version constant, lock
-   file and conformance manifest, and `check` lists every file it covers:
+   Then give the four SDKs and the docs the same version. `set` writes it into each SDK's manifest, version constant,
+   lock file and conformance manifest, and into every install reference in the docs, so the docs at the tag install
+   the release that the tag makes. `check` fails while any of them names another version, and otherwise lists the
+   install references it found:
 
    ```sh
    node tools/release/sdk-version.mjs set
    node tools/release/sdk-version.mjs check
    ```
 
+   An install reference is a place in `README.md`, `sdk/*/README.md` or `docs/**/*.md` that names a release: a
+   download from the GitHub release (`https://github.com/elm-os/crucible/releases/download/vX.Y.Z/...`), an SDK
+   package's file name, a Compose file at the release tag
+   (`https://raw.githubusercontent.com/elm-os/crucible/vX.Y.Z/deploy/compose/...`), the image
+   (`ghcr.io/elm-os/crucible:X.Y.Z`), the Rust git tag (`tag = "vX.Y.Z"`), the Go module (`sdk/go@vX.Y.Z` and
+   `sdk/go/vX.Y.Z`), or the words "release of Crucible X.Y.Z" or "version of Crucible X.Y.Z", with which the SDK
+   guides and READMEs name the release they install. A reference that names another version on purpose, such as a
+   placeholder or an upgrade note about an older release, goes on the `keep` list in `tools/release/sdk-version.mjs`.
+   `CHANGELOG.md` and this page are never changed.
+
 2. **Bump the API version.** Set `info.version` in `specs/openapi/crucible-v1.json` to the same version; an API test
    checks that the two agree. Update the example `"server": {"version": ...}` in `docs/api/README.md`.
 3. **Write the release notes.** Move the entries under `## [Unreleased]` in `CHANGELOG.md` into a new
    `## [X.Y.Z] - YYYY-MM-DD` section. cargo-dist uses that section as the body of the GitHub release.
+4. **Update the supported versions** in `SECURITY.md` for a new minor version; it lists the supported release line.
 
 Open the pull request; it merges like any other once every required check passes. The `sdk-release` workflow runs on
-it and fails while an SDK file holds another version than `Cargo.toml`.
+it and fails while an SDK file or an install reference in the docs names another version than `Cargo.toml`.
+
+From the merge until the release is published, the docs on `main` name a release that is not out. Its downloads
+(`https://github.com/elm-os/crucible/releases/download/vX.Y.Z/...`) return 404 until `release.yml` publishes the
+release, and the Compose files at the tag, the image and the Go module appear with the tag and its workflows. A link
+check in that window reports them as broken: skip the URLs of a version newer than the latest published release,
+which `gh release view --repo elm-os/crucible --json tagName --jq .tagName` prints, until the release is published.
+Tag the merge commit as soon as `main` is green, so the window stays short.
 
 ## 2. Tag the merge commit
 
-On the commit of `main` that holds the bump and the notes:
+Tag the commit of `main` that holds the bump and the notes as soon as its checks pass. Run `check` on it first: a pull
+request merged after the release pull request can name the previous version again, and the tag's `sdk-release` run
+fails on that before it builds any package.
 
 ```sh
 git fetch origin
+git switch --detach origin/main
+node tools/release/sdk-version.mjs check X.Y.Z
 git tag -a vX.Y.Z -m "Crucible X.Y.Z" origin/main
 git push origin vX.Y.Z
 ```
@@ -112,19 +136,13 @@ That run builds and checks the packages from the head of `main`, attaches them t
 that commit and publishes to each registry that is turned on. It refuses the input on another branch, for a tag
 without a release, and for a tag that holds the workflow, which runs from its own tag.
 
-## 4. Point the docs at the new release
+## 4. After the release is published
 
-- The quickstart, the README and the self-hosting pages, `docs/self-hosting/clustered.md` among them, download the
-  Compose files from the release tag (`https://raw.githubusercontent.com/elm-os/crucible/vX.Y.Z/deploy/compose/...`)
-  and name the installers on the release (`.../releases/download/vX.Y.Z/...`). Replace the old tag in each, then
-  run the quickstart on the published image.
-- The SDK guides (`docs/guides/sdk-typescript.md`, `docs/guides/sdk-python.md` and `docs/guides/sdk-go.md`) and the
-  READMEs in `sdk/typescript`, `sdk/python`, `sdk/go` and `sdk/rust` install the SDKs from the release: the package
-  downloads (`.../releases/download/vX.Y.Z/...`), the Go module tag (`@vX.Y.Z`) and the Rust git tag
-  (`tag = "vX.Y.Z"`). Replace the old version in each.
-- `SECURITY.md` lists the supported release line; update it for a new minor version.
+- Run the [quickstart](self-hosting/quickstart.md) on the published image; its commands download the Compose file
+  from the new tag.
 - rightmodeler's Crucible page downloads the Compose file from one constant, `CRUCIBLE_RELEASE_TAG` in
-  `apps/web/src/lib/crucible.ts` in the rightmodeler repository; bump it there.
+  `apps/web/src/lib/crucible.ts` in the rightmodeler repository. Bump it once the release is published, since the
+  page links to the release's published files.
 
 ## Registry setup
 

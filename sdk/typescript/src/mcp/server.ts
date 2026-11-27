@@ -32,6 +32,7 @@ import {
   type Era,
   type Fields,
   fields,
+  firstText,
   type Implementation,
   implementation,
   interpose,
@@ -92,6 +93,8 @@ interface Connection {
 interface Operation {
   readonly span: Span;
   readonly method: string;
+  /** The tool a `tools/call` names. */
+  readonly tool: string | undefined;
   readonly id: RequestId | undefined;
   readonly era: Era;
   readonly http: boolean;
@@ -300,6 +303,7 @@ function begin(
   return {
     span,
     method: message.method,
+    tool,
     id,
     era,
     http: request !== undefined,
@@ -333,10 +337,44 @@ function outbound(
   }
   connection.pending.delete(id);
   const result = applyResponse(operation.span, message, operation.annotations);
+  if (operation.tool !== undefined) {
+    classifyRefusal(operation.span, operation.tool, message);
+  }
   if (result !== undefined) {
     observeResult(operation, result, connection);
   }
   finish(operation, connection);
+}
+
+/**
+ * Classifies a `tools/call` that the MCP SDK refused before the tool's handler ran (contract 9.2), by the words the
+ * SDK answers with in every 2.x release. An unknown tool is answered -32602 "Tool <name> not found", which is not
+ * found. Arguments that fail the tool's input schema are answered with an `isError` result: a validation failure,
+ * sent with the -32602 the SDK raised for it, so it counts as the caller's fault like any invalid params.
+ */
+function classifyRefusal(
+  span: Span,
+  tool: string,
+  response: { error?: unknown; result?: unknown },
+): void {
+  const error = fields(response.error);
+  if (error !== undefined) {
+    if (error.code === -32602 && error.message === `Tool ${tool} not found`) {
+      span.setAttribute("crucible.mcp.error.class", "not_found");
+    }
+    return;
+  }
+  const result = fields(response.result);
+  const message = result?.isError === true ? firstText(result) : undefined;
+  if (
+    message?.startsWith(`Input validation error: Invalid arguments for tool ${tool}: `) === true ||
+    message?.startsWith(`Invalid arguments for tool ${tool}: `) === true
+  ) {
+    span.setAttributes({
+      "rpc.response.status_code": "-32602",
+      "crucible.mcp.error.class": "validation",
+    });
+  }
 }
 
 function observeResult(operation: Operation, result: Fields, connection: Connection): void {
@@ -356,6 +394,9 @@ function observeResult(operation: Operation, result: Fields, connection: Connect
   const state = text(result.requestState);
   if (result.resultType === "input_required" && state !== undefined && key !== undefined) {
     operation.span.setAttribute("crucible.mcp.mrtr.state_out", stateHash(key, state));
+  }
+  if (operation.method === "tools/list" && Array.isArray(result.tools)) {
+    operation.span.setAttribute("crucible.mcp.tools", inventory(result.tools));
   }
   if (operation.method !== "tools/call") {
     return;
@@ -382,6 +423,19 @@ function observeResult(operation: Operation, result: Fields, connection: Connect
       operation.cut ||= content.cut;
     }
   }
+}
+
+/**
+ * The tool inventory of a `tools/list` result (contract 3.6), as JSON text: each tool's name and the input and
+ * output schemas, which Crucible hashes. Nothing else of a tool is sent.
+ */
+function inventory(tools: unknown[]): string {
+  return JSON.stringify(
+    tools.map((tool) => {
+      const { name, inputSchema, outputSchema } = fields(tool) ?? {};
+      return { name, inputSchema, outputSchema };
+    }),
+  );
 }
 
 /** The client cancelled a request. The SDK sends no response for it, so it is finished here. */

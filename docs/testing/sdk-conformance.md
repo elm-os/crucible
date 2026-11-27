@@ -517,8 +517,8 @@ and adding an entry to the workflow's matrix.
   only through `crucible.mcp.error.class`. No case covers a transport failure.
 - 9.4 says senders should send `mcp.session.id` hashed; the suite requires the hashed form.
 - 3.6 has no span keys for the tool inventory. The normalizer reads `crucible.mcp.tools`, the JSON text of the
-  tool list as the protocol sends it, and computes the schema hash itself; no SDK sends the key yet, so `tools/list`
-  cases check the operation only.
+  tool list as the protocol sends it, and computes the schema hash itself. The TypeScript SDK sends the key, and the
+  `tools/list` cases check the operation only.
 - 9.1 names no key for a transport failure. The normalizer and the driver read an explicit
   `crucible.mcp.error.class` of `transport` or `timeout` as the capture source's observation that the transport
   failed or a deadline passed, and a numeric `error.type` equal to the HTTP status as that status, not as a

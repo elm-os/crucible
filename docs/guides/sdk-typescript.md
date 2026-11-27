@@ -163,8 +163,8 @@ This `init` reads the endpoint and the key from `CRUCIBLE_ENDPOINT` and `CRUCIBL
 - The observation's `span` is the OpenTelemetry span, for keys the helpers do not set, such as
   `crucible.trace.tags` and `crucible.level`.
 
-[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which of these keys the trace views show
-on main. Two notes for agents: the views show the model from `responseModel`, while `model` alone prices a span but
+[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which of these keys the trace views show.
+Two notes for agents: the views show the model from `responseModel`, while `model` alone prices a span but
 is not shown; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that `withContext`
 sets.
 
@@ -325,18 +325,34 @@ classifier of [contract 9.2](../architecture/contracts.md#92-error-taxonomy) rea
 the multi-round state hashes, the request size and user agent on HTTP, and the number of content blocks of each
 type. A `traceparent` in `params._meta` makes the span a child of the caller's span; baggage is never read.
 
-On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
-as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
+Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
+with status `error`, and captured arguments and results become the span's input and output. Crucible also records
+each such span as an MCP operation on the server side, which takes the other MCP keys: they show on the MCP
+**Operation** page ([MCP analytics](mcp-analytics.md#pages)) and in the SQL workspace's `crucible_sql.mcp_operations`,
+not among the span's attributes.
 
 | Option of `instrument` | Effect |
 |---|---|
 | `capture` | Content capture rules by tool glob; see below |
-| `handleParams` | Per tool, the argument whose string value is the operation's handle id, for example `{ lookup_order: "order_id" }`. It is scrubbed and cut at 256 bytes, and it groups the operations that work on one thing |
+| `handleParams` | Per tool, the argument whose string value is the operation's session handle, for example `{ lookup_order: "order_id" }`. It is scrubbed and cut at 256 bytes, and it groups the operations that work on one thing on the MCP **Sessions** page; see below |
 | `identify` | Called once per inbound message with the transport's `authInfo` and HTTP request; returns an identity |
 | `identity: "none"` | Sends no identity keys at all, the OAuth client id included |
 | `transport` | Overrides the transport label: `stdio`, `streamable_http`, `sse` or `unknown` |
+
+The MCP **Sessions** page groups a server's operations by the first of these that an operation has: the session id
+of a session-based HTTP connection, its session handle, the trace of the client span that made the call, and the
+server process. So on stdio, `handleParams` makes each value, each order id in the example above, a session of its
+own, shown as grouped by **Session handle**. The operations without a session handle, such as `initialize`,
+`tools/list` and calls to tools that `handleParams` does not name, are grouped by the client's trace when an
+instrumented client made them, and otherwise form one **Process** session.
+
+Over stdio, stdout carries the protocol, so a server logs to stderr, `stats()` included:
+
+```ts
+import { stats } from "@elm-os/crucible";
+
+setInterval(() => console.error(JSON.stringify(stats())), 60_000).unref();
+```
 
 ### Errors and identity in tool handlers
 
@@ -357,6 +373,23 @@ the hash and the issuer, in the MCP operation's `user_subject_hash` and `user_is
 A tool handler that throws and one that returns `isError: true` look the same on the wire: both are tool errors
 unless the handler calls `annotateError` or a mark.
 
+A tool error's message is the text of the result's first text block, which holds a thrown error's message. It is
+sent whether or not a capture rule covers the tool, scrubbed with the same rules as captured content and cut at
+2,048 bytes; MCP **Errors** groups by it, and the **Operation** page shows it.
+
+Calls the MCP SDK refuses before any handler runs are recorded as caller faults, with JSON-RPC code -32602, which
+MCP analytics leaves out of calls, errors and latency unless **Include caller faults** is on:
+
+- arguments that fail a tool's input schema, which the SDK answers with `Input validation error: Invalid arguments
+  for tool <name>: ...`, have the class `validation`;
+- a call to a tool that does not exist, `Tool <name> not found`, has the class `not_found`.
+
+Handler errors and output-schema failures (`Output validation error: ...`) stay tool errors, class
+`tool_execution`.
+
+Each `tools/list` answer is recorded with the listed tools' names and schemas, so MCP **Tools** shows each tool's
+schema hash, and **Unused** lists the tools a server listed in the selected range that had no calls in it.
+
 ### Content capture and scrubbing
 
 MCP metadata is always sent; arguments and results are not, unless a `capture` rule matches the tool. A rule is
@@ -372,9 +405,9 @@ straddles the cap is still matched, and a cut never keeps the prefix of a token 
 The scrub rules are the shared list of `conformance/scrub-rules.json`, packaged as `src/scrub-rules.json`, which a test
 keeps equal: PEM blocks, JWTs, Bearer tokens, Crucible secret keys, card numbers that pass the Luhn check, email
 addresses, IP addresses and phone numbers. Each match is replaced with a marker such as `[redacted:card]`. Error
-messages and handle ids are scrubbed with the same rules. The rules match values only, so a secret under a key such as
-`password` is sent unless its value matches a rule. A `requestState` is never sent in any form other than its keyed
-hash.
+messages and session handles are scrubbed with the same rules. The rules match values only, so a secret under a key
+such as `password` is sent unless its value matches a rule. A `requestState` is never sent in any form other than its
+keyed hash.
 
 ## Instrument an MCP client
 
@@ -439,6 +472,19 @@ counted. Ending a span never blocks, whether the collector is up, refusing conne
 Within `exportTimeoutMs` the OpenTelemetry exporter the SDK uses retries a refused export, such as a 503 with
 `Retry-After`, when the server's delay fits in the time left. A batch that still fails, or that does not finish in
 time, counts as failed and is not sent again.
+
+On the first failed export after `init`, the SDK emits one Node warning with the code `CRUCIBLE_EXPORT`, which Node
+prints on stderr, so a stdio server's protocol is safe. It names the traces URL, the status and Crucible's reason,
+or the connection error, and where the endpoint and the key come from:
+
+```text
+(node:<pid>) [CRUCIBLE_EXPORT] Warning: Crucible could not send spans: http://127.0.0.1:4318/v1/traces answered 401 (this server does not accept the secret key; check that it was copied whole and that the server lists it); spans go to endpoint (CRUCIBLE_ENDPOINT), an OTLP listener, with secretKey (CRUCIBLE_SECRET_KEY), a secret key that has the ingest scope. stats().failed counts the spans not sent; this warning is not repeated.
+```
+
+Every failing answer the exporter does not retry (any status but 2xx, 429, 502, 503 and 504) reads
+`answered <status> (<Crucible's reason>)`; without such an answer the warning reads
+`the export to <traces URL> failed (<error>)`, such as `(connect ECONNREFUSED 127.0.0.1:4318)`. Later failures only
+count in `stats().failed`. Handle it like any Node warning, with `process.on("warning", ...)` or `node --no-warnings`.
 
 `stats()` returns the counters of the exporter that `init` started. They are all zero before `init` and again after
 `shutdown`, so read them before you shut down:

@@ -61,7 +61,9 @@ Bearer key or turn its sampling off.
 
 Export runs off the request path. When the queue is full, a span is dropped and counted; ending a span never
 blocks, whether the collector is up, refusing connections or not answering. `stats()` returns the counters
-`{ queued, queuedBytes, dropped, exported, failed, feedbackSent, feedbackDropped, feedbackFailed }`.
+`{ queued, queuedBytes, dropped, exported, failed, feedbackSent, feedbackDropped, feedbackFailed }`. The first
+failed export after `init` emits one Node warning, code `CRUCIBLE_EXPORT`, on stderr, with the traces URL, the
+status and Crucible's reason; later failures only count in `failed`.
 
 ## Agent helpers
 
@@ -165,11 +167,13 @@ exchanges that `createMcpHandler` answers before any server instance exists, suc
 revision, a wrong content type or `subscriptions/listen`. If a transport cannot be tapped, the server runs
 uninstrumented.
 
-Each request and notification becomes one SERVER span with the keys of contract 9.1 and
+Each request and notification becomes one SERVER span with Crucible's MCP keys and
 `crucible.mcp.capture_source = sdk`: method and target, JSON-RPC id, era, protocol version, transport, client and
-server name and version, progress count, the error evidence of contract 9.2, the hashed legacy session id, the
+server name and version, progress count, the error evidence, the hashed legacy session id, the
 multi-round state hashes, the request size and user agent on HTTP, and content block counts. A server span is the
-child of the trace context in `params._meta`; baggage is never read.
+child of the trace context in `params._meta`; baggage is never read. Crucible records each such span as an MCP
+operation, which takes the MCP keys: they show on the MCP **Operation** page and in the SQL workspace's
+`crucible_sql.mcp_operations`, not among the span's attributes.
 
 Inside a tool handler:
 
@@ -185,17 +189,22 @@ identify({ userId, tenant, handleId }); // merges into the operation's identity
 | Option of `instrument` | Effect                                                                                                  |
 | ---------------------- | ------------------------------------------------------------------------------------------------------- |
 | `capture`              | Content capture rules by tool glob, for example `[{ tool: "lookup_*", result: false, maxBytes: 4096 }]` |
-| `handleParams`         | Per tool, the argument whose value is the handle id, for example `{ lookup_order: "order_id" }`         |
+| `handleParams`         | Per tool, the argument whose value is the session handle, for example `{ lookup_order: "order_id" }`    |
 | `identify`             | Called once per inbound message with the transport's `authInfo` and HTTP request; returns an identity   |
 | `identity: "none"`     | Sends no identity keys at all                                                                           |
 | `transport`            | Overrides the transport label (`stdio`, `streamable_http`, `sse`, `unknown`)                            |
+
+The MCP **Sessions** page groups operations by the session id of a session-based HTTP connection, else by session
+handle, else by the trace of the calling client span, else by server process. So on stdio each value of a
+`handleParams` argument is a session of its own, and the operations without a session handle form one **Process**
+session, or follow the client's trace when an instrumented client made them.
 
 Content capture is off by default. A tool call matching a `capture` rule is sampled (`sampleRate`, default 1)
 before its arguments are read; arguments and results are sent as `gen_ai.tool.call.arguments` and
 `gen_ai.tool.call.result`, scrubbed, and cut at `maxBytes` (default 16 KiB) on a character boundary; a cut never
 keeps the prefix of a token it splits. Scrubbing applies the shared rules of `conformance/scrub-rules.json`
 (packaged as `src/scrub-rules.json`, which a test keeps equal): PEM blocks, JWTs, Bearer tokens, Crucible secret
-keys, card numbers (Luhn-checked), emails, IP addresses and phone numbers. Error messages and handle ids are
+keys, card numbers (Luhn-checked), emails, IP addresses and phone numbers. Error messages and session handles are
 scrubbed too. A `requestState` is never sent, in any form other than its keyed hash.
 
 ## MCP clients
@@ -214,7 +223,9 @@ child, so the agent's trace and the server's operation link up.
 ## Known limits
 
 - A tool handler that throws and one that returns `isError: true` look the same on the wire; both are tool errors
-  unless the handler calls `annotateError` or a mark.
+  unless the handler calls `annotateError` or a mark. The error's message, the result's first text block, is sent
+  scrubbed and cut at 2,048 bytes. Calls the MCP SDK refuses before a handler runs (bad arguments, an unknown tool)
+  are caller faults with the class `validation` or `not_found`.
 - Stateless legacy HTTP builds a fresh server per request, so tool calls there carry no client info. Server info
   is remembered per `instrument` call, so it reaches every operation after the first result.
 - Exchanges recorded by `instrumentHandler` run no handler, so `annotateError` and `identify` cannot reach them,

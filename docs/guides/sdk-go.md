@@ -199,7 +199,7 @@ func shutdown() {
 - `Span()` returns the OpenTelemetry span, for keys the helpers do not set, such as `crucible.trace.name`,
   `crucible.trace.tags`, `gen_ai.response.model` and `gen_ai.provider.name`.
 
-[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show on main.
+[Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show.
 Two notes for agents: the views show the model from `gen_ai.response.model`, so set it on the span as the example
 does; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags of `WithTags`.
 
@@ -383,10 +383,11 @@ version and era, transport, client name and version, the outcome and its error c
 content block counts and, in the legacy era, the session id hashed as `mcp.session.id`. A `traceparent` in
 `params._meta` makes the span a child of the caller's span.
 
-On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
-as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
+Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a tool error
+with status `error`, and captured arguments and results become the span's input and output. Crucible also records
+each such span as an MCP operation on the server side, which takes the other MCP keys: they show on the MCP
+**Operation** page ([MCP analytics](mcp-analytics.md#pages)) and in the SQL workspace's `crucible_sql.mcp_operations`,
+not among the span's attributes.
 
 The MCP Go SDK does not pass middleware the JSON-RPC id of a request, so `Instrument` returns an `Instrumentation`
 whose `Transport` and `Handler` wrap what the server is connected over. With either, each request's span carries its
@@ -584,7 +585,15 @@ every `FlushInterval`, and whenever `Flush` asks. When the queue holds `QueueSiz
 spans with the batch being exported, a span is dropped and counted; ending a span never waits for the network.
 
 The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 or a 503, and waits for the server's
-`Retry-After`; by default it gives up after a minute. A batch that still fails is dropped and counted.
+`Retry-After`; by default it gives up after a minute. A batch that still fails is dropped and counted. On the first
+failed export after `Init`, the SDK writes one line through the standard `log` package, which `log.SetOutput`
+redirects, with the traces URL, the status and Crucible's reason:
+
+```text
+crucible: could not send spans: traces export: failed to send to http://localhost:4318/v1/traces: 401 Unauthorized (this server does not accept the secret key; check that it was copied whole and that the server lists it); spans go to Options.Endpoint, an OTLP listener, with Options.SecretKey, a secret key that has the ingest scope. CurrentStats().ExportFailed counts the spans not sent; this warning is not repeated.
+```
+
+Later failures only count in `ExportFailed`, and `Flush` still returns the exporter's error.
 
 `CurrentStats()` returns the counters of the process-wide client, zero before `Init` and after `Shutdown`:
 
