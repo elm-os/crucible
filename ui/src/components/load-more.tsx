@@ -43,7 +43,7 @@ export function LoadMore({
           </span>
           <Button onClick={onLoad}>Retry loading more {noun}</Button>
         </div>
-        <ErrorCode code={failure.reference} />
+        <ErrorCode code={failure.reference} label={`more ${noun}`} />
       </div>
     );
   }

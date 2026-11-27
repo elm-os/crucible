@@ -114,8 +114,13 @@ node tools/policy/policy.mjs files
 node tools/policy/policy.mjs selftest
 ```
 
-The `policy` job also checks every commit message in the pull request, its title, its body and its branch name. To
-check a title and body before opening a pull request:
+The `policy` job also checks every commit message in the pull request, its title, its body and its branch name. It
+checks each commit's identity too: the author must be one of the identities in `commit_authors` in
+`policy/naming-rules.json`, and the committer that identity or GitHub's web-flow committer,
+`GitHub <noreply@github.com>`. A `Co-authored-by` trailer is refused in commit messages, the title and the body.
+Both rules hold because a squash merge credits every commit author and co-author of a pull request as a
+contributor. A refusal names the commit and the command that fixes it. To check a title and body before opening a
+pull request:
 
 ```sh
 printf '%s\n\n%s\n' "$TITLE" "$BODY" | node tools/policy/policy.mjs text

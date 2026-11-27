@@ -1,4 +1,6 @@
 import {
+  BOUNDS_PATH,
+  dataBounds,
   expect,
   expectAccessible,
   json,
@@ -39,6 +41,11 @@ function answer(measures: string[]) {
 }
 
 const region = (name: string) => ({ name, exact: true });
+
+// A project with traces and MCP operations, unless a test answers its own data bounds.
+test.beforeEach(({ api }) => {
+  api.on(BOUNDS_PATH, json(dataBounds({ spans: true, server: true })));
+});
 
 test.describe("home: tiles and charts", () => {
   test("loading: every tile and chart holds its place and is announced", async ({ page, api }) => {
@@ -121,8 +128,12 @@ test.describe("home: tiles and charts", () => {
     await expect(cost).toContainText("No data in the last 30 days.");
   });
 
-  test("static: the set-up steps render whatever the API answers", async ({ page, api }) => {
+  test("a project with no data shows the set-up steps whatever the tiles answer", async ({
+    page,
+    api,
+  }) => {
     api.on(METRICS_PATH, problem(503, "telemetry_store_unavailable"));
+    api.on(BOUNDS_PATH, json(dataBounds()));
     await page.goto(`/home/?project=${PROJECT}`);
     const setup = page.getByRole("region", region("Set up"));
     await expect(setup.getByRole("listitem")).toHaveCount(4);

@@ -123,7 +123,7 @@ describe("with no backend, the section shows a designed error, never a blank or 
     expect(
       screen.getByText(/If this keeps happening, give your administrator this code/),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy code for recent traces" })).toBeTruthy();
     expect(screen.queryByText(/Reference/)).toBeNull();
   });
 

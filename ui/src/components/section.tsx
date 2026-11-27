@@ -176,7 +176,7 @@ export function ErrorCard({
         ) : null}
         {error.kind === "unauthenticated" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
       </div>
-      <ErrorCode code={error.reference} />
+      <ErrorCode code={error.reference} label={label} />
     </div>
   );
 }
@@ -201,7 +201,7 @@ export function RefreshFailed({
         </span>
         <Button onClick={onRetry}>Retry {label}</Button>
       </div>
-      <ErrorCode code={error.reference} />
+      <ErrorCode code={error.reference} label={label} />
     </div>
   );
 }

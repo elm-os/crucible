@@ -585,7 +585,15 @@ every `FlushInterval`, and whenever `Flush` asks. When the queue holds `QueueSiz
 spans with the batch being exported, a span is dropped and counted; ending a span never waits for the network.
 
 The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 or a 503, and waits for the server's
-`Retry-After`; by default it gives up after a minute. A batch that still fails is dropped and counted.
+`Retry-After`; by default it gives up after a minute. A batch that still fails is dropped and counted. On the first
+failed export after `Init`, the SDK writes one line through the standard `log` package, which `log.SetOutput`
+redirects, with the traces URL, the status and Crucible's reason:
+
+```text
+crucible: could not send spans: traces export: failed to send to http://localhost:4318/v1/traces: 401 Unauthorized (this server does not accept the secret key; check that it was copied whole and that the server lists it); spans go to Options.Endpoint, an OTLP listener, with Options.SecretKey, a secret key that has the ingest scope. CurrentStats().ExportFailed counts the spans not sent; this warning is not repeated.
+```
+
+Later failures only count in `ExportFailed`, and `Flush` still returns the exporter's error.
 
 `CurrentStats()` returns the counters of the process-wide client, zero before `Init` and after `Shutdown`:
 
