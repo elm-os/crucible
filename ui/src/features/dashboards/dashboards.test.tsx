@@ -292,14 +292,15 @@ describe("dashboards for agents", () => {
   });
 });
 
+const problem = (status: number, code: string) =>
+  new Response(JSON.stringify({ code, status, request_id: "req-reload" }), {
+    status,
+    headers: { "content-type": "application/problem+json" },
+  });
+
 describe("a save that meets someone else's change", () => {
   test("a reload of their version that fails says so, instead of doing nothing", async () => {
     navigation.search = `project=${PROJECT_A}&id=${ID}`;
-    const problem = (status: number, code: string) =>
-      new Response(JSON.stringify({ code, status, request_id: "req-reload" }), {
-        status,
-        headers: { "content-type": "application/problem+json" },
-      });
     let reads = 0;
     serve({
       [`GET ${BASE}/dashboards/${ID}`]: () => {
@@ -319,7 +320,9 @@ describe("a save that meets someone else's change", () => {
       ],
     });
     expect(edited.ok, edited.error?.message).toBe(true);
-    expect(await screen.findByText("Someone changed this dashboard since you opened it.")).toBeTruthy();
+    expect(
+      await screen.findByText("Someone changed this dashboard since you opened it."),
+    ).toBeTruthy();
     const reload = await agent.act({ steps: [{ ref: "Load their version", action: "press" }] });
     expect(reload.ok, reload.error?.message).toBe(true);
     expect(await screen.findByText("Crucible can't reach its database.")).toBeTruthy();

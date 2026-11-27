@@ -672,7 +672,9 @@ test.describe("sql: saved queries", () => {
     await expect(
       saved.getByText("Saved queries and history are unavailable right now."),
     ).toBeVisible({ timeout: 10_000 });
-    await expect(saved.getByText("Crucible can't reach its database. Try again shortly.")).toBeVisible();
+    await expect(
+      saved.getByText("Crucible can't reach its database. Try again shortly."),
+    ).toBeVisible();
     await expect(saved.getByText(/control plane/)).toHaveCount(0);
     await expect(saved.getByText("req-saved")).toBeVisible();
     expect(api.count(SQL_SAVED_PATH)).toBe(2);

@@ -445,7 +445,9 @@ ${TRACE} `,
       "Your request is saved, and the deletion starts within seconds.",
     );
     expect(alert.textContent).toContain("Press Delete data again to check that it started.");
-    expect(alert.textContent).toContain("If this keeps happening, give your administrator this code:");
+    expect(alert.textContent).toContain(
+      "If this keeps happening, give your administrator this code:",
+    );
     expect(alert.textContent).not.toContain("yet");
   });
 

@@ -69,7 +69,9 @@ test("an unexpected failure gives the administrator's code, with a copy button",
   });
   expect(await screen.findByText("This section couldn't load.")).toBeTruthy();
   expect(screen.getByText("Try again in a moment.")).toBeTruthy();
-  expect(screen.getByText(/If this keeps happening, give your administrator this code/)).toBeTruthy();
+  expect(
+    screen.getByText(/If this keeps happening, give your administrator this code/),
+  ).toBeTruthy();
   expect(screen.getByText("01a21b0c-5d3e-7a41-9b2f-6c8d0e1f2a3b")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
   expect(screen.queryByText(/Reference/)).toBeNull();
