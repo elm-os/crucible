@@ -174,7 +174,9 @@ describe("the facts of a trace", () => {
     await act(async () => bookmark.click());
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByText(/Couldn't save the flag/)).toBeTruthy();
-    expect(within(alert).getByText("Reference r-7")).toBeTruthy();
+    expect(within(alert).getByText("r-7")).toBeTruthy();
+    expect(within(alert).getByText(/give your administrator this code/)).toBeTruthy();
+    expect(within(alert).queryByText(/Reference/)).toBeNull();
   });
 
   test("scores show with their comments", async () => {

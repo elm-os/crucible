@@ -64,6 +64,19 @@ The server also logs a warning at startup when its memory budgets add up to more
 use, with the amount to give it. With the defaults, give the container at least 2 GiB
 ([operations](operations.md#memory-and-disk)).
 
+## The web UI shows a code
+
+When a page says **If this keeps happening, give your administrator this code**, the request failed on the server
+for a reason the page does not show. The server logs the request with that code as its `request_id`, so the log
+line gives the reason. Search for the code the page showed, such as:
+
+```sh
+docker compose logs crucible | grep 01a2163b-9ad5-78ef-91d3-d9c7b2ebc3a2
+```
+
+A failure the page can explain, such as a missing role, a deleted item, a conflict, a field to fix or a rate
+limit, shows no code.
+
 ## Signing in
 
 | Symptom or message | Fix |

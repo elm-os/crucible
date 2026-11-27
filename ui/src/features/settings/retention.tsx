@@ -18,6 +18,7 @@ import {
   FormAlert,
   failureCopy,
   fieldFailed,
+  focusField,
 } from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
@@ -207,8 +208,11 @@ function RetentionForm({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const values = [parsed.all, parsed.payload, parsed.mcp];
-    if (values.includes("invalid") || above(parsed.payload) || above(parsed.mcp)) return;
+    const invalid = fields.find((field) => field.days === "invalid" || field.over);
+    if (invalid) {
+      focusField(event.currentTarget, invalid.name);
+      return;
+    }
     const body: RetentionUpdate = {
       retention_days: parsed.all as number | null,
       payload_retention_days: parsed.payload as number | null,
@@ -309,10 +313,7 @@ function RetentionForm({
           </p>
         ) : null}
         {failure ? (
-          <FormAlert
-            copy={failureCopy(failure, "Couldn't save retention.", SAVE_COPY)}
-            requestId={failure.requestId}
-          />
+          <FormAlert copy={failureCopy(failure, "Couldn't save retention.", SAVE_COPY)} />
         ) : null}
         {canManage ? (
           <div className="flex items-center gap-3">

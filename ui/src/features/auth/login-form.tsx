@@ -17,6 +17,7 @@ import { getSignInMode, login } from "@/api/client";
 import { asUiError } from "@/api/errors";
 import type { SignInOptions } from "@/api/generated/SignInOptions";
 import { EmptyState } from "@/components/empty-state";
+import { LockIcon, MailIcon } from "@/components/icons";
 import { type Copy, type CopyByCode, FormAlert, failureCopy } from "@/components/form-alert";
 import { useLoadingPhase } from "@/components/section";
 import { loadPage } from "@/lib/navigate";
@@ -70,7 +71,7 @@ const FLOW_ERROR_UNKNOWN: Copy = {
 const LOGIN_COPY: CopyByCode = {
   invalid_credentials: {
     title: "That email and password don't match an account.",
-    detail: "Check both and try again. Passwords are case-sensitive.",
+    detail: "Check them and try again.",
   },
   forbidden: {
     title: "This account can't sign in.",
@@ -141,7 +142,6 @@ export function LoginForm() {
     body = (
       <FormAlert
         copy={failureCopy(error, "Couldn't load the ways to sign in.")}
-        requestId={error.requestId}
         action={<Button onClick={() => mode.refetch()}>Try again</Button>}
       />
     );
@@ -172,7 +172,7 @@ export function LoginForm() {
 
   return (
     <>
-      <AuthHeading title={TITLE} />
+      <AuthHeading title={TITLE}>Sign in to see your traces, costs and MCP servers.</AuthHeading>
       {flowError === null ? null : <FormAlert copy={flowErrorCopy(flowError, domains)} />}
       {body}
     </>
@@ -190,8 +190,16 @@ function SignInChoices({ options, next }: { options: SignInOptions; next: string
   }
   return (
     <div className="flex flex-col gap-6">
+      {password ? <PasswordSignIn next={next} /> : null}
+      {providers.length > 0 && password ? (
+        <div className="flex items-center gap-3 text-label text-ink-soft">
+          <Separator className="flex-1" />
+          <span>Or continue with</span>
+          <Separator className="flex-1" />
+        </div>
+      ) : null}
       {providers.length > 0 ? (
-        <ul className="flex flex-col gap-2">
+        <ul className={`grid gap-2 ${providers.length > 1 ? "sm:grid-cols-2" : ""}`}>
           {providers.map((provider) => (
             <li key={provider.id}>
               {/* A full-page navigation: the server redirects to the provider. */}
@@ -207,8 +215,9 @@ function SignInChoices({ options, next }: { options: SignInOptions; next: string
           ))}
         </ul>
       ) : null}
-      {providers.length > 0 && password ? <Separator /> : null}
-      {password ? <PasswordSignIn next={next} /> : null}
+      <p className="text-center text-label text-ink-soft">
+        New here? An owner or admin of this server sends you an invitation link.
+      </p>
     </div>
   );
 }
@@ -237,28 +246,43 @@ function PasswordSignIn({ next }: { next: string }) {
     >
       <Field name="email">
         <FieldLabel>Email</FieldLabel>
-        <Input type="email" required autoComplete="username" spellCheck={false} />
+        <div className="relative">
+          <MailIcon className="pointer-events-none absolute top-1/2 left-[13px] -translate-y-1/2 text-ink-soft" />
+          <Input
+            type="email"
+            required
+            autoComplete="username"
+            spellCheck={false}
+            placeholder="you@example.com"
+            className="h-11 w-full ps-9"
+          />
+        </div>
         <FieldError match="valueMissing">Enter your email address.</FieldError>
         <FieldError match="typeMismatch">Enter an email address like ada@example.com.</FieldError>
       </Field>
       <Field name="password">
         <FieldLabel>Password</FieldLabel>
-        <PasswordInput required>
-          <PasswordInputControl />
+        <PasswordInput required className="relative h-11">
+          <LockIcon className="pointer-events-none absolute top-1/2 left-3 z-10 -translate-y-1/2 text-ink-soft" />
+          {/* The wrapper has 10 px padding and a 1 px border of its own: 26 px more starts the text where the email's does. */}
+          <PasswordInputControl className="h-full ps-[26px]" placeholder="Your password" />
           <PasswordInputToggle aria-label="Show password" />
         </PasswordInput>
         <FieldError match="valueMissing">Enter your password.</FieldError>
       </Field>
       {failure ? (
-        <FormAlert
-          copy={failureCopy(failure, "Couldn't sign you in.", LOGIN_COPY)}
-          requestId={failure.requestId}
-        />
+        <FormAlert copy={failureCopy(failure, "Couldn't sign you in.", LOGIN_COPY)} />
       ) : null}
-      <Button type="submit" data-variant="solid" disabled={busy} aria-busy={busy}>
+      <Button
+        type="submit"
+        data-variant="solid"
+        disabled={busy}
+        aria-busy={busy}
+        className="h-11 w-full"
+      >
         {busy ? "Signing in" : "Sign in"}
       </Button>
-      <Link href="/reset" className="self-start text-data">
+      <Link href="/reset" className="self-center text-data">
         Forgot your password?
       </Link>
     </form>

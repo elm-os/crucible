@@ -9,7 +9,7 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from "@ui-sdk/react/drawer";
-import { Field, FieldLabel } from "@ui-sdk/react/field";
+import { Field, FieldError, FieldLabel } from "@ui-sdk/react/field";
 import { Input } from "@ui-sdk/react/input";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -306,6 +306,7 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
             maxLength={MAX_NAME}
             autoComplete="off"
           />
+          <FieldError match={nameBlank}>Enter a name for the dashboard.</FieldError>
         </Field>
         <Field>
           <FieldLabel>Description</FieldLabel>
@@ -364,6 +365,9 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
           }
         />
       ) : null}
+      {outcome?.kind === "conflict" && reload.isError ? (
+        <FormAlert copy={failureCopy(asUiError(reload.error), "Couldn't load their version.")} />
+      ) : null}
       {outcome?.kind === "deleted" ? (
         <FormAlert
           copy={{
@@ -373,10 +377,7 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
         />
       ) : null}
       {outcome?.kind === "failed" ? (
-        <FormAlert
-          copy={failureCopy(outcome.error, "The dashboard couldn't be saved.")}
-          requestId={outcome.error.requestId}
-        />
+        <FormAlert copy={failureCopy(outcome.error, "The dashboard couldn't be saved.")} />
       ) : null}
       <p id={hint} className="text-label text-ink-soft">
         Drag a widget by its handle, or focus the handle and use the arrow keys to move it a cell.

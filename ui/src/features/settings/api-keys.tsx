@@ -270,10 +270,7 @@ function CreateKeyDialog({ project }: { project: SessionProject }) {
                 </Field>
               </DialogBody>
               {failure ? (
-                <FormAlert
-                  copy={failureCopy(failure, "Couldn't create the key.")}
-                  requestId={failure.requestId}
-                />
+                <FormAlert copy={failureCopy(failure, "Couldn't create the key.")} />
               ) : null}
               <div className="flex justify-end gap-2">
                 <DialogClose>Cancel</DialogClose>

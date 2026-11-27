@@ -106,6 +106,21 @@ describe("live tail", () => {
     await screen.findByRole("link", { name: "trace 1" });
     await vi.waitFor(() => expect(tailReads().length).toBeGreaterThan(0));
     expect(screen.queryByRole("button", { name: /new trace/ })).toBeNull();
+    expect(screen.queryByText(/Couldn't check for new traces/)).toBeNull();
+  });
+
+  test("a check that fails says so quietly, and the list stays", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.searchParams.has("since")) throw new TypeError("Failed to fetch");
+      return json(listPage([item("1")], "h-1"));
+    });
+    renderWithClient(<TracesSection />);
+    await screen.findByRole("link", { name: "trace 1" });
+    expect(
+      await screen.findByText("Couldn't check for new traces. Checking again every 5 seconds."),
+    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "trace 1" })).toBeTruthy();
   });
 
   test("when the page's window ends with nothing new, the list reads the next window", async () => {

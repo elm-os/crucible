@@ -198,7 +198,7 @@ describe("organization settings", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("These settings changed since the page loaded.");
     expect(alert.textContent).toContain("Enter your change again, then save.");
-    expect(alert.textContent).toContain("req-9");
+    expect(alert.textContent).not.toContain("req-9");
     expect(alert.textContent).not.toContain("raw server title");
 
     await act(() => fill("Organization name", "Babbage and Co"));

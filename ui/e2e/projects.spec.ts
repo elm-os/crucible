@@ -100,7 +100,7 @@ test.describe("settings: new project", () => {
 
     const alert = dialog.getByRole("alert");
     await expect(alert).toContainText("Another project already uses that slug.");
-    await expect(alert).toContainText("req-taken");
+    await expect(alert).not.toContainText("req-taken");
     await expect(dialog.getByLabel("Slug")).toHaveAttribute("aria-invalid", "true");
     await expect(dialog.getByText("Choose a slug no other project uses.")).toBeVisible();
     await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);

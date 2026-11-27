@@ -89,6 +89,15 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SQL page's schema browser keeps column names on one line, shows an enum column as `Enum8` with its values on
   the line below, and gives the unit of the cost, duration and token columns. Result headers show the short type,
   with the full type on hover.
+- The web UI shows a request's code only beside an unexpected failure (a server fault, an unknown error, or an
+  answer that is not from Crucible), as "If this keeps happening, give your administrator this code" with a Copy
+  code button; a wrong password, a field to correct, a conflict, a missing permission or a rate limit shows none.
+  In 0.1.3 every error printed a bare "Reference" id.
+- The sign-in, setup, invitation and reset pages have a new layout: two rounded panels fill the window, the form on
+  the left, with icons in the email and password fields, and on wide screens a picture of Crucible on the right. On
+  the sign-in page, sign-in providers follow the password form under "Or continue with", and a line says how a new
+  person gets an invitation. Crucible shows the brand mark it shares with rightmodeler beside its name on these pages
+  and in the sidebar, and uses it as the browser tab icon.
 - `GET /api/v1/projects/{project_id}/traces/{trace_id}` returns `summary`: the trace name, the head span's name,
   status, level, environment and release, the trace's start, duration, span and error counts, user and session, and
   its cost and token totals counted the way the trace list counts them, so a parent span that repeats its children's

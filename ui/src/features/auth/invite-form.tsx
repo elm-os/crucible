@@ -84,7 +84,6 @@ export function InviteForm() {
         {failure ? (
           <FormAlert
             copy={failureCopy(failure, "Couldn't accept the invitation.", INVITE_COPY)}
-            requestId={failure.requestId}
             action={failure.code === "conflict" ? <Link href="/login">Sign in</Link> : null}
           />
         ) : null}

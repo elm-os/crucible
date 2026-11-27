@@ -14,6 +14,8 @@ import type { Score } from "@/api/generated/Score";
 import type { ScoreValue } from "@/api/generated/ScoreValue";
 import type { TraceDetail } from "@/api/generated/TraceDetail";
 import type { TraceFacts } from "@/api/generated/TraceFacts";
+import { ErrorCode } from "@/components/error-code";
+import { failureCopy } from "@/components/form-alert";
 import { AlertIcon, CheckIcon } from "@/components/icons";
 import { SectionFrame, useLoadingPhase } from "@/components/section";
 
@@ -161,17 +163,12 @@ function FactsEditor({
               </Toggle>
             );
           })}
-          {flag.isError ? (
-            <Problem
-              text="Couldn't save the flag. Nothing changed; try again."
-              id={asUiError(flag.error).requestId}
-            />
-          ) : null}
+          {flag.isError ? <Problem failed="Couldn't save the flag." error={flag.error} /> : null}
         </div>
         <TagsEditor
           tags={facts.tags}
           pending={tag.isPending ? tag.variables : undefined}
-          failed={tag.isError ? (asUiError(tag.error).requestId ?? "") : null}
+          failed={tag.isError ? tag.error : null}
           onEdit={(name, op) => tag.mutate({ tag: name, op, key: newIdempotencyKey() })}
         />
         <Scores
@@ -188,13 +185,17 @@ function FactsEditor({
   );
 }
 
-function Problem({ text, id }: { text: string; id: string | null }) {
+// A failed write, beside the control that made it, in words for the kind of failure.
+function Problem({ failed, error }: { failed: string; error: unknown }) {
+  const copy = failureCopy(asUiError(error), failed);
   return (
-    <p role="alert" className="flex items-center gap-1.5 text-label">
-      <AlertIcon className="shrink-0" />
-      {text}
-      {id ? <span className="font-mono text-ink-soft">Reference {id}</span> : null}
-    </p>
+    <div role="alert" className="flex flex-col items-start gap-1 text-label">
+      <p className="flex items-center gap-1.5">
+        <AlertIcon className="shrink-0" />
+        {copy.title} {copy.detail}
+      </p>
+      <ErrorCode code={copy.reference ?? null} />
+    </div>
   );
 }
 
@@ -206,7 +207,7 @@ function TagsEditor({
 }: {
   tags: string[];
   pending: { tag: string; op: "add" | "remove" } | undefined;
-  failed: string | null;
+  failed: unknown;
   onEdit: (tag: string, op: "add" | "remove") => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -271,9 +272,7 @@ function TagsEditor({
           {pending?.op === "add" ? "Adding tag" : "Add tag"}
         </Button>
       </form>
-      {failed !== null ? (
-        <Problem text="Couldn't save the tag. Nothing changed; try again." id={failed || null} />
-      ) : null}
+      {failed ? <Problem failed="Couldn't save the tag." error={failed} /> : null}
     </div>
   );
 }
@@ -420,12 +419,7 @@ function Scores({
           {write.isPending ? "Adding score" : "Add score"}
         </Button>
       </form>
-      {write.isError ? (
-        <Problem
-          text="Couldn't save the score. Nothing changed; try again."
-          id={asUiError(write.error).requestId}
-        />
-      ) : null}
+      {write.isError ? <Problem failed="Couldn't save the score." error={write.error} /> : null}
       {write.isSuccess ? (
         <p className="flex items-center gap-1.5 text-label text-ink-soft">
           <CheckIcon className="shrink-0" />

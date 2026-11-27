@@ -144,7 +144,9 @@ describe("what a rule says", () => {
 
 describe("failures are in the page's own words", () => {
   test("a test-send's code maps to what to check", () => {
-    expect(testFailure("receiver_failed")).toContain("5xx");
+    expect(testFailure("receiver_failed")).toBe(
+      "The receiver ran into an error of its own. Check the receiver's logs.",
+    );
     expect(testFailure("private_address")).toContain("egress.allow_cidrs");
     expect(testFailure("something_new")).toContain("wasn't delivered");
     expect(testFailure(undefined)).toContain("wasn't delivered");
