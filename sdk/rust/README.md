@@ -9,17 +9,100 @@ OTLP/HTTP. It has one module that is always built and two optional features:
 | `crucible_sdk::mcp` (feature `mcp`) | `CrucibleService`, a wrapper for MCP servers built on rmcp 3.11 that records one span per operation in both protocol eras, over stdio and streamable HTTP |
 | `crucible_sdk::mcp_client` (feature `mcp-client`) | `TracedClient`, which records the calls of an rmcp client and carries their trace context to the server |
 
-Depend on it by git, pinned to the tag of a Crucible release, or by path from a checkout:
+## Install
+
+Depend on it by git, pinned to the tag of a Crucible release:
 
 ```toml
 [dependencies]
-crucible-sdk = { git = "https://github.com/elm-os/crucible", tag = "v0.1.3", features = ["mcp"] }
+crucible-sdk = { git = "https://github.com/elm-os/crucible", tag = "v0.1.3" }
 ```
 
-It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it never
-links OpenSSL.
+Add `features = ["mcp"]` to instrument an MCP server, or `features = ["mcp-client"]` for an MCP client. The crate
+needs Rust 1.95 or newer. It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it
+never links OpenSSL.
+
+Each release also carries the crate's source archive, `crucible-sdk-0.1.3.crate`: the gzipped tar that
+`cargo package` writes. Cargo cannot depend on a `.crate` file by URL, so to build from it, unpack it and depend on
+the folder by path:
+
+```sh
+curl -LO https://github.com/elm-os/crucible/releases/download/v0.1.3/crucible-sdk-0.1.3.crate
+mkdir crucible-sdk
+tar -xzf crucible-sdk-*.crate -C crucible-sdk --strip-components 1
+```
+
+```toml
+[dependencies]
+crucible-sdk = { path = "crucible-sdk" }
+```
+
+A checkout of the repository works the same way, with the path of its `sdk/rust` folder.
+
+## Hello example
+
+A complete program that sends an agent span with a child generation, then flushes, prints the export counters
+and shuts down. `Cargo.toml`:
+
+```toml
+[package]
+name = "hello-crucible"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crucible-sdk = { git = "https://github.com/elm-os/crucible", tag = "v0.1.3" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+`src/main.rs`, with `endpoint` set to your server:
+
+```rust
+use crucible_sdk::{Context, ObservationType, Options, Usage, observe};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    crucible_sdk::init(Options {
+        endpoint: "http://localhost:4318".into(), // your Crucible server's OTLP/HTTP address
+        secret_key: std::env::var("CRUCIBLE_SECRET_KEY")?, // a project secret key (csk_...)
+        service_name: "hello-crucible".into(),
+        ..Options::default()
+    })?;
+
+    let run = observe(&Context::new(), "answer", ObservationType::Agent);
+    let generation = observe(&run.context(), "draft reply", ObservationType::Generation);
+    generation.set_model("model-name");
+    generation.set_input("What is Crucible?");
+    generation.set_output("A self-hosted observability server for AI agents.");
+    generation.set_usage(Usage { input: 12, output: 9, ..Usage::default() });
+    generation.end();
+    run.end();
+
+    crucible_sdk::flush().await?;
+    println!("{:?}", crucible_sdk::stats());
+    crucible_sdk::shutdown().await?;
+    Ok(())
+}
+```
+
+Run it with a project secret key that has the `ingest` scope:
+
+```sh
+export CRUCIBLE_SECRET_KEY=csk_...
+cargo run
+```
+
+It prints the counters of `crucible_sdk::stats()`, here two spans exported:
+
+```text
+Stats { exported: 2, dropped: 0, failed: 0, queued_bytes: 0, feedback_sent: 0, feedback_dropped: 0, feedback_failed: 0 }
+```
+
+Crucible then shows the trace `answer`, with the generation `draft reply` under it.
 
 ## Send traces from an agent
+
+The fragments from here on show more of the API; the [hello example](#hello-example) is a whole program.
 
 ```rust
 use crucible_sdk::{Context, ObservationType, Options, Usage, observe, with_session, with_user};
@@ -45,6 +128,9 @@ run.end();
 
 crucible_sdk::shutdown().await?;
 ```
+
+`ObservationType` has ten variants, sent as `crucible.observation.type`: `Span`, `Generation`, `Event`, `Embedding`,
+`Agent`, `Tool`, `Chain`, `Retriever`, `Evaluator` and `Guardrail`.
 
 Every span started under a context carries the session, user, tags and metadata set on it with `with_session`,
 `with_user`, `with_tags` and `with_metadata` (`crucible.session.id`, `crucible.user.id`, `crucible.tags`,
@@ -286,10 +372,11 @@ until this crate forwards it; the dependency is pinned to `~3.11.0` for that rea
 ## Develop
 
 The crate is its own Cargo workspace (with the conformance runner as its second member) and has its own
-`Cargo.lock`. On a host without a Rust toolchain the checks run in the repository's dev container, from the
-repository root:
+`Cargo.lock`. On a host without a Rust toolchain the checks run in the repository's dev container. Build its image
+once, then run the checks, all from the repository root:
 
 ```sh
+docker build -t crucible-dev:1 -f deploy/dev/Dockerfile deploy/dev
 docker run --rm -v "$PWD":/work -w /work/sdk/rust crucible-dev:1 cargo test --all-features --locked
 docker run --rm -v "$PWD":/work -w /work/sdk/rust crucible-dev:1 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 docker run --rm -v "$PWD":/work -w /work/sdk/rust crucible-dev:1 cargo fmt --all --check
