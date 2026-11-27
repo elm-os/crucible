@@ -21,6 +21,9 @@ The **Schema** browser lists the relations, in the `crucible_sql` database, with
 | `crucible_sql.mcp_tool_metrics` | Minute and MCP target: calls, sizes and latency histograms |
 | `crucible_sql.mcp_tools`, `crucible_sql.mcp_deploys` | Tool, prompt or resource a server listed; deploy of a server |
 
+For an enum column the browser lists its values, and for the cost, duration and token columns their units; the
+result's column headers show short types.
+
 A query is one `SELECT` or `WITH` statement that filters on the time window, written as the parameters
 `{from:DateTime64(6)}` and `{to:DateTime64(6)}`, which the page fills from the time range at the top:
 

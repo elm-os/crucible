@@ -33,7 +33,8 @@ step's read fails, or the data comes back incomplete, the step says **Couldn't c
 
 **Traces** lists the traces whose head span (the root, or the earliest span while the root has not arrived)
 started in the time range, newest first: name, status, start, duration, span count and cost. While you watch, a
-banner says when new traces arrived, with a button such as **Show 3 new traces** that loads them.
+banner says when new traces arrived, with a button such as **Show 3 new traces** that loads them, and
+**Load more traces** reads the next page.
 
 **Filter by** adds filters: environment, level, type, user, session, tag, metadata (`key=value`, for example
 `team=search`), release and version, and **Name contains** matches part of a name. Each value of one filter
