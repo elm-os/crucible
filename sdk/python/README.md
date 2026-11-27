@@ -222,7 +222,7 @@ email addresses, IPv6 and IPv4 addresses and phone numbers, in that order. In ca
 refuses any pattern outside the shared subset (no lookaround, backreferences, anchors, class escapes or nested
 unbounded repetition). One shared rule, the email local part, is unbounded: in Python's backtracking matcher it costs
 about 0.15 s on a 16 KiB run of letters and digits with no `@`, which the capture cap bounds. Error messages and
-exception events of MCP spans are cut (8 KiB and 16 KiB) and scrubbed with the same rules before export.
+exception events of MCP spans are cut (2 KiB and 16 KiB) and scrubbed with the same rules before export.
 
 ## Instrument an MCP client
 
